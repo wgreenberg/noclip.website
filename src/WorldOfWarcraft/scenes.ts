@@ -37,7 +37,7 @@ layout(std140) uniform ub_SceneParams {
     Mat4x4 u_ModelView;
 };
 
-vec4 u_Color = vec4(1.0, 0.0, 0.0, 1.0);
+vec4 u_Color = vec4(1.0, 0.0, 1.0, 1.0);
 
 varying vec2 v_LightIntensity;
 
@@ -79,9 +79,9 @@ class ModelRenderer {
       let skinIndices = skin.get_indices();
       this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, skinIndices.buffer);
       this.indexCount = skinIndices.length;
+      console.log(skinIndices);
       this.indexBufferDescriptor = { buffer: this.indexBuffer, byteOffset: 0 };
       this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, buf.buffer);
-      console.log(this.indexBuffer, buf.buffer);
       this.vertexBufferDescriptors = [
         { buffer: this.vertexBuffer, byteOffset: 0, },
       ];
@@ -216,6 +216,7 @@ class WowSceneDesc implements Viewer.SceneDesc {
     await fileList.load(dataFetcher);
     const modelData = await dataFetcher.fetchData(`wow/world/${this.path}.m2`);
     const m2 = rust.M2.new(modelData.createTypedArray(Uint8Array));
+    console.log(m2.get_name());
     for (let txid of m2.get_texture_ids()) {
       console.log(fileList.getFilename(txid));
     }

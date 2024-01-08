@@ -139,7 +139,7 @@ impl M2 {
     fn get_m2_data(&self) -> &[u8] {
         // M2 pointers are relative to the end of the MD21 block, which seems to
         // always be 16 bytes in
-        &self.data[16..]
+        &self.data[8..]
     }
 
     pub fn get_name(&self) -> Result<String, String> {
