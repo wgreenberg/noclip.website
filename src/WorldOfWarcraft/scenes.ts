@@ -175,7 +175,7 @@ class WowScene implements Viewer.SceneGfx {
 }
 
 class FileList {
-    public files: String[] | undefined;
+    public files: string[] | undefined;
 
     constructor() {
     }
@@ -183,8 +183,8 @@ class FileList {
     public async load(dataFetcher: DataFetcher) {
       const decoder = new TextDecoder();
       const fileListData = await dataFetcher.fetchData(`wow/listfile.csv`);
-      const files: String[] = [];
-      decoder.decode(fileListData.createTypedArray(Uint8Array)).split('\n').forEach(line => {
+      const files: string[] = [];
+      decoder.decode(fileListData.createTypedArray(Uint8Array)).split('\r\n').forEach(line => {
         const [idxStr, fileName] = line.split(';');
         const idx = parseInt(idxStr);
         files[idx] = fileName;
@@ -192,7 +192,7 @@ class FileList {
       this.files = files;
     }
 
-    public getFilename(fileId: number): String | undefined {
+    public getFilename(fileId: number): string | undefined {
       if (!this.files) {
         throw new Error(`must load FileList first`);
       }
@@ -200,27 +200,36 @@ class FileList {
     }
 }
 
+let _fileList: FileList | undefined = undefined;
+async function getFileList(dataFetcher: DataFetcher): Promise<FileList> {
+  if (!_fileList) {
+    _fileList = new FileList();
+    await _fileList.load(dataFetcher);
+  }
+  return _fileList;
+}
+
 class WowSceneDesc implements Viewer.SceneDesc {
   public id: string;
-  public name: string;
 
-  constructor(public path: string) {
-    this.id = path.split('/').pop()!;
-    this.name = path.split('/').pop()!;
+  constructor(public name: string, public fileId: number) {
+    this.id = fileId.toString();
   }
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
     rust.init_panic_hook();
-    const fileList = new FileList();
-    await fileList.load(dataFetcher);
-    const modelData = await dataFetcher.fetchData(`wow/world/${this.path}.m2`);
+    const fileList = await getFileList(dataFetcher);
+    const filePath = fileList.getFilename(this.fileId);
+    if (!filePath) {
+      throw new Error(`couldn't find path for fileId ${this.fileId} (${this.name})`);
+    }
+    const modelData = await dataFetcher.fetchData(`/wow/${filePath}`);
     const m2 = rust.M2.new(modelData.createTypedArray(Uint8Array));
-    console.log(m2.get_name());
     for (let txid of m2.get_texture_ids()) {
       console.log(fileList.getFilename(txid));
     }
-    const skinData = await dataFetcher.fetchData(`wow/world/${this.path}00.skin`);
+    const skinData = await dataFetcher.fetchData(`/wow/${filePath.replace('.m2', '00.skin')}`);
     const skin = rust.Skin.new(skinData.createTypedArray(Uint8Array));
     return new WowScene(device, m2, skin);
   }
@@ -228,9 +237,9 @@ class WowSceneDesc implements Viewer.SceneDesc {
 
 const sceneDescs = [
     "Models",
-    new WowSceneDesc('lordaeron/arathi/passivedoodads/farmhouses/arathifarmhouse01'),
-    new WowSceneDesc('lordaeron/stratholme/passivedoodads/throne/kelthuzad_throne'),
-    new WowSceneDesc('kalimdor/darkshore/threshadoncorpse/darkshorethreshadoncorpse'),
+    new WowSceneDesc('Arathi farmhouse', 203656),
+    new WowSceneDesc('Kel-Thuzad throne', 204065),
+    new WowSceneDesc('Threshadon corpse', 201573),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
