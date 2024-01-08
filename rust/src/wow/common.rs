@@ -59,7 +59,7 @@ impl WowArray<u8> {
     }
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "WowVec3")]
 #[derive(DekuRead, Debug, Clone, Copy)]
 pub struct Vec3 {
     pub x: f32,
@@ -67,7 +67,7 @@ pub struct Vec3 {
     pub z: f32,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "WowVec2")]
 #[derive(DekuRead, Debug, Clone, Copy)]
 pub struct Vec2 {
     pub x: f32,
@@ -75,7 +75,7 @@ pub struct Vec2 {
 }
 
 // Axis-aligned bounding box
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "WowAABBox")]
 #[derive(DekuRead, Debug, Clone, Copy)]
 pub struct AABBox {
     pub min: Vec3,

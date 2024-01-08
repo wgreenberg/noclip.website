@@ -1,10 +1,10 @@
 import * as Viewer from '../viewer.js';
 import { SceneContext } from '../SceneBase.js';
 import { rust } from '../rustlib.js';
-import { M2, Skin } from '../../rust/pkg/index.js';
+import { WowM2, WowSkin, WowBlp } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
-import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor } from '../gfx/platform/GfxPlatform.js';
+import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D } from '../gfx/platform/GfxPlatform.js';
 import { GfxFormat } from '../gfx/platform/GfxPlatformFormat.js';
 import { GfxBuffer, GfxInputLayout, GfxProgram } from '../gfx/platform/GfxPlatformImpl.js';
 import { GfxRenderInst, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
@@ -13,6 +13,9 @@ import { makeBackbufferDescSimple, standardFullClearRenderPassDescriptor, pushAn
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
 import { fillMatrix4x4 } from '../gfx/helpers/UniformBufferHelpers.js';
 import { DataFetcher } from '../DataFetcher.js';
+import { decompressBC, surfaceToCanvas } from '../Common/bc_texture.js';
+import { TextureHolder, LoadedTexture } from '../TextureHolder.js';
+import { translateImageFormat } from '../fres_nx/tegra_texture.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
@@ -73,13 +76,12 @@ class ModelRenderer {
     private indexCount: number;
     public vertexBufferDescriptors: GfxVertexBufferDescriptor[];
 
-    constructor(device: GfxDevice, public m2: M2, private inputLayout: GfxInputLayout, private skin: Skin) {
+    constructor(device: GfxDevice, public m2: WowM2, private inputLayout: GfxInputLayout, private skin: WowSkin) {
       this.name = m2.get_name();
       let buf = m2.get_vertex_data();
       let skinIndices = skin.get_indices();
       this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, skinIndices.buffer);
       this.indexCount = skinIndices.length;
-      console.log(skinIndices);
       this.indexBufferDescriptor = { buffer: this.indexBuffer, byteOffset: 0 };
       this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, buf.buffer);
       this.vertexBufferDescriptors = [
@@ -105,7 +107,7 @@ class WowScene implements Viewer.SceneGfx {
     private inputLayout: GfxInputLayout;
     private program: GfxProgram;
 
-    constructor(device: GfxDevice, private m2: M2, private skin: Skin) {
+    constructor(device: GfxDevice, private m2: WowM2, private skin: WowSkin, public textureHolder: DebugTexHolder) {
       this.renderHelper = new GfxRenderHelper(device);
       this.program = this.renderHelper.renderCache.createProgram(new ModelProgram());
 
@@ -114,7 +116,7 @@ class WowScene implements Viewer.SceneGfx {
         { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
       ];
       const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-        { byteStride: rust.M2.get_vertex_stride(), frequency: GfxVertexBufferFrequency.PerVertex, },
+        { byteStride: rust.WowM2.get_vertex_stride(), frequency: GfxVertexBufferFrequency.PerVertex, },
       ];
       const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
       const cache = this.renderHelper.renderCache;
@@ -192,11 +194,15 @@ class FileList {
       this.files = files;
     }
 
-    public getFilename(fileId: number): string | undefined {
+    public getFilename(fileId: number): string {
       if (!this.files) {
         throw new Error(`must load FileList first`);
       }
-      return this.files[fileId];
+      const filePath = this.files[fileId];
+      if (!filePath) {
+        throw new Error(`couldn't find path for fileId ${fileId}`);
+      }
+      return filePath;
     }
 }
 
@@ -207,6 +213,39 @@ async function getFileList(dataFetcher: DataFetcher): Promise<FileList> {
     await _fileList.load(dataFetcher);
   }
   return _fileList;
+}
+
+interface DebugTex {
+  name: string;
+  width: number;
+  height: number;
+  blp: WowBlp;
+}
+
+class DebugTexHolder extends TextureHolder<DebugTex> {
+  public loadTexture(device: GfxDevice, textureEntry: DebugTex): LoadedTexture | null {
+    const gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.BC1_SRGB, textureEntry.width, textureEntry.height, 1));
+    const tex = textureEntry.blp.get_texture_data();
+    const canvases: HTMLCanvasElement[] = [];
+    if (textureEntry.blp.header.preferred_format === rust.WowPixelFormat.Dxt1) {
+      const decoded = decompressBC({
+        type: 'BC1',
+        width: textureEntry.blp.header.width,
+        height: textureEntry.blp.header.height,
+        depth: 1,
+        flag: 'SRGB',
+        pixels: tex,
+      })
+      const canvas = document.createElement('canvas');
+      surfaceToCanvas(canvas, decoded);
+      canvases.push(canvas);
+    } else {
+      console.log(`${textureEntry.name}: unknown texture ${textureEntry.blp.header.preferred_format}`)
+    }
+
+    const viewerTexture: Viewer.Texture = { name: textureEntry.name, surfaces: canvases };
+    return { viewerTexture, gfxTexture };
+  }
 }
 
 class WowSceneDesc implements Viewer.SceneDesc {
@@ -221,17 +260,26 @@ class WowSceneDesc implements Viewer.SceneDesc {
     rust.init_panic_hook();
     const fileList = await getFileList(dataFetcher);
     const filePath = fileList.getFilename(this.fileId);
-    if (!filePath) {
-      throw new Error(`couldn't find path for fileId ${this.fileId} (${this.name})`);
-    }
     const modelData = await dataFetcher.fetchData(`/wow/${filePath}`);
-    const m2 = rust.M2.new(modelData.createTypedArray(Uint8Array));
+    const m2 = rust.WowM2.new(modelData.createTypedArray(Uint8Array));
+    const holder = new DebugTexHolder();
+    const entries: DebugTex[] = [];
     for (let txid of m2.get_texture_ids()) {
-      console.log(fileList.getFilename(txid));
+      let texPath = fileList.getFilename(txid);
+      console.log(texPath);
+      const texData = await dataFetcher.fetchData(`/wow/${texPath}`)
+      const blp = rust.WowBlp.new(texData.createTypedArray(Uint8Array));
+      entries.push({
+        name: texPath,
+        width: blp.header.width,
+        height: blp.header.height,
+        blp: blp,
+      });
     }
+    holder.addTextures(device, entries);
     const skinData = await dataFetcher.fetchData(`/wow/${filePath.replace('.m2', '00.skin')}`);
-    const skin = rust.Skin.new(skinData.createTypedArray(Uint8Array));
-    return new WowScene(device, m2, skin);
+    const skin = rust.WowSkin.new(skinData.createTypedArray(Uint8Array));
+    return new WowScene(device, m2, skin, holder);
   }
 }
 

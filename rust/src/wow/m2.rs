@@ -70,14 +70,14 @@ pub struct SkinProfile {
     pub bone_count_max: u32,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "WowSkin")]
 #[derive(Debug)]
 pub struct Skin {
     data: Vec<u8>,
     profile: SkinProfile,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = "WowSkin")]
 impl Skin {
     pub fn new(data: Vec<u8>) -> Result<Skin, String> {
         let (_, profile) = SkinProfile::from_bytes((&data, 0))
@@ -101,7 +101,7 @@ impl Skin {
     }
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "WowM2")]
 #[derive(Debug, Clone)]
 pub struct M2 {
     data: Vec<u8>,
@@ -109,7 +109,7 @@ pub struct M2 {
     texture_ids: Txid,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = "WowM2")]
 impl M2 {
     pub fn new(data: Vec<u8>) -> Result<M2, String> {
         let mut chunked_data = ChunkedData::new(&data);
