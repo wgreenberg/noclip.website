@@ -17,8 +17,11 @@ opt-level = "s"
 [dependencies]
 byteorder = "1.4.3"
 console_error_panic_hook = "0.1.7"
+deku = { version = "0.16.0", features = ["logging"] }
+env_logger = "0.10.1"
 inflate = "0.4.5"
 js-sys = "0.3.60"
+log = "0.4.20"
 lz4_flex = { version = "0.10.0", default-features = false, features = ["safe-decode", "checked-decode"] }
 lzma-rs = { version = "0.3.0", features = ["raw_decoder"] }
 naga = { git = "https://github.com/gfx-rs/naga", features = ["glsl-in", "wgsl-out"] }
