@@ -66,7 +66,7 @@ pub struct SkinProfile {
     indices: WowArray<u16>,
     bones: WowArray<[u8; 4]>,
     submeshes: WowArray<()>,
-    batches: WowArray<()>,
+    batches: WowArray<Batch>,
     pub bone_count_max: u32,
 }
 
@@ -99,6 +99,29 @@ impl Skin {
         }
         Ok(result)
     }
+
+    pub fn get_batches(&self) -> Result<Vec<Batch>, String> {
+        self.profile.batches.to_vec(&self.data)
+            .map_err(|e| format!("{:?}", e))
+    }
+}
+
+#[wasm_bindgen(js_name = "WowBatch")]
+#[derive(Debug, DekuRead, Clone, Copy)]
+pub struct Batch {
+    pub flags: u8,
+    pub priority_plane: u8,
+    pub shader_id: u16,
+    pub skin_section_index: u16,
+    pub geoset_index: u16,
+    pub color_index: u16,
+    pub material_index: u16,
+    pub material_layer: u16,
+    pub texture_count: u16,
+    pub texture_combo_index: u16,
+    pub texture_coord_combo_index: u16,
+    pub texture_weight_combo_index: u16,
+    pub texture_transform_combo_index: u16,
 }
 
 #[wasm_bindgen(js_name = "WowM2")]
@@ -107,6 +130,7 @@ pub struct M2 {
     data: Vec<u8>,
     header: M2Header,
     texture_ids: Txid,
+    skin_ids: Sfid,
 }
 
 #[wasm_bindgen(js_class = "WowM2")]
@@ -120,11 +144,11 @@ impl M2 {
             .map_err(|e| format!("{:?}", e))?;
 
         let mut txid = None;
+        let mut sfid = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"TXID" => {
-                    txid = Some(chunk.parse(&chunk_data)?);
-                },
+                b"TXID" => txid = Some(chunk.parse(&chunk_data)?),
+                b"SFID" => sfid = Some(chunk.parse(&chunk_data)?),
                 _ => {},
             }
         }
@@ -133,6 +157,7 @@ impl M2 {
             data,
             header,
             texture_ids: txid.ok_or("M2 didn't have TXID chunk!".to_string())?,
+            skin_ids: sfid.ok_or("M2 didn't have SKID chunk!".to_string())?,
         })
     }
 
@@ -166,6 +191,10 @@ impl M2 {
     pub fn get_texture_ids(&self) -> Vec<u32> {
         self.texture_ids.file_data_ids.clone()
     }
+
+    pub fn get_skin_ids(&self) -> Vec<u32> {
+        self.skin_ids.skin_file_ids.clone()
+    }
 }
 
 #[derive(Debug, DekuRead, Clone)]
@@ -173,6 +202,13 @@ impl M2 {
 pub struct Txid {
     #[deku(count = "size / 4")]
     pub file_data_ids: Vec<u32>,
+}
+
+#[derive(Debug, DekuRead, Clone)]
+#[deku(ctx = "ByteSize(size): ByteSize")]
+pub struct Sfid {
+    #[deku(count = "size / 4")]
+    skin_file_ids: Vec<u32>,
 }
 
 #[derive(Debug, DekuRead)]
