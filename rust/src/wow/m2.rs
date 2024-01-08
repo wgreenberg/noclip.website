@@ -1,4 +1,5 @@
 use deku::prelude::*;
+use deku::ctx::ByteSize;
 use wasm_bindgen::prelude::*;
 use crate::wow::common::ChunkedData;
 
@@ -12,7 +13,6 @@ use super::common::{
 
 // if it's an MD21 chunk, all pointers are relative to the end of that chunk
 #[derive(Debug, DekuRead)]
-#[deku(magic = b"MD21")]
 pub struct M2HeaderBlock {
     pub header: M2Header,
 }
@@ -106,31 +106,33 @@ impl Skin {
 pub struct M2 {
     data: Vec<u8>,
     header: M2Header,
-    texture_ids: Option<Txid>,
+    texture_ids: Txid,
 }
 
 #[wasm_bindgen]
 impl M2 {
     pub fn new(data: Vec<u8>) -> Result<M2, String> {
         let mut chunked_data = ChunkedData::new(&data);
-        let header_chunk = chunked_data.next().ok_or("no header chunk".to_string())?;
+        let (header_chunk, chunk_data) = chunked_data.next()
+            .ok_or("no header chunk".to_string())?;
         assert_eq!(&header_chunk.magic, b"MD21");
-        let (_, header) = M2Header::from_bytes((&header_chunk.data, 0)).map_err(|e| format!("{:?}", e))?;
-        let mut texture_ids = None;
-        for chunk in chunked_data {
+        let (_, header) = M2Header::from_bytes((chunk_data, 0))
+            .map_err(|e| format!("{:?}", e))?;
+
+        let mut txid = None;
+        for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"TXID" => {
-                    let (_, txid) = Txid::from_bytes((&chunk.data, 0))
-                        .map_err(|e| format!("{:?}", e))?;
-                    texture_ids = Some(txid);
+                    txid = Some(chunk.parse(&chunk_data)?);
                 },
-                _ => {}, // ignore for now
+                _ => {},
             }
         }
+
         Ok(M2 {
             data,
             header,
-            texture_ids,
+            texture_ids: txid.ok_or("M2 didn't have TXID chunk!".to_string())?,
         })
     }
 
@@ -152,18 +154,25 @@ impl M2 {
 
     pub fn get_vertex_data(&self) -> Result<Vec<u8>, String> {
         let vertex_data_start = self.header.vertices.offset as usize;
-        let vertex_data_end = vertex_data_start + self.header.vertices.count as usize * M2::get_vertex_stride();
+        let vertex_data_size = self.header.vertices.count as usize * M2::get_vertex_stride();
+        let vertex_data_end = vertex_data_start + vertex_data_size;
         Ok(self.get_m2_data()[vertex_data_start..vertex_data_end].to_vec())
     }
 
     pub fn get_vertex_count(&self) -> u32 {
         self.header.vertices.count
     }
+
+    pub fn get_texture_ids(&self) -> Vec<u32> {
+        self.texture_ids.file_data_ids.clone()
+    }
 }
 
 #[derive(Debug, DekuRead, Clone)]
+#[deku(ctx = "ByteSize(size): ByteSize")]
 pub struct Txid {
-    pub file_data_ids: u32,
+    #[deku(count = "size / 4")]
+    pub file_data_ids: Vec<u32>,
 }
 
 #[derive(Debug, DekuRead)]

@@ -37,7 +37,7 @@ layout(std140) uniform ub_SceneParams {
     Mat4x4 u_ModelView;
 };
 
-vec4 u_Color = vec4(1.0);
+vec4 u_Color = vec4(1.0, 0.0, 0.0, 1.0);
 
 varying vec2 v_LightIntensity;
 
@@ -81,6 +81,7 @@ class ModelRenderer {
       this.indexCount = skinIndices.length;
       this.indexBufferDescriptor = { buffer: this.indexBuffer, byteOffset: 0 };
       this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, buf.buffer);
+      console.log(this.indexBuffer, buf.buffer);
       this.vertexBufferDescriptors = [
         { buffer: this.vertexBuffer, byteOffset: 0, },
       ];
@@ -119,7 +120,7 @@ class WowScene implements Viewer.SceneGfx {
       const cache = this.renderHelper.renderCache;
 
       this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-      this.modelRenderers = [new ModelRenderer(device, m2, this.inputLayout, this.skin)];
+      this.modelRenderers = [new ModelRenderer(device, this.m2, this.inputLayout, this.skin)];
     }
 
     private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
@@ -181,7 +182,7 @@ class FileList {
 
     public async load(dataFetcher: DataFetcher) {
       const decoder = new TextDecoder();
-      const fileListData = await dataFetcher.fetchData(`wow/community-listfile.csv`);
+      const fileListData = await dataFetcher.fetchData(`wow/listfile.csv`);
       const files: String[] = [];
       decoder.decode(fileListData.createTypedArray(Uint8Array)).split('\n').forEach(line => {
         const [idxStr, fileName] = line.split(';');
@@ -215,6 +216,9 @@ class WowSceneDesc implements Viewer.SceneDesc {
     await fileList.load(dataFetcher);
     const modelData = await dataFetcher.fetchData(`wow/world/${this.path}.m2`);
     const m2 = rust.M2.new(modelData.createTypedArray(Uint8Array));
+    for (let txid of m2.get_texture_ids()) {
+      console.log(fileList.getFilename(txid));
+    }
     const skinData = await dataFetcher.fetchData(`wow/world/${this.path}00.skin`);
     const skin = rust.Skin.new(skinData.createTypedArray(Uint8Array));
     return new WowScene(device, m2, skin);

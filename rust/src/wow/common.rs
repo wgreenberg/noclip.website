@@ -1,14 +1,22 @@
-use std::convert::TryFrom;
-
-use deku::{prelude::*, bitvec::{BitVec, Msb0}};
+use deku::{prelude::*, bitvec::BitVec, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
 
 #[derive(DekuRead, Debug)]
-pub struct Chunk<'a> {
+pub struct Chunk {
     pub magic: [u8; 4],
     pub size: u32,
-    #[deku(count = "size")]
-    pub data: &'a [u8],
+}
+
+impl Chunk {
+    pub fn parse<T>(&self, data: &[u8]) -> Result<T, String>
+        where for<'a> T: DekuRead<'a, ByteSize>
+    {
+        let bitvec = BitVec::from_slice(&data[..]);
+        let ctx = ByteSize(self.size as usize);
+        let (_, element) = T::read(bitvec.as_bitslice(), ctx)
+            .map_err(|e| format!("{:?}", e))?;
+        Ok(element)
+    }
 }
 
 pub struct ChunkedData<'a> {
@@ -26,16 +34,19 @@ impl<'a> ChunkedData<'a> {
 }
 
 impl<'a> Iterator for ChunkedData<'a> {
-    type Item = Chunk<'a>;
+    type Item = (Chunk, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx == self.data.len() {
             return None;
         }
         let (_, chunk) = Chunk::from_bytes((&self.data[self.idx..], 0)).unwrap();
-        self.idx += 8 + chunk.size as usize;
+        let chunk_start = self.idx + 8;
+        let chunk_end = chunk_start + chunk.size as usize;
+        let chunk_data = &self.data[chunk_start..chunk_end];
+        self.idx = chunk_end;
         assert!(self.idx <= self.data.len());
-        Some(chunk)
+        Some((chunk, chunk_data))
     }
 }
 
@@ -72,11 +83,11 @@ pub struct AABBox {
 }
 
 #[derive(Debug, DekuRead, Clone, Copy)]
-pub struct WowArray<T> where for<'a> T: DekuRead<'a> {
+pub struct WowArray<T> {
     pub count: u32,
     pub offset: u32,
     #[deku(skip)]
-    deref_type: std::marker::PhantomData<T>,
+    element_type: std::marker::PhantomData<T>,
 }
 
 impl<T> WowArray<T> where for<'a> T: DekuRead<'a> {
