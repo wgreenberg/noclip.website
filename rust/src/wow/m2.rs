@@ -59,71 +59,6 @@ pub struct M2Header {
     blend_map_overrides: WowArray<u16>,
 }
 
-#[derive(Debug, DekuRead)]
-#[deku(magic = b"SKIN")]
-pub struct SkinProfile {
-    vertices: WowArray<u16>,
-    indices: WowArray<u16>,
-    bones: WowArray<[u8; 4]>,
-    submeshes: WowArray<()>,
-    batches: WowArray<Batch>,
-    pub bone_count_max: u32,
-}
-
-#[wasm_bindgen(js_name = "WowSkin")]
-#[derive(Debug)]
-pub struct Skin {
-    data: Vec<u8>,
-    profile: SkinProfile,
-}
-
-#[wasm_bindgen(js_class = "WowSkin")]
-impl Skin {
-    pub fn new(data: Vec<u8>) -> Result<Skin, String> {
-        let (_, profile) = SkinProfile::from_bytes((&data, 0))
-            .map_err(|e| format!("{:?}", e))?;
-        Ok(Skin {
-            data,
-            profile
-        })
-    }
-
-    pub fn get_indices(&self) -> Result<Vec<u16>, String> {
-        let global_vertex_indices = self.profile.vertices.to_vec(&self.data[..])
-            .map_err(|e| format!("{:?}", e))?;
-        let local_vertex_indices = self.profile.indices.to_vec(&self.data[..])
-            .map_err(|e| format!("{:?}", e))?;
-        let mut result = Vec::with_capacity(local_vertex_indices.len());
-        for local_idx in local_vertex_indices {
-            result.push(global_vertex_indices[local_idx as usize]);
-        }
-        Ok(result)
-    }
-
-    pub fn get_batches(&self) -> Result<Vec<Batch>, String> {
-        self.profile.batches.to_vec(&self.data)
-            .map_err(|e| format!("{:?}", e))
-    }
-}
-
-#[wasm_bindgen(js_name = "WowBatch")]
-#[derive(Debug, DekuRead, Clone, Copy)]
-pub struct Batch {
-    pub flags: u8,
-    pub priority_plane: u8,
-    pub shader_id: u16,
-    pub skin_section_index: u16,
-    pub geoset_index: u16,
-    pub color_index: u16,
-    pub material_index: u16,
-    pub material_layer: u16,
-    pub texture_count: u16,
-    pub texture_combo_index: u16,
-    pub texture_coord_combo_index: u16,
-    pub texture_weight_combo_index: u16,
-    pub texture_transform_combo_index: u16,
-}
-
 #[wasm_bindgen(js_name = "WowM2")]
 #[derive(Debug, Clone)]
 pub struct M2 {
@@ -184,16 +119,11 @@ impl M2 {
         Ok(self.get_m2_data()[vertex_data_start..vertex_data_end].to_vec())
     }
 
-    pub fn get_vertex_count(&self) -> u32 {
-        self.header.vertices.count
-    }
-
-    pub fn get_texture_ids(&self) -> Vec<u32> {
-        self.texture_ids.file_data_ids.clone()
-    }
-
-    pub fn get_skin_ids(&self) -> Vec<u32> {
-        self.skin_ids.skin_file_ids.clone()
+    pub fn get_texture_ids(&self) -> Vec<u32> { self.texture_ids.file_data_ids.clone() }
+    pub fn get_skin_ids(&self) -> Vec<u32> { self.skin_ids.skin_file_ids.clone() }
+    pub fn get_texture_lookup_table(&self) -> Result<Vec<u16>, String> {
+        self.header.texture_lookup_table.to_vec(self.get_m2_data())
+            .map_err(|e| format!("{:?}", e))
     }
 }
 

@@ -6,39 +6,41 @@ import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage } from '../gfx/platform/GfxPlatform.js';
 import { GfxFormat } from '../gfx/platform/GfxPlatformFormat.js';
-import { GfxBuffer, GfxInputLayout, GfxProgram, GfxSampler, GfxTexture } from '../gfx/platform/GfxPlatformImpl.js';
-import { GfxRenderInst, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
+import { GfxBuffer, GfxInputLayout, GfxProgram } from '../gfx/platform/GfxPlatformImpl.js';
+import { GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
 import { makeStaticDataBuffer } from '../gfx/helpers/BufferHelpers.js';
 import { makeBackbufferDescSimple, standardFullClearRenderPassDescriptor, pushAntialiasingPostProcessPass } from '../gfx/helpers/RenderGraphHelpers.js';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
 import { fillMatrix4x4 } from '../gfx/helpers/UniformBufferHelpers.js';
 import { DataFetcher, NamedArrayBufferSlice } from '../DataFetcher.js';
-import { decompressBC, surfaceToCanvas } from '../Common/bc_texture.js';
-import { TextureHolder, LoadedTexture, TextureMapping } from '../TextureHolder.js';
-import { translateImageFormat } from '../fres_nx/tegra_texture.js';
-import { SamplerSettings } from '../Halo1/tex.js';
-import { makeSolidColorTexture2D } from '../gfx/helpers/TextureHelpers.js';
-import { GfxRenderCache } from '../gfx/render/GfxRenderCache.js';
-import ArrayBufferSlice from '../ArrayBufferSlice.js';
 import { nArray } from '../util.js';
-import { Texture } from 'librw';
+import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
+import { TextureMapping } from '../TextureHolder.js';
+import { mat4 } from 'gl-matrix';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
 
+const noclipSpaceFromHaloSpace = mat4.fromValues(
+    1, 0,  0, 0,
+    0, 0, -1, 0,
+    0, 1,  0, 0,
+    0, 0,  0, 1,
+);
+
 const bindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: 1, numSamplers: 0 }, // ub_SceneParams
+    { numUniformBuffers: 1, numSamplers: 1 }, // ub_SceneParams
 ];
 
 class ModelProgram extends DeviceProgram {
-    public static a_Position = 0;
-    public static a_Normal = 1;
-    public static a_TexCoord = 2;
+  public static a_Position = 0;
+  public static a_Normal = 1;
+  public static a_TexCoord = 2;
 
-    public static ub_SceneParams = 0;
-    public static ub_ModelParams = 1;
+  public static ub_SceneParams = 0;
+  public static ub_ModelParams = 1;
 
-    public override both = `
+  public override both = `
 precision mediump float;
 
 layout(std140) uniform ub_SceneParams {
@@ -46,20 +48,25 @@ layout(std140) uniform ub_SceneParams {
     Mat4x4 u_ModelView;
 };
 
-vec4 u_Color = vec4(1.0, 0.0, 1.0, 1.0);
+layout(binding = 0) uniform sampler2D u_Texture0;
 
 varying vec2 v_LightIntensity;
-
-//layout(binding = 0) uniform sampler2D
+varying vec2 v_UV;
+varying vec3 v_Normal;
+varying vec3 v_Binormal;
+varying vec3 v_Tangent;
+varying vec3 v_Position;
 
 #ifdef VERT
 layout(location = ${ModelProgram.a_Position}) attribute vec3 a_Position;
 layout(location = ${ModelProgram.a_Normal}) attribute vec3 a_Normal;
+layout(location = ${ModelProgram.a_TexCoord}) attribute vec2 a_TexCoord;
 
 void mainVS() {
     const float t_ModelScale = 20.0;
     gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position * t_ModelScale, 1.0)));
     vec3 t_LightDirection = normalize(vec3(.2, -1, .5));
+    v_UV = a_TexCoord;
     float t_LightIntensityF = dot(-a_Normal, t_LightDirection);
     float t_LightIntensityB = dot( a_Normal, t_LightDirection);
     v_LightIntensity = vec2(t_LightIntensityF, t_LightIntensityB);
@@ -70,44 +77,55 @@ void mainVS() {
 void mainPS() {
     float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
     float t_LightTint = 0.3 * t_LightIntensity;
-    gl_FragColor = u_Color + vec4(t_LightTint, t_LightTint, t_LightTint, 0.0);
+    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
+    gl_FragColor = tex + vec4(t_LightTint, t_LightTint, t_LightTint, 0.0);
 }
 #endif
 `;
 }
 
 class ModelRenderer {
-    public name: string;
-    private textureMapping: (TextureMapping | null)[] = nArray(2, () => null);
-    private vertexBuffer: GfxBuffer;
-    private indexBufferDescriptor: GfxIndexBufferDescriptor;
-    private indexBuffer: GfxBuffer;
-    private indexCount: number;
-    public vertexBufferDescriptors: GfxVertexBufferDescriptor[];
+  public name: string;
+  private textureMapping: (TextureMapping | null)[] = nArray(2, () => null);
+  private vertexBuffer: GfxBuffer;
+  private indexBufferDescriptor: GfxIndexBufferDescriptor;
+  private indexBuffer: GfxBuffer;
+  private indexCount: number;
+  public vertexBufferDescriptors: GfxVertexBufferDescriptor[];
 
-    constructor(device: GfxDevice, private textureCache: TextureCache, public blps: WowBlp[], public m2: WowM2, private inputLayout: GfxInputLayout, private skins: WowSkin[]) {
-      this.name = m2.get_name();
-      let buf = m2.get_vertex_data();
-      let skinIndices = skins[0].get_indices();
-      this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, skinIndices.buffer);
-      this.indexCount = skinIndices.length;
-      this.indexBufferDescriptor = { buffer: this.indexBuffer, byteOffset: 0 };
-      this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, buf.buffer);
-      this.vertexBufferDescriptors = [
-        { buffer: this.vertexBuffer, byteOffset: 0, },
-      ];
-    }
+  constructor(device: GfxDevice, private textureCache: TextureCache, private inputLayout: GfxInputLayout, public model: WowModel) {
+    this.name = model.m2.get_name();
+    let buf = model.m2.get_vertex_data();
+    // FIXME: handle multiple skins
+    let skinIndices = model.skins[0].get_indices();
+    this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, skinIndices.buffer);
+    this.indexCount = skinIndices.length;
+    this.indexBufferDescriptor = { buffer: this.indexBuffer, byteOffset: 0 };
+    this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, buf.buffer);
+    this.vertexBufferDescriptors = [
+      { buffer: this.vertexBuffer, byteOffset: 0, },
+    ];
+  }
 
-    public prepareToRender(renderInstManager: GfxRenderInstManager): void {
+  public prepareToRender(renderInstManager: GfxRenderInstManager): void {
+    const skin = this.model.skins[0];
+    const textureLookupTable = this.model.m2.get_texture_lookup_table();
+    for (let batch of skin.batches) {
       const renderInst = renderInstManager.newRenderInst();
+      const submesh = skin.submeshes[batch.skin_submesh_index];
       renderInst.setVertexInput(this.inputLayout, this.vertexBufferDescriptors, this.indexBufferDescriptor);
-      renderInst.drawIndexes(this.indexCount);
+      renderInst.drawIndexes(submesh.index_count, submesh.index_start);
+      const m2TextureIndex = textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
+      const blp = this.model.blps[m2TextureIndex];
+      const mapping = this.textureCache.getTextureMapping(blp);
+      renderInst.setSamplerBindingsFromTextureMappings([mapping]);
       renderInstManager.submitRenderInst(renderInst);
     }
+  }
 
-    public destroy(device: GfxDevice): void {
-      device.destroyBuffer(this.vertexBuffer);
-    }
+  public destroy(device: GfxDevice): void {
+    device.destroyBuffer(this.vertexBuffer);
+  }
 }
 
 class WowModelScene implements Viewer.SceneGfx {
@@ -116,7 +134,7 @@ class WowModelScene implements Viewer.SceneGfx {
     private inputLayout: GfxInputLayout;
     private program: GfxProgram;
 
-    constructor(device: GfxDevice, private blps: WowBlp[], private m2: WowM2, private skins: WowSkin[], public textureHolder: DebugTexHolder) {
+    constructor(device: GfxDevice, public model: WowModel, public textureHolder: DebugTexHolder) {
       this.renderHelper = new GfxRenderHelper(device);
       const textureCache = new TextureCache(this.renderHelper.renderCache);
       this.program = this.renderHelper.renderCache.createProgram(new ModelProgram());
@@ -124,6 +142,7 @@ class WowModelScene implements Viewer.SceneGfx {
       const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
         { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
         { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
+        { location: ModelProgram.a_TexCoord, bufferIndex: 0, bufferByteOffset: 32, format: GfxFormat.F32_RG, },
       ];
       const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
         { byteStride: rust.WowM2.get_vertex_stride(), frequency: GfxVertexBufferFrequency.PerVertex, },
@@ -132,7 +151,7 @@ class WowModelScene implements Viewer.SceneGfx {
       const cache = this.renderHelper.renderCache;
 
       this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-      this.modelRenderers = [new ModelRenderer(device, textureCache, this.blps, this.m2, this.inputLayout, this.skins)];
+      this.modelRenderers = [new ModelRenderer(device, textureCache, this.inputLayout, this.model)];
     }
 
     private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
@@ -228,175 +247,38 @@ function getFilePath(fileId: number): string {
   return _fileList!.getFilename(fileId);
 }
 
-function getImageFormatByteLength(fmt: GfxFormat, width: number, height: number): number {
-    if (fmt === GfxFormat.BC1 || fmt === GfxFormat.BC2 || fmt === GfxFormat.BC3) {
-        width = Math.max(width, 4);
-        height = Math.max(height, 4);
-        const count = ((width * height) / 16);
-        if (fmt === GfxFormat.BC1)
-            return count * 8;
-        else if (fmt === GfxFormat.BC2)
-            return count * 16;
-        else if (fmt === GfxFormat.BC3)
-            return count * 16;
-    } else {
-        if (fmt === GfxFormat.U8_RGBA_NORM)
-          return (width * height) * 4;
-        else if (fmt === GfxFormat.U16_RGB_565)
-          return (width * height) * 2;
-    }
-    throw new Error(`unrecognized compressed format ${GfxFormat[fmt]}`)
-}
-
-function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
-    const format = getTextureFormat(blp.header.preferred_format);
-    const mipmapCount = 1; // FIXME
-
-    const dimension = GfxTextureDimension.n2D;
-    let depth = 1;
-
-    const textureDescriptor = {
-        dimension,
-        pixelFormat: format,
-        width: blp.header.width,
-        height: blp.header.height,
-        numLevels: mipmapCount,
-        depth,
-        usage: GfxTextureUsage.Sampled,
-    };
-
-    const texture = device.createTexture(textureDescriptor!);
-    const levelDatas = [];
-    let byteOffset = 0;
-    let w = blp.header.width;
-    let h = blp.header.height;
-    for (let i = 0; i < mipmapCount; i++) {
-        const sliceByteLength = getImageFormatByteLength(format, w, h);
-
-        const texData = blp.get_texture_data();
-        let buffer = new ArrayBufferSlice(texData.buffer, byteOffset, sliceByteLength * depth);
-
-        let levelData: ArrayBufferView;
-        if (format === GfxFormat.U16_RGB_565) {
-            levelData = buffer.createTypedArray(Uint16Array);
-        } else {
-            levelData = buffer.createTypedArray(Uint8Array);
-        }
-
-        levelDatas.push(levelData);
-
-        byteOffset += sliceByteLength * depth;
-        w = Math.max(w >>> 1, 1);
-        h = Math.max(h >>> 1, 1);
-    }
-
-    device.uploadTextureData(texture, 0, levelDatas);
-    return texture;
-}
-
-export class TextureCache {
-    public textures: Map<number, GfxTexture>;
-    public default2DTexture: GfxTexture;
-
-    constructor(private renderCache: GfxRenderCache) {
-        this.textures = new Map();
-        this.default2DTexture = makeSolidColorTexture2D(renderCache.device, {
-            r: 0.5,
-            g: 0.5,
-            b: 0.5,
-            a: 1.0,
-        });
-    }
-
-    public async getTexture(blp: WowBlp, debug = false, submap = 0): Promise<GfxTexture> {
-        if (debug) {
-            return this.default2DTexture;
-        }
-
-        if (this.textures.has(blp.file_id)) {
-          return this.textures.get(blp.file_id)!;
-        } else {
-          const texture = makeTexture(this.renderCache.device, blp);
-          this.textures.set(blp.file_id, texture);
-          return texture;
-        }
-    }
-
-    public getSampler(samplerSettings: SamplerSettings): GfxSampler {
-        return this.renderCache.createSampler({
-            minFilter: GfxTexFilterMode.Bilinear,
-            magFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.Linear,
-            minLOD: 0,
-            maxLOD: 100,
-            wrapS: samplerSettings.wrap ? GfxWrapMode.Repeat : GfxWrapMode.Clamp,
-            wrapT: samplerSettings.wrap ? GfxWrapMode.Repeat : GfxWrapMode.Clamp,
-        });
-    }
-
-    public async getTextureMapping(blp: WowBlp, debug = false, submap = 0, samplerSettings: SamplerSettings = { wrap: true }): Promise<TextureMapping> {
-        const mapping = new TextureMapping();
-        mapping.gfxTexture = await this.getTexture(blp, debug, submap);
-        mapping.gfxSampler = this.getSampler(samplerSettings);
-        return mapping;
-    }
-
-    public destroy(device: GfxDevice) {
-        device.destroyTexture(this.default2DTexture);
-        for (let tex of this.textures.values()) {
-            device.destroyTexture(tex);
-        }
-    }
-}
-
-function getTextureFormat(format: WowPixelFormat): GfxFormat {
-  switch (format) {
-    case rust.WowPixelFormat.Dxt1: return GfxFormat.BC1;
-    case rust.WowPixelFormat.Dxt3: return GfxFormat.BC2;
-    case rust.WowPixelFormat.Dxt5: return GfxFormat.BC3;
-    case rust.WowPixelFormat.Rgb565: return GfxFormat.U16_RGB_565;
-    // the rest we convert to U8_RGBA_NORM
-    default:
-      return GfxFormat.U8_RGBA_NORM;
-  }
-}
-
-interface DebugTex {
-  name: string;
-  width: number;
-  height: number;
-  blp: WowBlp;
-}
-
-class DebugTexHolder extends TextureHolder<DebugTex> {
-  public loadTexture(device: GfxDevice, textureEntry: DebugTex): LoadedTexture | null {
-    const gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.BC1_SRGB, textureEntry.width, textureEntry.height, 1));
-    const tex = textureEntry.blp.get_texture_data();
-    const canvases: HTMLCanvasElement[] = [];
-    if (textureEntry.blp.header.preferred_format === rust.WowPixelFormat.Dxt1) {
-      const decoded = decompressBC({
-        type: 'BC1',
-        width: textureEntry.blp.header.width,
-        height: textureEntry.blp.header.height,
-        depth: 1,
-        flag: 'SRGB',
-        pixels: tex,
-      })
-      const canvas = document.createElement('canvas');
-      surfaceToCanvas(canvas, decoded);
-      canvases.push(canvas);
-    } else {
-      console.log(`${textureEntry.name}: unknown texture ${textureEntry.blp.header.preferred_format}`)
-    }
-
-    const viewerTexture: Viewer.Texture = { name: textureEntry.name, surfaces: canvases };
-    return { viewerTexture, gfxTexture };
-  }
-}
 
 async function fetchFileByID(fileId: number, dataFetcher: DataFetcher): Promise<NamedArrayBufferSlice> {
   const filePath = getFilePath(fileId);
   return await dataFetcher.fetchData(`/wow/${filePath}`);
+}
+
+class WowModel {
+  public m2: WowM2;
+  public skins: WowSkin[] = [];
+  public blps: WowBlp[] = [];
+
+  constructor(public fileId: number) {
+    this.skins = [];
+    this.blps = [];
+  }
+
+  public async load(dataFetcher: DataFetcher): Promise<undefined> {
+    const m2Data = await fetchFileByID(this.fileId, dataFetcher);
+    this.m2 = rust.WowM2.new(m2Data.createTypedArray(Uint8Array));
+    for (let txid of this.m2.get_texture_ids()) {
+      const texData = await fetchFileByID(txid, dataFetcher);
+      const blp = rust.WowBlp.new(txid, texData.createTypedArray(Uint8Array));
+      this.blps.push(blp);
+    }
+
+    const textureLookupTable = this.m2.get_texture_lookup_table();
+    for (let skid of this.m2.get_skin_ids()) {
+      const skinData = await fetchFileByID(skid, dataFetcher);
+      const skin = rust.WowSkin.new(skinData.createTypedArray(Uint8Array));
+      this.skins.push(skin);
+    }
+  }
 }
 
 class WowSceneDesc implements Viewer.SceneDesc {
@@ -410,16 +292,12 @@ class WowSceneDesc implements Viewer.SceneDesc {
     const dataFetcher = context.dataFetcher;
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const modelData = await fetchFileByID(this.fileId, dataFetcher);
-    const m2 = rust.WowM2.new(modelData.createTypedArray(Uint8Array));
+    const model = new WowModel(this.fileId);
     const holder = new DebugTexHolder();
-    const entries: DebugTex[] = [];
-    const blps: WowBlp[] = [];
-    for (let txid of m2.get_texture_ids()) {
-      const texData = await fetchFileByID(txid, dataFetcher);
-      const texPath = getFilePath(txid);
-      const blp = rust.WowBlp.new(txid, texData.createTypedArray(Uint8Array));
-      blps.push(blp);
+    await model.load(dataFetcher);
+    let entries: DebugTex[] = [];
+    for (let blp of model.blps) {
+      const texPath = getFilePath(blp.file_id);
       entries.push({
         name: texPath,
         width: blp.header.width,
@@ -428,14 +306,7 @@ class WowSceneDesc implements Viewer.SceneDesc {
       });
     }
     holder.addTextures(device, entries);
-    const skins: WowSkin[] = [];
-    for (let skid of m2.get_skin_ids()) {
-      const skinData = await fetchFileByID(skid, dataFetcher);
-      skins.push(rust.WowSkin.new(skinData.createTypedArray(Uint8Array)));
-    }
-    console.log(skins[0].get_batches());
-    console.log(blps);
-    return new WowModelScene(device, blps, m2, skins, holder);
+    return new WowModelScene(device, model, holder);
   }
 }
 
