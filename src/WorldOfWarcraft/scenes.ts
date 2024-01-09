@@ -315,6 +315,8 @@ const sceneDescs = [
     new WowSceneDesc('Arathi farmhouse', 203656),
     new WowSceneDesc('Kel-Thuzad throne', 204065),
     new WowSceneDesc('Threshadon corpse', 201573),
+    new WowSceneDesc('Darkshore Glaivemaster', 201531),
+    new WowSceneDesc('Windmill', 200566),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
