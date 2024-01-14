@@ -1,7 +1,7 @@
 import * as Viewer from '../viewer.js';
 import { SceneContext } from '../SceneBase.js';
 import { rust } from '../rustlib.js';
-import { WowM2, WowSkin, WowBlp, WowPixelFormat } from '../../rust/pkg/index.js';
+import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage } from '../gfx/platform/GfxPlatform.js';
@@ -248,9 +248,10 @@ function getFilePath(fileId: number): string {
 }
 
 
-async function fetchFileByID(fileId: number, dataFetcher: DataFetcher): Promise<NamedArrayBufferSlice> {
+async function fetchFileByID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
   const filePath = getFilePath(fileId);
-  return await dataFetcher.fetchData(`/wow/${filePath}`);
+  const buf = await dataFetcher.fetchData(`/wow/${filePath}`);
+  return buf.createTypedArray(Uint8Array);
 }
 
 class WowModel {
@@ -265,23 +266,23 @@ class WowModel {
 
   public async load(dataFetcher: DataFetcher): Promise<undefined> {
     const m2Data = await fetchFileByID(this.fileId, dataFetcher);
-    this.m2 = rust.WowM2.new(m2Data.createTypedArray(Uint8Array));
+    this.m2 = rust.WowM2.new(m2Data);
     for (let txid of this.m2.get_texture_ids()) {
       const texData = await fetchFileByID(txid, dataFetcher);
-      const blp = rust.WowBlp.new(txid, texData.createTypedArray(Uint8Array));
+      const blp = rust.WowBlp.new(txid, texData);
       this.blps.push(blp);
     }
 
     const textureLookupTable = this.m2.get_texture_lookup_table();
     for (let skid of this.m2.get_skin_ids()) {
       const skinData = await fetchFileByID(skid, dataFetcher);
-      const skin = rust.WowSkin.new(skinData.createTypedArray(Uint8Array));
+      const skin = rust.WowSkin.new(skinData);
       this.skins.push(skin);
     }
   }
 }
 
-class WowSceneDesc implements Viewer.SceneDesc {
+class ModelSceneDesc implements Viewer.SceneDesc {
   public id: string;
 
   constructor(public name: string, public fileId: number) {
@@ -310,13 +311,58 @@ class WowSceneDesc implements Viewer.SceneDesc {
   }
 }
 
+class World {
+  public wdt: WowWdt;
+  public blps: WowBlp[] = [];
+  public adts: WowAdt[] = [];
+  constructor(public fileId: number) {
+  }
+
+  public async load(dataFetcher: DataFetcher) {
+    this.wdt = rust.WowWdt.new(await fetchFileByID(this.fileId, dataFetcher));
+    for (let fileIDs of this.wdt.get_loaded_map_data()) {
+      // TODO handle obj1 (LOD) adts
+      const adt = rust.WowAdt.new(await fetchFileByID(fileIDs.root_adt, dataFetcher));
+      adt.append_obj_adt(await fetchFileByID(fileIDs.obj0_adt, dataFetcher));
+      adt.append_tex_adt(await fetchFileByID(fileIDs.tex0_adt, dataFetcher));
+      this.adts.push(adt);
+    }
+  }
+}
+
+class WdtSceneDesc implements Viewer.SceneDesc {
+  public id: string;
+
+  constructor(public name: string, public fileId: number) {
+    this.id = fileId.toString();
+  }
+
+  public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
+    const dataFetcher = context.dataFetcher;
+    await initFileList(dataFetcher);
+    rust.init_panic_hook();
+    const wdt = new World(this.fileId);
+    console.log('loading wdt')
+    await wdt.load(dataFetcher);
+    console.log('done')
+    const holder = new DebugTexHolder();
+    let entries: DebugTex[] = [];
+
+    const d = new ModelSceneDesc('Kel-Thuzad throne', 204065);
+    return d.createScene(device, context);
+  }
+}
+
 const sceneDescs = [
     "Models",
-    new WowSceneDesc('Arathi farmhouse', 203656),
-    new WowSceneDesc('Kel-Thuzad throne', 204065),
-    new WowSceneDesc('Threshadon corpse', 201573),
-    new WowSceneDesc('Darkshore Glaivemaster', 201531),
-    new WowSceneDesc('Windmill', 200566),
+    new ModelSceneDesc('Arathi farmhouse', 203656),
+    new ModelSceneDesc('Kel-Thuzad throne', 204065),
+    new ModelSceneDesc('Threshadon corpse', 201573),
+    new ModelSceneDesc('Darkshore Glaivemaster', 201531),
+    new ModelSceneDesc('Windmill', 200566),
+
+    "WDTs",
+    new WdtSceneDesc('Zul-Farak', 791169),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };

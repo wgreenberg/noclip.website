@@ -82,8 +82,8 @@ impl M2 {
         let mut sfid = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"TXID" => txid = Some(chunk.parse(&chunk_data)?),
-                b"SFID" => sfid = Some(chunk.parse(&chunk_data)?),
+                b"TXID" => txid = Some(chunk.parse_with_byte_size(&chunk_data)?),
+                b"SFID" => sfid = Some(chunk.parse_with_byte_size(&chunk_data)?),
                 _ => {},
             }
         }

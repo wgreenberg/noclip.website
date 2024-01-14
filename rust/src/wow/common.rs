@@ -8,14 +8,27 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn parse<T>(&self, data: &[u8]) -> Result<T, String>
+    pub fn parse_with_byte_size<T>(&self, data: &[u8]) -> Result<T, String>
         where for<'a> T: DekuRead<'a, ByteSize>
     {
+        self.parse_inner(data, ByteSize(self.size as usize))
+    }
+
+    pub fn parse<T>(&self, data:&[u8]) -> Result<T, String>
+        where for<'a> T: DekuRead<'a, ()> {
+        self.parse_inner(data, ())
+    }
+
+    fn parse_inner<T, V>(&self, data:&[u8], ctx: V) -> Result<T, String>
+        where for<'a> T: DekuRead<'a, V> {
         let bitvec = BitVec::from_slice(&data[..]);
-        let ctx = ByteSize(self.size as usize);
         let (_, element) = T::read(bitvec.as_bitslice(), ctx)
             .map_err(|e| format!("{:?}", e))?;
         Ok(element)
+    }
+
+    pub fn magic_str(&self) -> &str {
+        std::str::from_utf8(&self.magic).unwrap()
     }
 }
 
