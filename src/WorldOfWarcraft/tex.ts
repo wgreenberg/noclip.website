@@ -155,6 +155,12 @@ export class DebugTexHolder extends TextureHolder<DebugTex> {
   public loadTexture(device: GfxDevice, textureEntry: DebugTex): LoadedTexture | null {
     const tex = textureEntry.blp.get_texture_data();
     const canvases: HTMLCanvasElement[] = [];
+    let gfxTexture: GfxTexture =  makeSolidColorTexture2D(device, {
+      r: 0.5,
+      g: 0.5,
+      b: 0.5,
+      a: 1.0,
+    });
     if (textureEntry.blp.header.preferred_format === rust.WowPixelFormat.Dxt1) {
       const decoded = decompressBC({
         type: 'BC1',
@@ -165,13 +171,26 @@ export class DebugTexHolder extends TextureHolder<DebugTex> {
         pixels: tex,
       })
       const canvas = document.createElement('canvas');
+      gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.BC1_SRGB, textureEntry.width, textureEntry.height, 1));
       surfaceToCanvas(canvas, decoded);
+      canvases.push(canvas);
+    } else if (textureEntry.blp.header.preferred_format == rust.WowPixelFormat.Dxt3) {
+      const decoded = decompressBC({
+        type: 'BC2',
+        width: textureEntry.blp.header.width,
+        height: textureEntry.blp.header.height,
+        depth: 1,
+        flag: 'SRGB',
+        pixels: tex,
+      })
+      const canvas = document.createElement('canvas');
+      surfaceToCanvas(canvas, decoded);
+      gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.BC2_SRGB, textureEntry.width, textureEntry.height, 1));
       canvases.push(canvas);
     } else {
       console.log(`${textureEntry.name}: unknown texture ${textureEntry.blp.header.preferred_format}`)
     }
 
-    const gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.BC1_SRGB, textureEntry.width, textureEntry.height, 1));
     const viewerTexture: Viewer.Texture = { name: textureEntry.name, surfaces: canvases };
     return { viewerTexture, gfxTexture };
   }

@@ -1,7 +1,7 @@
 import * as Viewer from '../viewer.js';
 import { SceneContext } from '../SceneBase.js';
 import { rust } from '../rustlib.js';
-import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt } from '../../rust/pkg/index.js';
+import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage } from '../gfx/platform/GfxPlatform.js';
@@ -17,11 +17,14 @@ import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4 } from 'gl-matrix';
+import { CameraController } from '../Camera.js';
+import { TextureListHolder, Panel } from '../ui.js';
+import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
 
-const noclipSpaceFromHaloSpace = mat4.fromValues(
+const noclipSpaceFromWowSpace = mat4.fromValues(
     1, 0,  0, 0,
     0, 0, -1, 0,
     0, 1,  0, 0,
@@ -29,8 +32,67 @@ const noclipSpaceFromHaloSpace = mat4.fromValues(
 );
 
 const bindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: 1, numSamplers: 1 }, // ub_SceneParams
+    { numUniformBuffers: 1, numSamplers: 4 }, // ub_SceneParams
 ];
+
+class WorldProgram extends DeviceProgram {
+  public static a_Position = 0;
+  public static a_Normal = 1;
+  public static a_TexCoord = 2;
+  public static a_Color = 3;
+
+  public static ub_SceneParams = 0;
+  public static ub_ModelParams = 1;
+
+  public override both = `
+precision mediump float;
+
+layout(std140) uniform ub_SceneParams {
+    Mat4x4 u_Projection;
+    Mat4x4 u_ModelView;
+};
+
+layout(binding = 0) uniform sampler2D u_Texture0;
+layout(binding = 1) uniform sampler2D u_Texture1;
+layout(binding = 2) uniform sampler2D u_Texture2;
+layout(binding = 3) uniform sampler2D u_Texture3;
+
+varying vec2 v_LightIntensity;
+varying vec2 v_UV;
+varying vec3 v_Normal;
+varying vec4 v_Color;
+varying vec3 v_Binormal;
+varying vec3 v_Tangent;
+varying vec3 v_Position;
+
+#ifdef VERT
+layout(location = ${WorldProgram.a_Position}) attribute vec3 a_Position;
+layout(location = ${WorldProgram.a_Normal}) attribute vec3 a_Normal;
+layout(location = ${WorldProgram.a_TexCoord}) attribute vec2 a_TexCoord;
+layout(location = ${WorldProgram.a_Color}) attribute vec4 a_Color;
+
+void mainVS() {
+    const float t_ModelScale = 20.0;
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position * t_ModelScale, 1.0)));
+    vec3 t_LightDirection = normalize(vec3(.2, -1, .5));
+    v_UV = a_Position.xy;
+    v_Color = a_Color;
+    float t_LightIntensityF = dot(-a_Normal, t_LightDirection);
+    float t_LightIntensityB = dot( a_Normal, t_LightDirection);
+    v_LightIntensity = vec2(t_LightIntensityF, t_LightIntensityB);
+}
+#endif
+
+#ifdef FRAG
+void mainPS() {
+    float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
+    float t_LightTint = 0.3 * t_LightIntensity;
+    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
+    gl_FragColor = tex + vec4(t_LightTint, t_LightTint, t_LightTint, 0.0);
+}
+#endif
+`;
+}
 
 class ModelProgram extends DeviceProgram {
   public static a_Position = 0;
@@ -311,6 +373,166 @@ class ModelSceneDesc implements Viewer.SceneDesc {
   }
 }
 
+class ChunkRenderer {
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public world: World, public chunk: WowAdtChunkDescriptor, private textureCache: TextureCache) {
+  }
+
+  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+  }
+
+  public destroy(device: GfxDevice) {
+  }
+}
+
+class AdtRenderer {
+  private indexCount: number;
+  private vertexBuffer: GfxVertexBufferDescriptor;
+  private indexBuffer: GfxIndexBufferDescriptor;
+  private chunkRenderers: ChunkRenderer[];
+  private chunks: WowAdtChunkDescriptor[];
+
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public world: World, public adt: WowAdt, private textureCache: TextureCache, public inputLayout: GfxInputLayout) {
+    const renderResult = adt.get_render_result();
+    this.vertexBuffer = {
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
+      byteOffset: 0,
+    };
+    this.indexBuffer = {
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, renderResult.index_buffer.buffer),
+      byteOffset: 0,
+    };
+    this.chunks = renderResult.chunks;
+  }
+
+  private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
+    let mapping: (TextureMapping | null)[] = [null, null, null, null];
+    chunk.texture_layers.forEach((textureFileId, i) => {
+      const blp = this.world.blps.find(blp => blp.file_id == textureFileId);
+      if (!blp) {
+        throw new Error(`couldn't find matching blp for fileID ${textureFileId}`);
+      }
+      mapping[i] = this.textureCache.getTextureMapping(blp);
+    })
+    return mapping;
+  }
+
+  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+    const template = renderInstManager.pushTemplateRenderInst();
+    template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
+    this.chunks.forEach(chunk => {
+      const renderInst = renderInstManager.newRenderInst();
+      const textureMapping = this.getChunkTextureMapping(chunk);
+      renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
+      renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
+      renderInstManager.submitRenderInst(renderInst);
+    })
+    renderInstManager.popTemplateRenderInst();
+  }
+
+  public destroy(device: GfxDevice) {
+
+  }
+}
+
+class TerrainRenderer {
+  private inputLayout: GfxInputLayout;
+  public indexBuffers: GfxIndexBufferDescriptor[] = [];
+  private indexCounts: number[] = [];
+  public vertexBuffers: GfxVertexBufferDescriptor[] = [];
+  public adtRenderers: AdtRenderer[];
+
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public world: World, private textureCache: TextureCache) {
+      const adtVboInfo = rust.WowAdt.get_vbo_info();
+      const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+        { location: WorldProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+        { location: WorldProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: adtVboInfo.normal_offset, format: GfxFormat.F32_RGB, },
+        { location: WorldProgram.a_Color, bufferIndex: 0, bufferByteOffset: adtVboInfo.color_offset, format: GfxFormat.F32_RGBA, },
+      ];
+      const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+        { byteStride: adtVboInfo.stride, frequency: GfxVertexBufferFrequency.PerVertex },
+      ];
+      const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+      const cache = renderHelper.renderCache;
+      this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+
+      this.adtRenderers = this.world.adts.map(adt => new AdtRenderer(device, renderHelper, this.world, adt, textureCache, this.inputLayout));
+  }
+
+  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+    this.adtRenderers.forEach(adtRenderer => {
+      adtRenderer.prepareToRender(renderInstManager);
+    })
+  }
+
+  public destroy(device: GfxDevice) {
+    this.adtRenderers.forEach(adtRenderer => {
+      adtRenderer.destroy(device);
+    })
+  }
+}
+
+class WowAdtScene implements Viewer.SceneGfx {
+  private renderHelper: GfxRenderHelper;
+  private modelRenderers: ModelRenderer[];
+  private terrainRenderer: TerrainRenderer;
+  private program: GfxProgram;
+
+  constructor(device: GfxDevice, public world: World, public textureHolder: DebugTexHolder) {
+      this.renderHelper = new GfxRenderHelper(device);
+      const textureCache = new TextureCache(this.renderHelper.renderCache);
+      this.program = this.renderHelper.renderCache.createProgram(new WorldProgram());
+
+      this.terrainRenderer = new TerrainRenderer(device, this.renderHelper, this.world, textureCache);
+  }
+
+  private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
+    const template = this.renderHelper.pushTemplateRenderInst();
+    template.setBindingLayouts(bindingLayouts);
+    template.setGfxProgram(this.program);
+    template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
+
+    let offs = template.allocateUniformBuffer(ModelProgram.ub_SceneParams, 32);
+    const mapped = template.mapUniformBufferF32(ModelProgram.ub_SceneParams);
+    offs += fillMatrix4x4(mapped, offs, viewerInput.camera.projectionMatrix);
+    offs += fillMatrix4x4(mapped, offs, viewerInput.camera.viewMatrix);
+
+    this.terrainRenderer.prepareToRender(this.renderHelper.renderInstManager);
+
+    this.renderHelper.renderInstManager.popTemplateRenderInst();
+    this.renderHelper.prepareToRender();
+  }
+
+  render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
+      const renderInstManager = this.renderHelper.renderInstManager;
+
+      const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
+      const mainDepthDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.DepthStencil, viewerInput, standardFullClearRenderPassDescriptor);
+
+      const builder = this.renderHelper.renderGraph.newGraphBuilder();
+
+      const mainColorTargetID = builder.createRenderTargetID(mainColorDesc, 'Main Color');
+      const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
+      builder.pushPass((pass) => {
+        pass.setDebugName('Main');
+        pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+        pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
+        pass.exec((passRenderer) => {
+          renderInstManager.drawOnPassRenderer(passRenderer);
+        });
+      });
+      pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
+      builder.resolveRenderTargetToExternalTexture(mainColorTargetID, viewerInput.onscreenTexture);
+
+      this.prepareToRender(device, viewerInput);
+      this.renderHelper.renderGraph.execute(builder);
+      renderInstManager.resetRenderInsts();
+  }
+
+  destroy(device: GfxDevice): void {
+    this.terrainRenderer.destroy(device);
+  }
+}
+
 class World {
   public wdt: WowWdt;
   public blps: WowBlp[] = [];
@@ -321,10 +543,20 @@ class World {
   public async load(dataFetcher: DataFetcher) {
     this.wdt = rust.WowWdt.new(await fetchFileByID(this.fileId, dataFetcher));
     for (let fileIDs of this.wdt.get_loaded_map_data()) {
+      if (fileIDs.root_adt === 0) {
+        console.log('null ADTs?')
+        continue;
+      }
       // TODO handle obj1 (LOD) adts
       const adt = rust.WowAdt.new(await fetchFileByID(fileIDs.root_adt, dataFetcher));
       adt.append_obj_adt(await fetchFileByID(fileIDs.obj0_adt, dataFetcher));
       adt.append_tex_adt(await fetchFileByID(fileIDs.tex0_adt, dataFetcher));
+
+      const blpIds = adt.get_texture_file_ids();
+      for (let blpId of blpIds) {
+        const blp = rust.WowBlp.new(blpId, await fetchFileByID(blpId, dataFetcher));
+        this.blps.push(blp);
+      }
       this.adts.push(adt);
     }
   }
@@ -347,9 +579,17 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     console.log('done')
     const holder = new DebugTexHolder();
     let entries: DebugTex[] = [];
-
-    const d = new ModelSceneDesc('Kel-Thuzad throne', 204065);
-    return d.createScene(device, context);
+    for (let blp of wdt.blps) {
+      const texPath = getFilePath(blp.file_id);
+      entries.push({
+        name: texPath,
+        width: blp.header.width,
+        height: blp.header.height,
+        blp: blp,
+      });
+    }
+    holder.addTextures(device, entries);
+    return new WowAdtScene(device, wdt, holder);
   }
 }
 
@@ -363,6 +603,8 @@ const sceneDescs = [
 
     "WDTs",
     new WdtSceneDesc('Zul-Farak', 791169),
+    new WdtSceneDesc('Blackrock Depths', 780172),
+    new WdtSceneDesc('Alterac Valley', 790112),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
