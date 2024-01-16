@@ -41,9 +41,7 @@ impl Adt {
     }
 
     pub fn get_model_file_ids(&self) -> Vec<u32> {
-        self.doodads.iter()
-            .map(|doodad| doodad.name_id)
-            .collect()
+        self.doodads.iter().map(|doodad| doodad.name_id).collect()
     }
 
     pub fn append_obj_adt(&mut self, data: Vec<u8>) -> Result<(), String> {

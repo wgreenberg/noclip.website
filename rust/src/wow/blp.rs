@@ -62,7 +62,6 @@ pub struct BlpHeader {
 pub struct Blp {
     texture_data: Vec<u8>,
     pub header: BlpHeader,
-    pub file_id: u32,
 }
 
 #[wasm_bindgen(js_name = "WowBlpMipMetadata")]
@@ -73,14 +72,13 @@ pub struct BlpMipMetadata {
 
 #[wasm_bindgen(js_class = "WowBlp")]
 impl Blp {
-    pub fn new(file_id: u32, data: Vec<u8>) -> Result<Blp, String> {
+    pub fn new(data: Vec<u8>) -> Result<Blp, String> {
         let ((texture_data, _), header) = BlpHeader::from_bytes((&data, 0))
             .map_err(|e| format!("{:?}", e))?;
 
         Ok(Blp {
             texture_data: texture_data.to_vec(),
             header,
-            file_id,
         })
     }
 

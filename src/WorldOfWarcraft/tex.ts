@@ -92,16 +92,16 @@ export class TextureCache {
       });
     }
 
-    public getTexture(blp: WowBlp, debug = false, submap = 0): GfxTexture {
+    public getTexture(fileId: number, blp: WowBlp, debug = false, submap = 0): GfxTexture {
       if (debug) {
         return this.default2DTexture;
       }
 
-      if (this.textures.has(blp.file_id)) {
-        return this.textures.get(blp.file_id)!;
+      if (this.textures.has(fileId)) {
+        return this.textures.get(fileId)!;
       } else {
         const texture = makeTexture(this.renderCache.device, blp);
-        this.textures.set(blp.file_id, texture);
+        this.textures.set(fileId, texture);
         return texture;
       }
     }
@@ -118,9 +118,9 @@ export class TextureCache {
       });
     }
 
-    public getTextureMapping(blp: WowBlp, debug = false, submap = 0, samplerSettings: SamplerSettings = { wrap: true }): TextureMapping {
+    public getTextureMapping(fileId: number, blp: WowBlp, debug = false, submap = 0, samplerSettings: SamplerSettings = { wrap: true }): TextureMapping {
       const mapping = new TextureMapping();
-      mapping.gfxTexture = this.getTexture(blp, debug, submap);
+      mapping.gfxTexture = this.getTexture(fileId, blp, debug, submap);
       mapping.gfxSampler = this.getSampler(samplerSettings);
       return mapping;
     }

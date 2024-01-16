@@ -1,7 +1,7 @@
 import * as Viewer from '../viewer.js';
 import { SceneContext } from '../SceneBase.js';
 import { rust } from '../rustlib.js';
-import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor } from '../../rust/pkg/index.js';
+import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage } from '../gfx/platform/GfxPlatform.js';
@@ -145,46 +145,14 @@ void mainPS() {
 }
 
 class ModelRenderer {
-  public name: string;
-  private textureMapping: (TextureMapping | null)[] = nArray(2, () => null);
-  private vertexBuffer: GfxBuffer;
-  private indexBufferDescriptor: GfxIndexBufferDescriptor;
-  private indexBuffer: GfxBuffer;
-  private indexCount: number;
-  public vertexBufferDescriptors: GfxVertexBufferDescriptor[];
 
-  constructor(device: GfxDevice, private textureCache: TextureCache, private inputLayout: GfxInputLayout, public model: ModelData) {
-    this.name = model.m2.get_name();
-    let buf = model.m2.get_vertex_data();
-    // FIXME: handle multiple skins
-    let skinIndices = model.skins[0].get_indices();
-    this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, skinIndices.buffer);
-    this.indexCount = skinIndices.length;
-    this.indexBufferDescriptor = { buffer: this.indexBuffer, byteOffset: 0 };
-    this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, buf.buffer);
-    this.vertexBufferDescriptors = [
-      { buffer: this.vertexBuffer, byteOffset: 0, },
-    ];
+  constructor(device: GfxDevice, private textureCache: TextureCache, public model: ModelData, public doodads: WowDoodad[]) {
   }
 
   public prepareToRender(renderInstManager: GfxRenderInstManager): void {
-    const skin = this.model.skins[0];
-    const textureLookupTable = this.model.m2.get_texture_lookup_table();
-    for (let batch of skin.batches) {
-      const renderInst = renderInstManager.newRenderInst();
-      const submesh = skin.submeshes[batch.skin_submesh_index];
-      renderInst.setVertexInput(this.inputLayout, this.vertexBufferDescriptors, this.indexBufferDescriptor);
-      renderInst.drawIndexes(submesh.index_count, submesh.index_start);
-      const m2TextureIndex = textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
-      const blp = this.model.blps[m2TextureIndex];
-      const mapping = this.textureCache.getTextureMapping(blp);
-      renderInst.setSamplerBindingsFromTextureMappings([mapping]);
-      renderInstManager.submitRenderInst(renderInst);
-    }
   }
 
   public destroy(device: GfxDevice): void {
-    device.destroyBuffer(this.vertexBuffer);
   }
 }
 
@@ -230,8 +198,27 @@ function getFilePath(fileId: number): string {
   return _fileList!.getFilename(fileId);
 }
 
+type Constructor<T> = (data: Uint8Array) => T;
 
-async function fetchFileByID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
+let _fileCache: Map<number, any> = new Map();
+async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher, constructor: Constructor<T>): Promise<T> {
+  if (_fileCache.has(fileId)) {
+    return _fileCache.get(fileId);
+  }
+  const buf = await fetchDataByFileID(fileId, dataFetcher);
+  const file = constructor(buf);
+  _fileCache.set(fileId, file);
+  return file;
+}
+
+let _fetchedIds: {[key: number]: number} = {};
+async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
+  if (fileId in _fetchedIds) {
+    console.log(`dupe fetch (${_fetchedIds[fileId]} ${getFilePath(fileId)})`)
+    _fetchedIds[fileId]++;
+  } else {
+    _fetchedIds[fileId] = 1;
+  }
   const filePath = getFilePath(fileId);
   const buf = await dataFetcher.fetchData(`/wow/${filePath}`);
   return buf.createTypedArray(Uint8Array);
@@ -241,6 +228,7 @@ class ModelData {
   public m2: WowM2;
   public skins: WowSkin[] = [];
   public blps: WowBlp[] = [];
+  public blpIds: number[] = [];
 
   private vertexBuffer: GfxBuffer;
   private indexBuffer: GfxBuffer;
@@ -268,17 +256,15 @@ class ModelData {
   }
 
   public async load(dataFetcher: DataFetcher, device: GfxDevice): Promise<undefined> {
-    const m2Data = await fetchFileByID(this.fileId, dataFetcher);
-    this.m2 = rust.WowM2.new(m2Data);
+    this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
     for (let txid of this.m2.get_texture_ids()) {
-      const texData = await fetchFileByID(txid, dataFetcher);
-      const blp = rust.WowBlp.new(txid, texData);
+      const blp = await fetchFileByID(txid, dataFetcher, rust.WowBlp.new);
+      this.blpIds.push(txid);
       this.blps.push(blp);
     }
 
     for (let skid of this.m2.get_skin_ids()) {
-      const skinData = await fetchFileByID(skid, dataFetcher);
-      const skin = rust.WowSkin.new(skinData);
+      const skin = await fetchFileByID(skid, dataFetcher, rust.WowSkin.new);
       this.skins.push(skin);
     }
 
@@ -297,7 +283,8 @@ class ModelData {
       renderInst.drawIndexes(submesh.index_count, submesh.index_start);
       const m2TextureIndex = textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
       const blp = this.blps[m2TextureIndex];
-      const mapping = textureCache.getTextureMapping(blp);
+      const blpId = this.blpIds[m2TextureIndex];
+      const mapping = textureCache.getTextureMapping(blpId, blp);
       renderInst.setSamplerBindingsFromTextureMappings([mapping]);
     }
   }
@@ -345,11 +332,11 @@ class TerrainRenderer {
   private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
     let mapping: (TextureMapping | null)[] = [null, null, null, null];
     chunk.texture_layers.forEach((textureFileId, i) => {
-      const blp = this.world.blps.find(blp => blp.file_id == textureFileId);
+      const blp = this.world.blps.get(textureFileId);
       if (!blp) {
         throw new Error(`couldn't find matching blp for fileID ${textureFileId}`);
       }
-      mapping[i] = this.textureCache.getTextureMapping(blp);
+      mapping[i] = this.textureCache.getTextureMapping(textureFileId, blp);
     })
     return mapping;
   }
@@ -379,6 +366,7 @@ class TerrainRenderer {
 
 class WorldScene implements Viewer.SceneGfx {
   private terrainRenderer: TerrainRenderer;
+  private modelRenderers: ModelRenderer[] = [];
   private program: GfxProgram;
 
   constructor(device: GfxDevice, public world: World, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper) {
@@ -386,6 +374,9 @@ class WorldScene implements Viewer.SceneGfx {
     this.program = this.renderHelper.renderCache.createProgram(new TerrainProgram());
 
     this.terrainRenderer = new TerrainRenderer(device, this.renderHelper, this.world, textureCache);
+    for (let [modelId, model] of world.models.entries()) {
+      //this.modelRenderers.push(new ModelRenderer(device, textureCache, model));
+    }
   }
 
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
@@ -438,34 +429,36 @@ class WorldScene implements Viewer.SceneGfx {
 
 class World {
   public wdt: WowWdt;
-  public blps: WowBlp[] = [];
+  public blps: Map<number, WowBlp>;
   public adts: WowAdt[] = [];
-  public models: ModelData[] = [];
+  public models: Map<number, ModelData>;
 
   constructor(public fileId: number) {
+    this.blps = new Map();
+    this.models = new Map();
   }
 
   public async load(dataFetcher: DataFetcher, device: GfxDevice, renderHelper: GfxRenderHelper) {
-    this.wdt = rust.WowWdt.new(await fetchFileByID(this.fileId, dataFetcher));
+    this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
     for (let fileIDs of this.wdt.get_loaded_map_data()) {
       if (fileIDs.root_adt === 0) {
         console.log('null ADTs?')
         continue;
       }
       // TODO handle obj1 (LOD) adts
-      const adt = rust.WowAdt.new(await fetchFileByID(fileIDs.root_adt, dataFetcher));
-      adt.append_obj_adt(await fetchFileByID(fileIDs.obj0_adt, dataFetcher));
-      adt.append_tex_adt(await fetchFileByID(fileIDs.tex0_adt, dataFetcher));
+      const adt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
+      adt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
+      adt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
       const blpIds = adt.get_texture_file_ids();
       for (let blpId of blpIds) {
-        const blp = rust.WowBlp.new(blpId, await fetchFileByID(blpId, dataFetcher));
-        this.blps.push(blp);
+        const blp = await fetchFileByID(blpId, dataFetcher, rust.WowBlp.new);
+        this.blps.set(blpId, blp);
       }
 
       const modelIds = adt.get_model_file_ids();
       for (let modelId of modelIds) {
-        this.models.push(await ModelData.create(modelId, device, renderHelper, dataFetcher))
+        this.models.set(modelId, await ModelData.create(modelId, device, renderHelper, dataFetcher));
       }
       this.adts.push(adt);
     }
@@ -490,8 +483,8 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     console.log('done')
     const holder = new DebugTexHolder();
     let entries: DebugTex[] = [];
-    for (let blp of wdt.blps) {
-      const texPath = getFilePath(blp.file_id);
+    for (let [blpId, blp] of wdt.blps) {
+      const texPath = getFilePath(blpId);
       entries.push({
         name: texPath,
         width: blp.header.width,
