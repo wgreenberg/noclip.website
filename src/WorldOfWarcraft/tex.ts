@@ -34,7 +34,9 @@ function getImageFormatByteLength(fmt: GfxFormat, width: number, height: number)
 function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
   const format = getTextureFormat(blp.header.preferred_format);
   const mipMetadata = blp.get_mip_metadata();
-  const mipmapCount = mipMetadata.length;
+  const texData = blp.get_texture_data();
+  //const mipmapCount = mipMetadata.length - 1;
+  const mipmapCount = 1;
 
   const dimension = GfxTextureDimension.n2D;
   let depth = 1;
@@ -57,7 +59,6 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
   for (let i = 0; i < mipmapCount; i++) {
     const sliceByteLength = getImageFormatByteLength(format, w, h);
 
-    const texData = blp.get_texture_data();
     let buffer = new ArrayBufferSlice(texData.buffer, byteOffset, sliceByteLength * depth);
 
     let levelData: ArrayBufferView;
