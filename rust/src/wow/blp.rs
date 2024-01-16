@@ -102,4 +102,17 @@ impl Blp {
             x => Err(format!("unsupported texture format combination: {:?}", x)),
         }
     }
+
+    pub fn get_mip_metadata(&self) -> Vec<BlpMipMetadata> {
+        let mut metadata = Vec::new();
+        for i in 0..16 {
+            if self.header.mip_offsets[i] != 0 {
+                metadata.push(BlpMipMetadata {
+                    offset: self.header.mip_offsets[i],
+                    size: self.header.mip_sizes[i],
+                })
+            }
+        }
+        metadata
+    }
 }

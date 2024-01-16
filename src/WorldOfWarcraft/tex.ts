@@ -33,7 +33,8 @@ function getImageFormatByteLength(fmt: GfxFormat, width: number, height: number)
 
 function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
   const format = getTextureFormat(blp.header.preferred_format);
-  const mipmapCount = 1; // FIXME
+  const mipMetadata = blp.get_mip_metadata();
+  const mipmapCount = mipMetadata.length;
 
   const dimension = GfxTextureDimension.n2D;
   let depth = 1;

@@ -1,14 +1,14 @@
-use deku::{prelude::*, bitvec::BitView};
+use deku::prelude::*;
 use deku::ctx::ByteSize;
 use wasm_bindgen::prelude::*;
 
 use super::common::{Chunk, ChunkedData, Vec3, AABBox};
 
-#[wasm_bindgen(js_name = "WowAdt")]
+#[wasm_bindgen(js_name = "WowAdt", getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct Adt {
     map_chunks: Vec<MapChunk>,
-    doodads: Vec<Doodad>,
+    pub doodads: Vec<Doodad>,
     height_tex_ids: Option<HeightTexIds>,
     diffuse_tex_ids: Option<DiffuseTexIds>,
 }
@@ -38,6 +38,12 @@ impl Adt {
         self.diffuse_tex_ids.as_ref().map(|tex| ids.extend(&tex.file_data_ids));
         ids.retain(|&id| id != 0);
         ids
+    }
+
+    pub fn get_model_file_ids(&self) -> Vec<u32> {
+        self.doodads.iter()
+            .map(|doodad| doodad.name_id)
+            .collect()
     }
 
     pub fn append_obj_adt(&mut self, data: Vec<u8>) -> Result<(), String> {
@@ -363,6 +369,7 @@ pub struct HeightTexIds {
     pub file_data_ids: Vec<u32>
 }
 
+#[wasm_bindgen(js_name = "WowDoodad")]
 #[derive(Debug, DekuRead, Clone)]
 pub struct Doodad {
     pub name_id: u32,
@@ -370,6 +377,7 @@ pub struct Doodad {
     pub position: Vec3,
     pub rotation: Vec3,
     pub scale: u16,
+    pub flags: u16
 }
 
 #[derive(Debug, DekuRead)]

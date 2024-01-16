@@ -7,7 +7,7 @@ import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage } from '../gfx/platform/GfxPlatform.js';
 import { GfxFormat } from '../gfx/platform/GfxPlatformFormat.js';
 import { GfxBuffer, GfxInputLayout, GfxProgram } from '../gfx/platform/GfxPlatformImpl.js';
-import { GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
+import { GfxRenderInst, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
 import { makeStaticDataBuffer } from '../gfx/helpers/BufferHelpers.js';
 import { makeBackbufferDescSimple, standardFullClearRenderPassDescriptor, pushAntialiasingPostProcessPass } from '../gfx/helpers/RenderGraphHelpers.js';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
@@ -35,11 +35,10 @@ const bindingLayouts: GfxBindingLayoutDescriptor[] = [
     { numUniformBuffers: 1, numSamplers: 4 }, // ub_SceneParams
 ];
 
-class WorldProgram extends DeviceProgram {
+class TerrainProgram extends DeviceProgram {
   public static a_Position = 0;
   public static a_Normal = 1;
-  public static a_TexCoord = 2;
-  public static a_Color = 3;
+  public static a_Color = 2;
 
   public static ub_SceneParams = 0;
   public static ub_ModelParams = 1;
@@ -66,10 +65,9 @@ varying vec3 v_Tangent;
 varying vec3 v_Position;
 
 #ifdef VERT
-layout(location = ${WorldProgram.a_Position}) attribute vec3 a_Position;
-layout(location = ${WorldProgram.a_Normal}) attribute vec3 a_Normal;
-layout(location = ${WorldProgram.a_TexCoord}) attribute vec2 a_TexCoord;
-layout(location = ${WorldProgram.a_Color}) attribute vec4 a_Color;
+layout(location = ${TerrainProgram.a_Position}) attribute vec3 a_Position;
+layout(location = ${TerrainProgram.a_Normal}) attribute vec3 a_Normal;
+layout(location = ${TerrainProgram.a_Color}) attribute vec4 a_Color;
 
 void mainVS() {
     const float t_ModelScale = 20.0;
@@ -155,7 +153,7 @@ class ModelRenderer {
   private indexCount: number;
   public vertexBufferDescriptors: GfxVertexBufferDescriptor[];
 
-  constructor(device: GfxDevice, private textureCache: TextureCache, private inputLayout: GfxInputLayout, public model: WowModel) {
+  constructor(device: GfxDevice, private textureCache: TextureCache, private inputLayout: GfxInputLayout, public model: ModelData) {
     this.name = model.m2.get_name();
     let buf = model.m2.get_vertex_data();
     // FIXME: handle multiple skins
@@ -188,83 +186,6 @@ class ModelRenderer {
   public destroy(device: GfxDevice): void {
     device.destroyBuffer(this.vertexBuffer);
   }
-}
-
-class WowModelScene implements Viewer.SceneGfx {
-    private renderHelper: GfxRenderHelper;
-    private modelRenderers: ModelRenderer[];
-    private inputLayout: GfxInputLayout;
-    private program: GfxProgram;
-
-    constructor(device: GfxDevice, public model: WowModel, public textureHolder: DebugTexHolder) {
-      this.renderHelper = new GfxRenderHelper(device);
-      const textureCache = new TextureCache(this.renderHelper.renderCache);
-      this.program = this.renderHelper.renderCache.createProgram(new ModelProgram());
-
-      const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-        { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
-        { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
-        { location: ModelProgram.a_TexCoord, bufferIndex: 0, bufferByteOffset: 32, format: GfxFormat.F32_RG, },
-      ];
-      const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-        { byteStride: rust.WowM2.get_vertex_stride(), frequency: GfxVertexBufferFrequency.PerVertex, },
-      ];
-      const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
-      const cache = this.renderHelper.renderCache;
-
-      this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-      this.modelRenderers = [new ModelRenderer(device, textureCache, this.inputLayout, this.model)];
-    }
-
-    private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
-      const template = this.renderHelper.pushTemplateRenderInst();
-      template.setBindingLayouts(bindingLayouts);
-      template.setGfxProgram(this.program);
-      template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
-
-      let offs = template.allocateUniformBuffer(ModelProgram.ub_SceneParams, 32);
-      const mapped = template.mapUniformBufferF32(ModelProgram.ub_SceneParams);
-      offs += fillMatrix4x4(mapped, offs, viewerInput.camera.projectionMatrix);
-      offs += fillMatrix4x4(mapped, offs, viewerInput.camera.viewMatrix);
-
-      for (let i = 0; i < this.modelRenderers.length; i++)
-        this.modelRenderers[i].prepareToRender(this.renderHelper.renderInstManager);
-
-      this.renderHelper.renderInstManager.popTemplateRenderInst();
-      this.renderHelper.prepareToRender();
-    }
-
-    public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
-      const renderInstManager = this.renderHelper.renderInstManager;
-
-      const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
-      const mainDepthDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.DepthStencil, viewerInput, standardFullClearRenderPassDescriptor);
-
-      const builder = this.renderHelper.renderGraph.newGraphBuilder();
-
-      const mainColorTargetID = builder.createRenderTargetID(mainColorDesc, 'Main Color');
-      const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
-      builder.pushPass((pass) => {
-        pass.setDebugName('Main');
-        pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
-        pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
-        pass.exec((passRenderer) => {
-          renderInstManager.drawOnPassRenderer(passRenderer);
-        });
-      });
-      pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
-      builder.resolveRenderTargetToExternalTexture(mainColorTargetID, viewerInput.onscreenTexture);
-
-      this.prepareToRender(device, viewerInput);
-      this.renderHelper.renderGraph.execute(builder);
-      renderInstManager.resetRenderInsts();
-    }
-    
-    public destroy(device: GfxDevice): void {
-      this.modelRenderers.forEach((modelRenderer) => {
-        modelRenderer.destroy(device);
-      });
-    }
 }
 
 class FileList {
@@ -316,17 +237,37 @@ async function fetchFileByID(fileId: number, dataFetcher: DataFetcher): Promise<
   return buf.createTypedArray(Uint8Array);
 }
 
-class WowModel {
+class ModelData {
   public m2: WowM2;
   public skins: WowSkin[] = [];
   public blps: WowBlp[] = [];
 
-  constructor(public fileId: number) {
-    this.skins = [];
-    this.blps = [];
+  private vertexBuffer: GfxBuffer;
+  private indexBuffer: GfxBuffer;
+  private inputLayout: GfxInputLayout;
+  private vertexBufferDescriptors: GfxVertexBufferDescriptor[];
+  private indexBufferDescriptor: GfxIndexBufferDescriptor;
+
+  static async create(fileId: number, device: GfxDevice, renderHelper: GfxRenderHelper, dataFetcher: DataFetcher): Promise<ModelData> {
+    const model = new ModelData(fileId, renderHelper);
+    await model.load(dataFetcher, device);
+    return model;
   }
 
-  public async load(dataFetcher: DataFetcher): Promise<undefined> {
+  constructor(public fileId: number, renderHelper: GfxRenderHelper) {
+    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+      { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+      { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
+      { location: ModelProgram.a_TexCoord, bufferIndex: 0, bufferByteOffset: 32, format: GfxFormat.F32_RG, },
+    ];
+    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+      { byteStride: rust.WowM2.get_vertex_stride(), frequency: GfxVertexBufferFrequency.PerVertex, },
+    ];
+    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+    this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+  }
+
+  public async load(dataFetcher: DataFetcher, device: GfxDevice): Promise<undefined> {
     const m2Data = await fetchFileByID(this.fileId, dataFetcher);
     this.m2 = rust.WowM2.new(m2Data);
     for (let txid of this.m2.get_texture_ids()) {
@@ -335,73 +276,70 @@ class WowModel {
       this.blps.push(blp);
     }
 
-    const textureLookupTable = this.m2.get_texture_lookup_table();
     for (let skid of this.m2.get_skin_ids()) {
       const skinData = await fetchFileByID(skid, dataFetcher);
       const skin = rust.WowSkin.new(skinData);
       this.skins.push(skin);
     }
-  }
-}
 
-class ModelSceneDesc implements Viewer.SceneDesc {
-  public id: string;
-
-  constructor(public name: string, public fileId: number) {
-    this.id = fileId.toString();
+    this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.m2.get_vertex_data().buffer);
+    // FIXME: handle multiple skins
+    let skinIndices = this.skins[0].get_indices();
+    this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, skinIndices.buffer);
   }
 
-  public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
-    const dataFetcher = context.dataFetcher;
-    await initFileList(dataFetcher);
-    rust.init_panic_hook();
-    const model = new WowModel(this.fileId);
-    const holder = new DebugTexHolder();
-    await model.load(dataFetcher);
-    let entries: DebugTex[] = [];
-    for (let blp of model.blps) {
-      const texPath = getFilePath(blp.file_id);
-      entries.push({
-        name: texPath,
-        width: blp.header.width,
-        height: blp.header.height,
-        blp: blp,
-      });
+  public setOnRenderInst(renderInst: GfxRenderInst, textureCache: TextureCache): void {
+    const skin = this.skins[0];
+    const textureLookupTable = this.m2.get_texture_lookup_table();
+    for (let batch of skin.batches) {
+      const submesh = skin.submeshes[batch.skin_submesh_index];
+      renderInst.setVertexInput(this.inputLayout, this.vertexBufferDescriptors, this.indexBufferDescriptor);
+      renderInst.drawIndexes(submesh.index_count, submesh.index_start);
+      const m2TextureIndex = textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
+      const blp = this.blps[m2TextureIndex];
+      const mapping = textureCache.getTextureMapping(blp);
+      renderInst.setSamplerBindingsFromTextureMappings([mapping]);
     }
-    holder.addTextures(device, entries);
-    return new WowModelScene(device, model, holder);
+  }
+  
+  public destroy(device: GfxDevice): void {
+    device.destroyBuffer(this.vertexBuffer);
+    device.destroyBuffer(this.indexBuffer);
   }
 }
 
-class ChunkRenderer {
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public world: World, public chunk: WowAdtChunkDescriptor, private textureCache: TextureCache) {
-  }
+class TerrainRenderer {
+  private inputLayout: GfxInputLayout;
+  public indexBuffers: GfxIndexBufferDescriptor[] = [];
+  public vertexBuffers: GfxVertexBufferDescriptor[] = [];
+  public adtChunks: WowAdtChunkDescriptor[][] = [];
 
-  public prepareToRender(renderInstManager: GfxRenderInstManager) {
-  }
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public world: World, private textureCache: TextureCache) {
+    const adtVboInfo = rust.WowAdt.get_vbo_info();
+    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+      { location: TerrainProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+      { location: TerrainProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: adtVboInfo.normal_offset, format: GfxFormat.F32_RGB, },
+      { location: TerrainProgram.a_Color, bufferIndex: 0, bufferByteOffset: adtVboInfo.color_offset, format: GfxFormat.F32_RGBA, },
+    ];
+    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+      { byteStride: adtVboInfo.stride, frequency: GfxVertexBufferFrequency.PerVertex },
+    ];
+    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+    const cache = renderHelper.renderCache;
+    this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
 
-  public destroy(device: GfxDevice) {
-  }
-}
-
-class AdtRenderer {
-  private indexCount: number;
-  private vertexBuffer: GfxVertexBufferDescriptor;
-  private indexBuffer: GfxIndexBufferDescriptor;
-  private chunkRenderers: ChunkRenderer[];
-  private chunks: WowAdtChunkDescriptor[];
-
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public world: World, public adt: WowAdt, private textureCache: TextureCache, public inputLayout: GfxInputLayout) {
-    const renderResult = adt.get_render_result();
-    this.vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
-      byteOffset: 0,
-    };
-    this.indexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, renderResult.index_buffer.buffer),
-      byteOffset: 0,
-    };
-    this.chunks = renderResult.chunks;
+    this.world.adts.forEach(adt => {
+      const renderResult = adt.get_render_result();
+      this.vertexBuffers.push({
+        buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
+        byteOffset: 0,
+      });
+      this.indexBuffers.push({
+        buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, renderResult.index_buffer.buffer),
+        byteOffset: 0,
+      });
+      this.adtChunks.push(renderResult.chunks);
+    })
   }
 
   private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
@@ -417,72 +355,37 @@ class AdtRenderer {
   }
 
   public prepareToRender(renderInstManager: GfxRenderInstManager) {
-    const template = renderInstManager.pushTemplateRenderInst();
-    template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
-    this.chunks.forEach(chunk => {
-      const renderInst = renderInstManager.newRenderInst();
-      const textureMapping = this.getChunkTextureMapping(chunk);
-      renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
-      renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
-      renderInstManager.submitRenderInst(renderInst);
-    })
-    renderInstManager.popTemplateRenderInst();
+    for (let i=0; i<this.world.adts.length; i++) {
+      const template = renderInstManager.pushTemplateRenderInst();
+      template.setVertexInput(this.inputLayout, [this.vertexBuffers[i]], this.indexBuffers[i]);
+      this.adtChunks[i].forEach(chunk => {
+        const renderInst = renderInstManager.newRenderInst();
+        const textureMapping = this.getChunkTextureMapping(chunk);
+        renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
+        renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
+        renderInstManager.submitRenderInst(renderInst);
+      })
+      renderInstManager.popTemplateRenderInst();
+    }
   }
 
   public destroy(device: GfxDevice) {
-
+    for (let i=0; i<this.world.adts.length; i++) {
+      device.destroyBuffer(this.vertexBuffers[i].buffer);
+      device.destroyBuffer(this.indexBuffers[i].buffer);
+    }
   }
 }
 
-class TerrainRenderer {
-  private inputLayout: GfxInputLayout;
-  public indexBuffers: GfxIndexBufferDescriptor[] = [];
-  private indexCounts: number[] = [];
-  public vertexBuffers: GfxVertexBufferDescriptor[] = [];
-  public adtRenderers: AdtRenderer[];
-
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public world: World, private textureCache: TextureCache) {
-      const adtVboInfo = rust.WowAdt.get_vbo_info();
-      const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-        { location: WorldProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
-        { location: WorldProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: adtVboInfo.normal_offset, format: GfxFormat.F32_RGB, },
-        { location: WorldProgram.a_Color, bufferIndex: 0, bufferByteOffset: adtVboInfo.color_offset, format: GfxFormat.F32_RGBA, },
-      ];
-      const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-        { byteStride: adtVboInfo.stride, frequency: GfxVertexBufferFrequency.PerVertex },
-      ];
-      const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
-      const cache = renderHelper.renderCache;
-      this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-
-      this.adtRenderers = this.world.adts.map(adt => new AdtRenderer(device, renderHelper, this.world, adt, textureCache, this.inputLayout));
-  }
-
-  public prepareToRender(renderInstManager: GfxRenderInstManager) {
-    this.adtRenderers.forEach(adtRenderer => {
-      adtRenderer.prepareToRender(renderInstManager);
-    })
-  }
-
-  public destroy(device: GfxDevice) {
-    this.adtRenderers.forEach(adtRenderer => {
-      adtRenderer.destroy(device);
-    })
-  }
-}
-
-class WowAdtScene implements Viewer.SceneGfx {
-  private renderHelper: GfxRenderHelper;
-  private modelRenderers: ModelRenderer[];
+class WorldScene implements Viewer.SceneGfx {
   private terrainRenderer: TerrainRenderer;
   private program: GfxProgram;
 
-  constructor(device: GfxDevice, public world: World, public textureHolder: DebugTexHolder) {
-      this.renderHelper = new GfxRenderHelper(device);
-      const textureCache = new TextureCache(this.renderHelper.renderCache);
-      this.program = this.renderHelper.renderCache.createProgram(new WorldProgram());
+  constructor(device: GfxDevice, public world: World, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper) {
+    const textureCache = new TextureCache(this.renderHelper.renderCache);
+    this.program = this.renderHelper.renderCache.createProgram(new TerrainProgram());
 
-      this.terrainRenderer = new TerrainRenderer(device, this.renderHelper, this.world, textureCache);
+    this.terrainRenderer = new TerrainRenderer(device, this.renderHelper, this.world, textureCache);
   }
 
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
@@ -503,29 +406,29 @@ class WowAdtScene implements Viewer.SceneGfx {
   }
 
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
-      const renderInstManager = this.renderHelper.renderInstManager;
+    const renderInstManager = this.renderHelper.renderInstManager;
 
-      const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
-      const mainDepthDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.DepthStencil, viewerInput, standardFullClearRenderPassDescriptor);
+    const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
+    const mainDepthDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.DepthStencil, viewerInput, standardFullClearRenderPassDescriptor);
 
-      const builder = this.renderHelper.renderGraph.newGraphBuilder();
+    const builder = this.renderHelper.renderGraph.newGraphBuilder();
 
-      const mainColorTargetID = builder.createRenderTargetID(mainColorDesc, 'Main Color');
-      const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
-      builder.pushPass((pass) => {
-        pass.setDebugName('Main');
-        pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
-        pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
-        pass.exec((passRenderer) => {
-          renderInstManager.drawOnPassRenderer(passRenderer);
-        });
+    const mainColorTargetID = builder.createRenderTargetID(mainColorDesc, 'Main Color');
+    const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
+    builder.pushPass((pass) => {
+      pass.setDebugName('Main');
+      pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+      pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
+      pass.exec((passRenderer) => {
+        renderInstManager.drawOnPassRenderer(passRenderer);
       });
-      pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
-      builder.resolveRenderTargetToExternalTexture(mainColorTargetID, viewerInput.onscreenTexture);
+    });
+    pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
+    builder.resolveRenderTargetToExternalTexture(mainColorTargetID, viewerInput.onscreenTexture);
 
-      this.prepareToRender(device, viewerInput);
-      this.renderHelper.renderGraph.execute(builder);
-      renderInstManager.resetRenderInsts();
+    this.prepareToRender(device, viewerInput);
+    this.renderHelper.renderGraph.execute(builder);
+    renderInstManager.resetRenderInsts();
   }
 
   destroy(device: GfxDevice): void {
@@ -537,10 +440,12 @@ class World {
   public wdt: WowWdt;
   public blps: WowBlp[] = [];
   public adts: WowAdt[] = [];
+  public models: ModelData[] = [];
+
   constructor(public fileId: number) {
   }
 
-  public async load(dataFetcher: DataFetcher) {
+  public async load(dataFetcher: DataFetcher, device: GfxDevice, renderHelper: GfxRenderHelper) {
     this.wdt = rust.WowWdt.new(await fetchFileByID(this.fileId, dataFetcher));
     for (let fileIDs of this.wdt.get_loaded_map_data()) {
       if (fileIDs.root_adt === 0) {
@@ -557,6 +462,11 @@ class World {
         const blp = rust.WowBlp.new(blpId, await fetchFileByID(blpId, dataFetcher));
         this.blps.push(blp);
       }
+
+      const modelIds = adt.get_model_file_ids();
+      for (let modelId of modelIds) {
+        this.models.push(await ModelData.create(modelId, device, renderHelper, dataFetcher))
+      }
       this.adts.push(adt);
     }
   }
@@ -571,11 +481,12 @@ class WdtSceneDesc implements Viewer.SceneDesc {
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
+    const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
     const wdt = new World(this.fileId);
     console.log('loading wdt')
-    await wdt.load(dataFetcher);
+    await wdt.load(dataFetcher, device, renderHelper);
     console.log('done')
     const holder = new DebugTexHolder();
     let entries: DebugTex[] = [];
@@ -589,22 +500,19 @@ class WdtSceneDesc implements Viewer.SceneDesc {
       });
     }
     holder.addTextures(device, entries);
-    return new WowAdtScene(device, wdt, holder);
+    return new WorldScene(device, wdt, holder, renderHelper);
   }
 }
 
 const sceneDescs = [
-    "Models",
-    new ModelSceneDesc('Arathi farmhouse', 203656),
-    new ModelSceneDesc('Kel-Thuzad throne', 204065),
-    new ModelSceneDesc('Threshadon corpse', 201573),
-    new ModelSceneDesc('Darkshore Glaivemaster', 201531),
-    new ModelSceneDesc('Windmill', 200566),
-
-    "WDTs",
+    "Instances",
     new WdtSceneDesc('Zul-Farak', 791169),
     new WdtSceneDesc('Blackrock Depths', 780172),
     new WdtSceneDesc('Alterac Valley', 790112),
+    new WdtSceneDesc('pvp 3', 790291),
+    new WdtSceneDesc('pvp 4', 790377),
+    new WdtSceneDesc('pvp 5', 790469),
+    new WdtSceneDesc('Scholomance', 790713),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
