@@ -1,0 +1,128 @@
+use deku::{prelude::*, ctx::ByteSize};
+use wasm_bindgen::prelude::*;
+
+use crate::wow::common::ChunkedData;
+
+use super::common::{Argb, AABBox, Vec3, Quat};
+
+#[wasm_bindgen(js_name = "WowWmoHeader")]
+#[derive(DekuRead, Debug, Copy, Clone)]
+pub struct WmoHeader {
+    pub num_textures: u32,
+    pub num_groups: u32,
+    pub num_portals: u32,
+    pub num_lights: u32,
+    pub num_doodad_names: u32,
+    pub num_doodad_defs: u32,
+    pub num_doodad_sets: u32,
+    pub ambient_color: Argb,
+    #[deku(pad_bytes_after = "0x1c")]
+    pub wmo_id: u32,
+    pub bounding_box: AABBox,
+    pub flags: u16,
+    pub num_lod: u16,
+}
+
+#[wasm_bindgen(js_name = "WowWmo", getter_with_clone)]
+#[derive(Debug, Clone)]
+pub struct Wmo {
+    pub header: WmoHeader,
+    pub textures: Vec<WmoTextures>,
+    pub group_infos: Vec<GroupInfo>,
+    pub doodad_defs: Vec<DoodadDef>,
+    pub doodad_file_ids: Vec<u32>,
+    pub fogs: Vec<Fog>,
+}
+
+#[wasm_bindgen(js_class = "WowWmo")]
+impl Wmo {
+    pub fn new(data: Vec<u8>) -> Result<Wmo, String> {
+        let mut chunked_data = ChunkedData::new(&data);
+        let (mver, _) = chunked_data.next().unwrap();
+        assert_eq!(mver.magic_str(), "REVM");
+        let (mhdr, mhdr_data) = chunked_data.next().unwrap();
+        let header: WmoHeader = mhdr.parse(mhdr_data)?;
+        let mut momt: Option<Vec<WmoTextures>> = None;
+        let mut mogi: Option<Vec<GroupInfo>> = None;
+        let mut modd: Option<Vec<DoodadDef>> = None;
+        let mut mfog: Option<Vec<Fog>> = None;
+        let mut modi: Option<DoodadIds> = None;
+        for (chunk, chunk_data) in &mut chunked_data {
+            match &chunk.magic {
+                b"TMOM" => momt = Some(chunk.parse_array(chunk_data, 0x40)?),
+                b"IGOM" => mogi = Some(chunk.parse_array(chunk_data, 0x20)?),
+                b"DDOM" => modd = Some(chunk.parse_array(chunk_data, 40)?),
+                b"GOFM" => mfog = Some(chunk.parse_array(chunk_data, 48)?),
+                b"IDOM" => modi = Some(chunk.parse_with_byte_size(chunk_data)?),
+                _ => println!("skipping {} chunk", chunk.magic_str()),
+            }
+        }
+        Ok(Wmo {
+            header,
+            textures: momt.ok_or("WMO file didn't have MOMT chunk")?,
+            group_infos: mogi.ok_or("WMO file didn't have MOGI chunk")?,
+            doodad_defs: modd.ok_or("WMO file didn't have MODD chunk")?,
+            doodad_file_ids: modi.ok_or("WMO file didn't have MODI chunk")?.file_ids,
+            fogs: mfog.ok_or("WMO file didn't have MFOG chunk")?,
+        })
+    }
+}
+
+#[derive(DekuRead, Debug)]
+#[deku(ctx = "ByteSize(size): ByteSize")]
+pub struct DoodadIds {
+    #[deku(count = "size / 4")]
+    pub file_ids: Vec<u32>,
+}
+
+#[wasm_bindgen(js_name = "WowWmoFog")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct Fog {
+    pub flags: u32,
+    pub position: Vec3,
+    pub smaller_radius: f32,
+    pub larger_radius: f32,
+    pub fog_end: f32,
+    pub fog_start_scalar: f32,
+    pub fog_color: Argb,
+    pub uw_fog_end: f32,
+    pub uw_fog_start_scalar: f32,
+    pub uw_fog_color: Argb,
+}
+
+#[wasm_bindgen(js_name = "WowDoodadDef")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct DoodadDef {
+    pub name_index: u32,
+    pub flags: u32,
+    pub position: Vec3,
+    pub orientation: Quat,
+    pub scale: f32,
+    pub color: Argb, // BRGRA
+}
+
+#[wasm_bindgen(js_name = "WowWmoGroupInfo")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct GroupInfo {
+    pub flags: u32,
+    pub bounding_box: AABBox,
+    pub name_offset: i32, // offset in the MOGN chunk
+}
+
+#[wasm_bindgen(js_name = "WowWmoTextures")]
+#[derive(DekuRead, Debug, Clone, Copy)]
+pub struct WmoTextures {
+    pub flags: u32,
+    pub shader_index: u32,
+    pub blend_mode: u32,
+    pub texture_1: u32,
+    pub sidn_color: Argb,
+    pub frame_sidn_color: Argb,
+    pub texture_2: u32,
+    pub diff_color: Argb,
+    pub ground_type: u32,
+    pub texture_3: u32,
+    pub color_2: Argb,
+    pub flags_2: u32,
+    runtime_data: [u32; 4],
+}
