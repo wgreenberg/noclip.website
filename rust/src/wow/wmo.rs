@@ -26,7 +26,7 @@ pub struct WmoHeader {
 #[derive(Debug, Clone)]
 pub struct Wmo {
     pub header: WmoHeader,
-    pub textures: Vec<WmoTextures>,
+    pub textures: Vec<WmoMaterial>,
     pub group_infos: Vec<GroupInfo>,
     pub group_file_ids: Vec<u32>,
     pub doodad_defs: Vec<DoodadDef>,
@@ -43,7 +43,7 @@ impl Wmo {
         let (mhdr, mhdr_data) = chunked_data.next().unwrap();
         assert_eq!(mhdr.magic_str(), "DHOM");
         let header: WmoHeader = mhdr.parse(mhdr_data)?;
-        let mut momt: Option<Vec<WmoTextures>> = None;
+        let mut momt: Option<Vec<WmoMaterial>> = None;
         let mut mogi: Option<Vec<GroupInfo>> = None;
         let mut modd: Option<Vec<DoodadDef>> = None;
         let mut mfog: Option<Vec<Fog>> = None;
@@ -122,7 +122,7 @@ impl WmoGroup {
             normals: normals.ok_or("WMO group didn't have normals")?,
             uvs: uvs.ok_or("WMO group didn't have uvs")?,
             batches: batches.ok_or("WMO group didn't have material batches")?,
-            doodad_refs: doodad_refs.ok_or("WMO group didn't have doodad refs")?,
+            doodad_refs: doodad_refs.unwrap_or(vec![]),
         })
     }
 }
@@ -133,10 +133,9 @@ pub struct MaterialBatch {
     unknown: [u8; 0xA],
     pub material_id_large: u16,
     pub start_index: u32,
-    pub count: u16,
-    pub min_index: u16,
-    pub max_index: u16,
-    flag_unknown: u8,
+    pub index_count: u16,
+    pub first_vertex: u16,
+    pub last_vertex: u16,
     pub use_material_id_large: u8,
     pub material_id: u8,
 }
@@ -208,9 +207,9 @@ pub struct GroupInfo {
     pub name_offset: i32, // offset in the MOGN chunk
 }
 
-#[wasm_bindgen(js_name = "WowWmoTextures")]
+#[wasm_bindgen(js_name = "WowWmoMaterial")]
 #[derive(DekuRead, Debug, Clone, Copy)]
-pub struct WmoTextures {
+pub struct WmoMaterial {
     pub flags: u32,
     pub shader_index: u32,
     pub blend_mode: u32,

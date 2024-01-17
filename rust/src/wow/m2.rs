@@ -91,7 +91,7 @@ impl M2 {
         Ok(M2 {
             data,
             header,
-            texture_ids: txid.ok_or("M2 didn't have TXID chunk!".to_string())?,
+            texture_ids: txid.unwrap_or(vec![]),
             skin_ids: sfid.ok_or("M2 didn't have SKID chunk!".to_string())?,
         })
     }

@@ -1,7 +1,7 @@
 import * as Viewer from '../viewer.js';
 import { SceneContext } from '../SceneBase.js';
 import { rust } from '../rustlib.js';
-import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowSkinSubmesh, WowBatch } from '../../rust/pkg/index.js';
+import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowSkinSubmesh, WowBatch, WowAdtMapObjectDefinition } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage, GfxInputLayoutDescriptor } from '../gfx/platform/GfxPlatform.js';
@@ -17,24 +17,116 @@ import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData } from './data.js';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, AdtWmoDef } from './data.js';
+import { getMatrixTranslation } from "../MathHelpers.js";
+import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
+import { drawWorldSpaceText, getDebugOverlayCanvas2D } from '../DebugJunk.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
 
-const noclipSpaceFromWowSpace = mat4.fromValues(
-    1, 0,  0, 0,
+const noclipSpaceFromAdtSpace = mat4.fromValues(
     0, 0, -1, 0,
-    0, 1,  0, 0,
-    0, 0,  0, 1,
+    -1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 1,
 );
+
+const noclipSpaceFromModelSpace = mat4.fromValues(
+    0, 0, 1, 0,
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 1,
+);
+
+const noclipSpaceFromPlacementSpace = mat4.fromValues(
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+)
+
+export const adtSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
+mat4.mul(adtSpaceFromPlacementSpace, adtSpaceFromPlacementSpace, noclipSpaceFromPlacementSpace);
+
+export const adtSpaceFromModelSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
+mat4.mul(adtSpaceFromModelSpace, adtSpaceFromModelSpace, noclipSpaceFromModelSpace);
+
+export const placementSpaceFromModelSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromPlacementSpace);
+mat4.mul(placementSpaceFromModelSpace, placementSpaceFromModelSpace, noclipSpaceFromModelSpace);
+
+const wmoBindingLayouts: GfxBindingLayoutDescriptor[] = [
+    { numUniformBuffers: 2, numSamplers: 4 }, // ub_SceneParams
+];
 
 const terrainBindingLayouts: GfxBindingLayoutDescriptor[] = [
     { numUniformBuffers: 1, numSamplers: 4 }, // ub_SceneParams
 ];
+
+class WmoProgram extends DeviceProgram {
+  public static a_Position = 0;
+  public static a_Normal = 1;
+  public static a_Color = 2;
+  public static a_TexCoord = 3;
+
+  public static ub_SceneParams = 0;
+  public static ub_ModelParams = 1;
+
+  public override both = `
+precision mediump float;
+
+layout(std140) uniform ub_SceneParams {
+    Mat4x4 u_Projection;
+    Mat4x4 u_ModelView;
+};
+
+layout(std140) uniform ub_ModelParams {
+    Mat4x4 u_Transform;
+};
+
+layout(binding = 0) uniform sampler2D u_Texture0;
+layout(binding = 1) uniform sampler2D u_Texture1;
+layout(binding = 2) uniform sampler2D u_Texture2;
+layout(binding = 3) uniform sampler2D u_Texture3;
+
+varying vec2 v_LightIntensity;
+varying vec2 v_UV;
+varying vec3 v_Normal;
+varying vec4 v_Color;
+varying vec3 v_Binormal;
+varying vec3 v_Tangent;
+varying vec3 v_Position;
+
+#ifdef VERT
+layout(location = ${WmoProgram.a_Position}) attribute vec3 a_Position;
+layout(location = ${WmoProgram.a_Normal}) attribute vec3 a_Normal;
+layout(location = ${WmoProgram.a_Color}) attribute vec4 a_Color;
+layout(location = ${WmoProgram.a_TexCoord}) attribute vec2 a_TexCoord;
+
+void mainVS() {
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform, vec4(a_Position, 1.0))));
+    vec3 t_LightDirection = normalize(vec3(.2, -1, .5));
+    v_UV = a_TexCoord;
+    v_Color = a_Color;
+    float t_LightIntensityF = dot(-a_Normal, t_LightDirection);
+    float t_LightIntensityB = dot( a_Normal, t_LightDirection);
+    v_LightIntensity = vec2(t_LightIntensityF, t_LightIntensityB);
+}
+#endif
+
+#ifdef FRAG
+void mainPS() {
+    float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
+    float t_LightTint = 0.3 * t_LightIntensity;
+    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
+    gl_FragColor = tex + vec4(t_LightTint, t_LightTint, t_LightTint, 0.0);
+}
+#endif
+`;
+}
 
 class TerrainProgram extends DeviceProgram {
   public static a_Position = 0;
@@ -151,75 +243,6 @@ void mainPS() {
 `;
 }
 
-class FileList {
-    public files: string[] | undefined;
-
-    constructor() {
-    }
-
-    public async load(dataFetcher: DataFetcher) {
-      const decoder = new TextDecoder();
-      const fileListData = await dataFetcher.fetchData(`wow/listfile.csv`);
-      const files: string[] = [];
-      decoder.decode(fileListData.createTypedArray(Uint8Array)).split('\r\n').forEach(line => {
-        const [idxStr, fileName] = line.split(';');
-        const idx = parseInt(idxStr);
-        files[idx] = fileName;
-      })
-      this.files = files;
-    }
-
-    public getFilename(fileId: number): string {
-      if (!this.files) {
-        throw new Error(`must load FileList first`);
-      }
-      const filePath = this.files[fileId];
-      if (!filePath) {
-        throw new Error(`couldn't find path for fileId ${fileId}`);
-      }
-      return filePath;
-    }
-}
-
-let _fileList: FileList | undefined = undefined;
-async function initFileList(dataFetcher: DataFetcher): Promise<undefined> {
-  if (!_fileList) {
-    _fileList = new FileList();
-    await _fileList.load(dataFetcher);
-  }
-}
-
-function getFilePath(fileId: number): string {
-  return _fileList!.getFilename(fileId);
-}
-
-type Constructor<T> = (data: Uint8Array) => T;
-
-// FIXME this is a memory leak
-let _fileCache: Map<number, any> = new Map();
-export async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher, constructor: Constructor<T>): Promise<T> {
-  if (_fileCache.has(fileId)) {
-    return _fileCache.get(fileId);
-  }
-  const buf = await fetchDataByFileID(fileId, dataFetcher);
-  const file = constructor(buf);
-  _fileCache.set(fileId, file);
-  return file;
-}
-
-let _fetchedIds: {[key: number]: number} = {};
-export async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
-  if (fileId in _fetchedIds) {
-    console.log(`dupe fetch (${_fetchedIds[fileId]} ${getFilePath(fileId)})`)
-    _fetchedIds[fileId]++;
-  } else {
-    _fetchedIds[fileId] = 1;
-  }
-  const filePath = getFilePath(fileId);
-  const buf = await dataFetcher.fetchData(`/wow/${filePath}`);
-  return buf.createTypedArray(Uint8Array);
-}
-
 class ModelRenderer {
   private skinData: SkinData[] = [];
   private vertexBuffer: GfxVertexBufferDescriptor;
@@ -323,10 +346,62 @@ class AdtModelRenderer {
 }
 
 class WmoRenderer {
-  constructor(device: GfxDevice, wmo: WmoData) {
+  private inputLayout: GfxInputLayout;
+  private vertexBuffers: GfxVertexBufferDescriptor[][] = [];
+  private indexBuffers: GfxIndexBufferDescriptor[] = [];
+  private batches: WmoBatchData[][] = [];
+
+  constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper) {
+    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+      { location: WmoProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+      { location: WmoProgram.a_Normal,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+      { location: WmoProgram.a_TexCoord, bufferIndex: 2, bufferByteOffset: 0, format: GfxFormat.F32_RG, },
+    ];
+    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex, },
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex, },
+      { byteStride: 8, frequency: GfxVertexBufferFrequency.PerVertex, },
+    ];
+    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+    this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+
+    for (let group of wmo.groups) {
+      this.vertexBuffers.push(group.getVertexBuffers(device));
+      this.indexBuffers.push(group.getIndexBuffer(device));
+      this.batches.push(group.getBatches());
+    }
+  }
+
+  private getBatchTextureMapping(batch: WmoBatchData): (TextureMapping | null)[] {
+    const material = this.wmo.materials[batch.materialId];
+    const mappings = []
+    for (let blpId of [material.texture_1, material.texture_2, material.texture_3]) {
+      if (blpId === 0) {
+        mappings.push(null);
+      } else {
+        const blp = this.wmo.blps.get(blpId);
+        if (!blp) {
+          throw new Error(`couldn't find WMO BLP with id ${material.texture_1}`);
+        }
+        mappings.push(this.textureCache.getTextureMapping(material.texture_1, blp));
+      }
+    }
+    return mappings;
   }
 
   public prepareToRender(renderInstManager: GfxRenderInstManager) {
+    const template = renderInstManager.pushTemplateRenderInst();
+    for (let i=0; i<this.vertexBuffers.length; i++) {
+      template.setVertexInput(this.inputLayout, this.vertexBuffers[i], this.indexBuffers[i]);
+      for (let batch of this.batches[i]) {
+        const renderInst = renderInstManager.newRenderInst();
+        const textureMappings = this.getBatchTextureMapping(batch);
+        renderInst.setSamplerBindingsFromTextureMappings(textureMappings);
+        renderInst.drawIndexes(batch.indexCount, batch.indexStart);
+        renderInstManager.submitRenderInst(renderInst);
+      }
+    }
+    renderInstManager.popTemplateRenderInst();
   }
 
   public destroy(device: GfxDevice) {
@@ -334,8 +409,11 @@ class WmoRenderer {
 }
 
 class WmoModelRenderer {
+  public doodads: DoodadData[] = [];
+
   constructor(device: GfxDevice, wmo: WmoData) {
     for (let doodadDef of wmo.wmo.doodad_defs) {
+      this.doodads.push(DoodadData.fromWmoDoodad(doodadDef));
     }
   }
 
@@ -347,27 +425,72 @@ class WmoModelRenderer {
 }
 
 class AdtWmoRenderer {
-  public wmoRenderers: WmoRenderer[] = [];
-  public wmoModelRenderers: WmoModelRenderer[] = [];
+  public wmoProgram: GfxProgram;
+  public modelProgram: GfxProgram;
+  public wmoIdToRenderer: Map<number, WmoRenderer>;
+  public wmoIdToModelRenderer: Map<number, WmoModelRenderer>;
+  public wmoIdToWmoDefs: Map<number, AdtWmoDef[]>;
+  public visible: boolean = true;
 
-  constructor(device: GfxDevice, adt: AdtData) {
-    for (let wmo of adt.wmos.values()) {
-      this.wmoRenderers.push(new WmoRenderer(device, wmo));
-      this.wmoModelRenderers.push(new WmoModelRenderer(device, wmo));
+  constructor(device: GfxDevice, adt: AdtData, textureCache: TextureCache, renderHelper: GfxRenderHelper) {
+    this.wmoProgram = renderHelper.renderCache.createProgram(new WmoProgram());
+    this.modelProgram = renderHelper.renderCache.createProgram(new ModelProgram());
+    this.wmoIdToRenderer = new Map();
+    this.wmoIdToModelRenderer = new Map();
+    this.wmoIdToWmoDefs = new Map();
+
+    for (let wmoDef of adt.wmoDefs) {
+      let defs = this.wmoIdToWmoDefs.get(wmoDef.wmoId);
+      if (defs) {
+        defs.push(wmoDef);
+      } else {
+        this.wmoIdToWmoDefs.set(wmoDef.wmoId, [wmoDef]);
+      }
+    }
+
+    for (let [wmoId, wmo] of adt.wmos.entries()) {
+      this.wmoIdToRenderer.set(wmoId, new WmoRenderer(device, wmo, textureCache, renderHelper));
+      this.wmoIdToModelRenderer.set(wmoId, new WmoModelRenderer(device, wmo));
     }
   }
 
   public prepareToRender(renderInstManager: GfxRenderInstManager) {
-    for (let i=0; i<this.wmoRenderers.length; i++) {
-      this.wmoRenderers[i].prepareToRender(renderInstManager);
-      this.wmoModelRenderers[i].prepareToRender(renderInstManager);
+    if (!this.visible) return;
+    const cam = mat4.create();
+    mat4.mul(cam, window.main.viewer.camera.clipFromWorldMatrix, noclipSpaceFromAdtSpace);
+    const template = renderInstManager.pushTemplateRenderInst();
+    template.setGfxProgram(this.wmoProgram);
+    template.setBindingLayouts(wmoBindingLayouts);
+    for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
+      let renderer = this.wmoIdToRenderer.get(wmoId)!;
+      for (let def of wmoDefs) {
+        let offs = template.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16);
+        const mapped = template.mapUniformBufferF32(ModelProgram.ub_ModelParams);
+        offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
+        let v = vec3.create();
+        getMatrixTranslation(v, def.modelMatrix);
+        drawWorldSpaceText(getDebugOverlayCanvas2D(), cam, v, `${def.def.rotation.x}, ${def.def.rotation.y}, ${def.def.rotation.z}`);
+        renderer.prepareToRender(renderInstManager);
+      }
     }
+
+    /*
+    template.setGfxProgram(this.modelProgram);
+    template.setBindingLayouts(modelBindingLayouts);
+    for (let i=0; i<this.wmoIdToModelRenderer.length; i++) {
+      this.wmoIdToModelRenderer[i].prepareToRender(renderInstManager);
+    }
+    */
+
+    renderInstManager.popTemplateRenderInst();
   }
 
   public destroy(device: GfxDevice) {
-    for (let i=0; i<this.wmoRenderers.length; i++) {
-      this.wmoRenderers[i].destroy(device);
-      this.wmoModelRenderers[i].destroy(device);
+    for (let renderer of this.wmoIdToModelRenderer.values()) {
+      renderer.destroy(device);
+    }
+    for (let renderer of this.wmoIdToRenderer.values()) {
+      renderer.destroy(device);
     }
   }
 }
@@ -428,6 +551,7 @@ class AdtTerrainRenderer {
 class WorldScene implements Viewer.SceneGfx {
   private terrainRenderers: AdtTerrainRenderer[] = [];
   private modelRenderers: AdtModelRenderer[] = [];
+  private wmoRenderers: AdtWmoRenderer[] = [];
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
 
@@ -439,6 +563,7 @@ class WorldScene implements Viewer.SceneGfx {
     for (let adt of this.world.adts) {
       this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache));
       this.modelRenderers.push(new AdtModelRenderer(device, textureCache, adt, renderHelper));
+      this.wmoRenderers.push(new AdtWmoRenderer(device, adt, textureCache, this.renderHelper));
     }
   }
 
@@ -452,7 +577,7 @@ class WorldScene implements Viewer.SceneGfx {
     const mapped = template.mapUniformBufferF32(ModelProgram.ub_SceneParams);
     offs += fillMatrix4x4(mapped, offs, viewerInput.camera.projectionMatrix);
     const viewMat = mat4.create();
-    mat4.mul(viewMat, viewerInput.camera.viewMatrix, noclipSpaceFromWowSpace);
+    mat4.mul(viewMat, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
     offs += fillMatrix4x4(mapped, offs, viewMat);
 
     this.terrainRenderers.forEach(terrainRenderer => {
@@ -463,6 +588,10 @@ class WorldScene implements Viewer.SceneGfx {
     template.setGfxProgram(this.modelProgram);
     this.modelRenderers.forEach(modelRenderer => {
       modelRenderer.prepareToRender(this.renderHelper.renderInstManager);
+    });
+
+    this.wmoRenderers.forEach(wmoRenderer => {
+      wmoRenderer.prepareToRender(this.renderHelper.renderInstManager);
     });
 
     this.renderHelper.renderInstManager.popTemplateRenderInst();
@@ -501,6 +630,9 @@ class WorldScene implements Viewer.SceneGfx {
     });
     this.modelRenderers.forEach(modelRenderer => {
       modelRenderer.destroy(device);
+    })
+    this.wmoRenderers.forEach(wmoRenderer => {
+      wmoRenderer.destroy(device);
     })
   }
 }
@@ -548,6 +680,10 @@ const sceneDescs = [
     new WdtSceneDesc('pvp 4', 790377),
     new WdtSceneDesc('pvp 5', 790469),
     new WdtSceneDesc('Scholomance', 790713),
+    new WdtSceneDesc("Strat", 827115),
+    new WdtSceneDesc("Caverns of Time", 829736),
+    new WdtSceneDesc("Ahn'qiraj", 775637),
+    new WdtSceneDesc("Deeprun Tram", 780788),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
