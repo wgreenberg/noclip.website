@@ -11,6 +11,7 @@ pub struct Adt {
     pub doodads: Vec<Doodad>,
     height_tex_ids: Option<HeightTexIds>,
     diffuse_tex_ids: Option<DiffuseTexIds>,
+    pub map_object_defs: Vec<MapObjectDefinition>,
 }
 
 #[wasm_bindgen(js_class = "WowAdt")]
@@ -27,6 +28,7 @@ impl Adt {
         Ok(Adt {
             map_chunks,
             doodads: vec![],
+            map_object_defs: vec![],
             height_tex_ids: None,
             diffuse_tex_ids: None,
         })
@@ -59,6 +61,7 @@ impl Adt {
                     self.map_chunks[map_chunk_idx].append_obj_chunk(chunk, chunk_data)?;
                     map_chunk_idx += 1;
                 }
+                b"FDOM" => self.map_object_defs = chunk.parse_array(chunk_data, 0x40)?,
                 _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
             }
         }
@@ -380,15 +383,9 @@ pub struct Doodad {
     pub flags: u16
 }
 
-#[derive(Debug, DekuRead)]
-#[deku(ctx = "ByteSize(size): ByteSize")]
-struct ModfChunk {
-    #[deku(count = "size / 0x40")]
-    modfs: Vec<Modf>,
-}
-
-#[derive(Debug, DekuRead)]
-pub struct Modf {
+#[wasm_bindgen(js_name = "WowAdtMapObjectDefinition")]
+#[derive(Debug, DekuRead, Clone)]
+pub struct MapObjectDefinition {
     pub name_id: u32,
     pub unique_id: u32,
     pub position: Vec3,

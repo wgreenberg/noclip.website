@@ -270,13 +270,13 @@ class ModelData {
   public async load(dataFetcher: DataFetcher, device: GfxDevice): Promise<undefined> {
     const m2Data = await fetchFileByID(this.fileId, dataFetcher);
     this.m2 = rust.WowM2.new(m2Data);
-    for (let txid of this.m2.get_texture_ids()) {
+    for (let txid of this.m2.texture_ids) {
       const texData = await fetchFileByID(txid, dataFetcher);
       const blp = rust.WowBlp.new(txid, texData);
       this.blps.push(blp);
     }
 
-    for (let skid of this.m2.get_skin_ids()) {
+    for (let skid of this.m2.skin_ids) {
       const skinData = await fetchFileByID(skid, dataFetcher);
       const skin = rust.WowSkin.new(skinData);
       this.skins.push(skin);

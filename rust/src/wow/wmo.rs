@@ -46,14 +46,14 @@ impl Wmo {
         let mut mogi: Option<Vec<GroupInfo>> = None;
         let mut modd: Option<Vec<DoodadDef>> = None;
         let mut mfog: Option<Vec<Fog>> = None;
-        let mut modi: Option<DoodadIds> = None;
+        let mut modi: Option<Vec<u32>> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"TMOM" => momt = Some(chunk.parse_array(chunk_data, 0x40)?),
                 b"IGOM" => mogi = Some(chunk.parse_array(chunk_data, 0x20)?),
                 b"DDOM" => modd = Some(chunk.parse_array(chunk_data, 40)?),
                 b"GOFM" => mfog = Some(chunk.parse_array(chunk_data, 48)?),
-                b"IDOM" => modi = Some(chunk.parse_with_byte_size(chunk_data)?),
+                b"IDOM" => modi = Some(chunk.parse_array(chunk_data, 4)?),
                 _ => println!("skipping {} chunk", chunk.magic_str()),
             }
         }
@@ -62,10 +62,105 @@ impl Wmo {
             textures: momt.ok_or("WMO file didn't have MOMT chunk")?,
             group_infos: mogi.ok_or("WMO file didn't have MOGI chunk")?,
             doodad_defs: modd.ok_or("WMO file didn't have MODD chunk")?,
-            doodad_file_ids: modi.ok_or("WMO file didn't have MODI chunk")?.file_ids,
+            doodad_file_ids: modi.ok_or("WMO file didn't have MODI chunk")?,
             fogs: mfog.ok_or("WMO file didn't have MFOG chunk")?,
         })
     }
+}
+
+#[wasm_bindgen(js_name = "WowWmoGroup", getter_with_clone)]
+pub struct WmoGroup {
+    pub header: WmoGroupHeader,
+    pub material_info: Vec<MaterialInfo>,
+    pub indices: Vec<u8>,
+    pub vertices: Vec<u8>,
+    pub normals: Vec<u8>,
+    pub uvs: Vec<u8>,
+    pub batches: Vec<MaterialBatch>,
+    pub doodad_refs: Vec<u16>,
+}
+
+#[wasm_bindgen(js_class = "WowWmoGroup")]
+impl WmoGroup {
+    pub fn new(data: Vec<u8>) -> Result<WmoGroup, String> {
+        let mut chunked_data = ChunkedData::new(&data);
+        let (mver, _) = chunked_data.next().unwrap();
+        assert_eq!(mver.magic_str(), "REVM");
+        let (mhdr, mhdr_data) = chunked_data.next().unwrap();
+        let header: WmoGroupHeader = mhdr.parse(mhdr_data)?;
+        let mut mopy: Option<Vec<MaterialInfo>> = None;
+        let mut indices: Option<Vec<u8>> = None;
+        let mut vertices: Option<Vec<u8>> = None;
+        let mut normals: Option<Vec<u8>> = None;
+        let mut uvs: Option<Vec<u8>> = None;
+        let mut batches: Option<Vec<MaterialBatch>> = None;
+        let mut doodad_refs: Option<Vec<u16>> = None;
+        let mut chunked_data = ChunkedData::new(&data[0x58..]);
+        for (chunk, chunk_data) in &mut chunked_data {
+            match &chunk.magic {
+                b"YPOM" => mopy = Some(chunk.parse_array(chunk_data, 2)?),
+                b"IVOM" => indices = Some(chunk_data.to_vec()),
+                b"TVOM" => vertices = Some(chunk_data.to_vec()),
+                b"RNOM" => normals = Some(chunk_data.to_vec()),
+                b"VTOM" => uvs = Some(chunk_data.to_vec()),
+                b"ABOM" => batches = Some(chunk.parse_array(chunk_data, 24)?),
+                b"RDOM" => doodad_refs = Some(chunk.parse_array(chunk_data, 2)?),
+                _ => println!("skipping {}", chunk.magic_str()),
+            }
+        }
+
+        Ok(WmoGroup {
+            header,
+            material_info: mopy.ok_or("WMO group didn't have MOPY chunk")?,
+            indices: indices.ok_or("WMO group didn't have indices")?,
+            vertices: vertices.ok_or("WMO group didn't have vertices")?,
+            normals: normals.ok_or("WMO group didn't have normals")?,
+            uvs: uvs.ok_or("WMO group didn't have uvs")?,
+            batches: batches.ok_or("WMO group didn't have material batches")?,
+            doodad_refs: doodad_refs.ok_or("WMO group didn't have doodad refs")?,
+        })
+    }
+}
+
+#[wasm_bindgen(js_name = "WowWmoMaterialBatch")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct MaterialBatch {
+    unknown: [u8; 0xA],
+    pub material_id_large: u16,
+    pub start_index: u32,
+    pub count: u16,
+    pub min_index: u16,
+    pub max_index: u16,
+    flag_unknown: u8,
+    pub use_material_id_large: u8,
+    pub material_id: u8,
+}
+
+#[wasm_bindgen(js_name = "WowWmoMaterialInfo")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct MaterialInfo {
+    pub flags: u8,
+    pub material_id: u8, // index into MOMT, or 0xff for collision faces
+}
+
+#[wasm_bindgen(js_name = "WowWmoGroupHeader", getter_with_clone)]
+#[derive(DekuRead, Debug, Clone)]
+pub struct WmoGroupHeader {
+    pub group_name: u32, // offset to MOGN
+    pub descriptive_group_name: u32, // offset to MOGN
+    pub flags: u32,
+    pub bounding_box: AABBox,
+    pub portal_start: u16,
+    pub portal_count: u16,
+    pub trans_batch_count: u16,
+    pub int_batch_count: u16,
+    pub ext_batch_count: u16,
+    pub padding_or_batch_type_d: u16,
+    fog_ids: [u8; 4],
+    pub group_liquid: u32,
+    pub group_flags2: u32,
+    pub parent_or_first_child_split_group_index: u16,
+    pub next_split_child_group_index: u16,
 }
 
 #[derive(DekuRead, Debug)]
