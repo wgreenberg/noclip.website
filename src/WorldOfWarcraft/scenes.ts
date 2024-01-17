@@ -17,7 +17,7 @@ import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData } from './data.js';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData } from './data.js';
 import { CameraController } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
@@ -281,7 +281,7 @@ class AdtModelRenderer {
     this.modelIdsToDoodads = new Map();
     this.modelIdsToModelRenderers = new Map();
     for (let doodad of adt.innerAdt.doodads) {
-      const doodadData = new DoodadData(doodad);
+      const doodadData = DoodadData.fromAdtDoodad(doodad);
       let doodadArray = this.modelIdsToDoodads.get(doodad.name_id)
       if (doodadArray) {
         doodadArray.push(doodadData);
@@ -318,6 +318,56 @@ class AdtModelRenderer {
   public destroy(device: GfxDevice): void {
     for (let modelRenderer of this.modelIdsToModelRenderers.values()) {
       modelRenderer.destroy(device);
+    }
+  }
+}
+
+class WmoRenderer {
+  constructor(device: GfxDevice, wmo: WmoData) {
+  }
+
+  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+  }
+
+  public destroy(device: GfxDevice) {
+  }
+}
+
+class WmoModelRenderer {
+  constructor(device: GfxDevice, wmo: WmoData) {
+    for (let doodadDef of wmo.wmo.doodad_defs) {
+    }
+  }
+
+  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+  }
+
+  public destroy(device: GfxDevice) {
+  }
+}
+
+class AdtWmoRenderer {
+  public wmoRenderers: WmoRenderer[] = [];
+  public wmoModelRenderers: WmoModelRenderer[] = [];
+
+  constructor(device: GfxDevice, adt: AdtData) {
+    for (let wmo of adt.wmos.values()) {
+      this.wmoRenderers.push(new WmoRenderer(device, wmo));
+      this.wmoModelRenderers.push(new WmoModelRenderer(device, wmo));
+    }
+  }
+
+  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+    for (let i=0; i<this.wmoRenderers.length; i++) {
+      this.wmoRenderers[i].prepareToRender(renderInstManager);
+      this.wmoModelRenderers[i].prepareToRender(renderInstManager);
+    }
+  }
+
+  public destroy(device: GfxDevice) {
+    for (let i=0; i<this.wmoRenderers.length; i++) {
+      this.wmoRenderers[i].destroy(device);
+      this.wmoModelRenderers[i].destroy(device);
     }
   }
 }

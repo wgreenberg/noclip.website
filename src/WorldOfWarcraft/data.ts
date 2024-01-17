@@ -1,5 +1,5 @@
-import { vec3, mat4 } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup } from "../../rust/pkg";
+import { vec3, mat4, vec4 } from "gl-matrix";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage } from "../gfx/platform/GfxPlatform.js";
@@ -142,16 +142,24 @@ export class AdtData {
 }
 
 export class DoodadData {
-  public position: vec3;
-  public rotation: vec3;
-  public scale: number;
   public modelMatrix: mat4;
 
-  constructor(doodad: WowDoodad) {
-    this.position = [doodad.position.x - 17066, doodad.position.y, doodad.position.z - 17066];
-    this.rotation = [doodad.rotation.x, doodad.rotation.y, doodad.rotation.z];
-    this.scale = doodad.scale / 1024;
+  constructor(public position: vec3, public rotation: vec3 | vec4, public scale: number) {
     this.modelMatrix = this.getDoodadTranformMat();
+  }
+
+  static fromAdtDoodad(doodad: WowDoodad): DoodadData {
+    let position: vec3 = [doodad.position.x - 17066, doodad.position.y, doodad.position.z - 17066];
+    let rotation: vec3 = [doodad.rotation.x, doodad.rotation.y, doodad.rotation.z];
+    let scale = doodad.scale / 1024;
+    return new DoodadData(position, rotation, scale);
+  }
+
+  static fromWmoDoodad(doodad: WowDoodadDef): DoodadData {
+    let position: vec3 = [doodad.position.x, doodad.position.y, doodad.position.z];
+    let rotation: vec4 = [doodad.orientation.x, doodad.orientation.y, doodad.orientation.z, doodad.orientation.w];
+    let scale = doodad.scale / 1024;
+    return new DoodadData(position, rotation, scale);
   }
 
   private getDoodadTranformMat(): mat4 {
