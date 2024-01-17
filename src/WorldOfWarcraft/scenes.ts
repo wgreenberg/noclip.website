@@ -1,7 +1,7 @@
 import * as Viewer from '../viewer.js';
 import { SceneContext } from '../SceneBase.js';
 import { rust } from '../rustlib.js';
-import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad } from '../../rust/pkg/index.js';
+import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowSkinSubmesh, WowBatch } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage, GfxInputLayoutDescriptor } from '../gfx/platform/GfxPlatform.js';
@@ -16,7 +16,8 @@ import { DataFetcher, NamedArrayBufferSlice } from '../DataFetcher.js';
 import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData } from './data.js';
 import { CameraController } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
@@ -196,7 +197,7 @@ type Constructor<T> = (data: Uint8Array) => T;
 
 // FIXME this is a memory leak
 let _fileCache: Map<number, any> = new Map();
-async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher, constructor: Constructor<T>): Promise<T> {
+export async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher, constructor: Constructor<T>): Promise<T> {
   if (_fileCache.has(fileId)) {
     return _fileCache.get(fileId);
   }
@@ -207,7 +208,7 @@ async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher, constr
 }
 
 let _fetchedIds: {[key: number]: number} = {};
-async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
+export async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
   if (fileId in _fetchedIds) {
     console.log(`dupe fetch (${_fetchedIds[fileId]} ${getFilePath(fileId)})`)
     _fetchedIds[fileId]++;
@@ -220,22 +221,12 @@ async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Prom
 }
 
 class ModelRenderer {
-  public m2: WowM2;
-  public skins: WowSkin[] = [];
-  public blps: WowBlp[] = [];
-  public blpIds: number[] = [];
-
+  private skinData: SkinData[] = [];
   private vertexBuffer: GfxVertexBufferDescriptor;
   private indexBuffer: GfxIndexBufferDescriptor;
   private inputLayout: GfxInputLayout;
 
-  static async create(fileId: number, device: GfxDevice, renderHelper: GfxRenderHelper, dataFetcher: DataFetcher): Promise<ModelRenderer> {
-    const model = new ModelRenderer(fileId, renderHelper);
-    await model.load(dataFetcher, device);
-    return model;
-  }
-
-  constructor(public fileId: number, renderHelper: GfxRenderHelper) {
+  constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
       { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
@@ -246,43 +237,31 @@ class ModelRenderer {
     ];
     const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
     this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-  }
 
-  public async load(dataFetcher: DataFetcher, device: GfxDevice): Promise<undefined> {
-    this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
-    for (let txid of this.m2.texture_ids) {
-      const blp = await fetchFileByID(txid, dataFetcher, rust.WowBlp.new);
-      this.blpIds.push(txid);
-      this.blps.push(blp);
-    }
-
-    for (let skid of this.m2.skin_ids) {
-      const skin = await fetchFileByID(skid, dataFetcher, rust.WowSkin.new);
-      this.skins.push(skin);
+    for (let skin of this.model.skins) {
+      this.skinData.push(new SkinData(skin));
     }
 
     this.vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.m2.get_vertex_data().buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.model.m2.get_vertex_data().buffer),
       byteOffset: 0,
     };
-    // FIXME: handle multiple skins
-    let skinIndices = this.skins[0].get_indices();
+
     this.indexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, skinIndices.buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.skinData[0].indexBuffer.buffer),
       byteOffset: 0,
     };
   }
 
   public setOnRenderInst(renderInst: GfxRenderInst, textureCache: TextureCache): void {
-    const skin = this.skins[0];
-    const textureLookupTable = this.m2.get_texture_lookup_table();
+    const skin = this.skinData[0];
     for (let batch of skin.batches) {
       const submesh = skin.submeshes[batch.skin_submesh_index];
       renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
       renderInst.drawIndexes(submesh.index_count, submesh.index_start);
-      const m2TextureIndex = textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
-      const blp = this.blps[m2TextureIndex];
-      const blpId = this.blpIds[m2TextureIndex];
+      const m2TextureIndex = this.model.textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
+      const blp = this.model.blps[m2TextureIndex];
+      const blpId = this.model.blpIds[m2TextureIndex];
       const mapping = textureCache.getTextureMapping(blpId, blp);
       renderInst.setSamplerBindingsFromTextureMappings([mapping]);
     }
@@ -294,93 +273,42 @@ class ModelRenderer {
   }
 }
 
-class Adt {
-  public blps: Map<number, WowBlp>;
-  public models: Map<number, ModelRenderer>;
-
-  constructor(public innerAdt: WowAdt) {
-    this.blps = new Map();
-    this.models = new Map();
-  }
-  
-  public async load(dataFetcher: DataFetcher, device: GfxDevice, renderHelper: GfxRenderHelper) {
-      const blpIds = this.innerAdt.get_texture_file_ids();
-      for (let blpId of blpIds) {
-        const blp = await fetchFileByID(blpId, dataFetcher, rust.WowBlp.new);
-        this.blps.set(blpId, blp);
-      }
-
-      const modelIds = this.innerAdt.get_model_file_ids();
-      for (let modelId of modelIds) {
-        this.models.set(modelId, await ModelRenderer.create(modelId, device, renderHelper, dataFetcher));
-      }
-  }
-
-  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, WowAdtChunkDescriptor[]] {
-    const renderResult = this.innerAdt.get_render_result();
-    const vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
-      byteOffset: 0,
-    };
-    const indexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, renderResult.index_buffer.buffer),
-      byteOffset: 0,
-    };
-    const adtChunks = renderResult.chunks;
-    return [vertexBuffer, indexBuffer, adtChunks];
-  }
-}
-
 class AdtModelRenderer {
-  public doodads: WowDoodad[] = [];
-  public modelsToDoodads: Map<ModelRenderer, WowDoodad[]>;
+  public modelIdsToDoodads: Map<number, DoodadData[]>;
+  public modelIdsToModelRenderers: Map<number, ModelRenderer>;
 
-  constructor(device: GfxDevice, private textureCache: TextureCache, public adt: Adt) {
-    this.modelsToDoodads = this.sortDoodadsByModels(adt.innerAdt.doodads);
-  }
-
-  private sortDoodadsByModels(doodads: WowDoodad[]): Map<ModelRenderer, WowDoodad[]> {
-    const map = new Map();
-    for (let doodad of doodads) {
-      let model = this.adt.models.get(doodad.name_id);
-      if (!model) {
-        throw new Error(`couldn't find model with fileId ${doodad.name_id}`);
-      }
-      if (map.has(model)) {
-        map.get(model).push(doodad);
+  constructor(device: GfxDevice, private textureCache: TextureCache, public adt: AdtData, renderHelper: GfxRenderHelper) {
+    this.modelIdsToDoodads = new Map();
+    this.modelIdsToModelRenderers = new Map();
+    for (let doodad of adt.innerAdt.doodads) {
+      const doodadData = new DoodadData(doodad);
+      let doodadArray = this.modelIdsToDoodads.get(doodad.name_id)
+      if (doodadArray) {
+        doodadArray.push(doodadData);
       } else {
-        map.set(model, [doodad]);
+        this.modelIdsToDoodads.set(doodad.name_id, [doodadData]);
       }
     }
-    return map;
-  }
 
-  private getDoodadTranformMat(doodad: WowDoodad): mat4 {
-    const scale = doodad.scale / 1024;
-    const rotation = mat4.create();
-    mat4.identity(rotation);
-    mat4.rotateX(rotation, rotation, doodad.rotation.x);
-    mat4.rotateY(rotation, rotation, doodad.rotation.y);
-    mat4.rotateZ(rotation, rotation, doodad.rotation.z);
-    const doodadMat = mat4.create();
-    mat4.fromRotationTranslationScale(
-      doodadMat,
-      rotation,
-      [doodad.position.x - 17066, doodad.position.y, doodad.position.z - 17066],
-      [scale, scale, scale]
-    );
-    return doodadMat;
+    for (let modelId of this.modelIdsToDoodads.keys()) {
+      const modelData = adt.models.get(modelId);
+      if (!modelData) {
+        throw new Error(`couldn't find model with id ${modelId}`)
+      }
+      this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper));
+    }
   }
 
   public prepareToRender(renderInstManager: GfxRenderInstManager): void {
-    for (let [model, doodads] of this.modelsToDoodads) {
+    for (let [modelId, doodads] of this.modelIdsToDoodads) {
+      const modelRenderer = this.modelIdsToModelRenderers.get(modelId)!;
       const template = renderInstManager.pushTemplateRenderInst();
-      model.setOnRenderInst(template, this.textureCache);
+      modelRenderer.setOnRenderInst(template, this.textureCache);
       for (let doodad of doodads) {
         const renderInst = renderInstManager.newRenderInst();
         let offs = renderInst.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16);
         const mapped = renderInst.mapUniformBufferF32(ModelProgram.ub_ModelParams);
-        offs += fillMatrix4x4(mapped, offs, this.getDoodadTranformMat(doodad));
+        offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
         renderInstManager.submitRenderInst(renderInst);
       }
       renderInstManager.popTemplateRenderInst();
@@ -388,6 +316,9 @@ class AdtModelRenderer {
   }
 
   public destroy(device: GfxDevice): void {
+    for (let modelRenderer of this.modelIdsToModelRenderers.values()) {
+      modelRenderer.destroy(device);
+    }
   }
 }
 
@@ -397,7 +328,7 @@ class AdtTerrainRenderer {
   public vertexBuffer: GfxVertexBufferDescriptor;
   public adtChunks: WowAdtChunkDescriptor[] = [];
 
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: Adt, private textureCache: TextureCache) {
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
     const adtVboInfo = rust.WowAdt.get_vbo_info();
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: TerrainProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
@@ -450,14 +381,14 @@ class WorldScene implements Viewer.SceneGfx {
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
 
-  constructor(device: GfxDevice, public world: World, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper) {
+  constructor(device: GfxDevice, public world: WorldData, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper) {
     const textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
 
     for (let adt of this.world.adts) {
       this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache));
-      this.modelRenderers.push(new AdtModelRenderer(device, textureCache, adt));
+      this.modelRenderers.push(new AdtModelRenderer(device, textureCache, adt, renderHelper));
     }
   }
 
@@ -518,33 +449,9 @@ class WorldScene implements Viewer.SceneGfx {
     this.terrainRenderers.forEach(terrainRenderer => {
       terrainRenderer.destroy(device);
     });
-  }
-}
-
-class World {
-  public wdt: WowWdt;
-  public adts: Adt[] = [];
-
-  constructor(public fileId: number) {
-  }
-
-  public async load(dataFetcher: DataFetcher, device: GfxDevice, renderHelper: GfxRenderHelper) {
-    this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
-    for (let fileIDs of this.wdt.get_loaded_map_data()) {
-      if (fileIDs.root_adt === 0) {
-        console.log('null ADTs?')
-        continue;
-      }
-      // TODO handle obj1 (LOD) adts
-      const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-      wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
-      wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
-
-      const adt = new Adt(wowAdt);
-      await adt.load(dataFetcher, device, renderHelper);
-
-      this.adts.push(adt);
-    }
+    this.modelRenderers.forEach(modelRenderer => {
+      modelRenderer.destroy(device);
+    })
   }
 }
 
@@ -560,9 +467,9 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const wdt = new World(this.fileId);
+    const wdt = new WorldData(this.fileId);
     console.log('loading wdt')
-    await wdt.load(dataFetcher, device, renderHelper);
+    await wdt.load(dataFetcher);
     console.log('done')
     const holder = new DebugTexHolder();
     let entries: DebugTex[] = [];
