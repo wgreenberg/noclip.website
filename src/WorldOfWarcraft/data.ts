@@ -1,5 +1,5 @@
 import { vec3, mat4 } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage } from "../gfx/platform/GfxPlatform.js";
@@ -31,6 +31,56 @@ export class ModelData {
   }
 }
 
+export class WmoGroupData {
+    public group: WowWmoGroup;
+
+    constructor(public fileId: number) {
+    }
+
+    public async load(dataFetcher: DataFetcher): Promise<undefined> {
+        this.group = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmoGroup.new);
+    }
+}
+
+export class WmoData {
+    public wmo: WowWmo;
+    public groups: WmoGroupData[] = [];
+    public blps: Map<number, WowBlp>;
+    public models: Map<number, ModelData>;
+
+    constructor(public fileId: number) {
+        this.blps = new Map();
+        this.models = new Map();
+    }
+
+    public async load(dataFetcher: DataFetcher): Promise<undefined> {
+        this.wmo = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmo.new);
+
+        for (let tex of this.wmo.textures) {
+            for (let texId of [tex.texture_1, tex.texture_2, tex.texture_3]) {
+                if (texId !== 0 && !this.blps.has(texId)) {
+                    let blp = await fetchFileByID(texId, dataFetcher, rust.WowBlp.new);
+                    this.blps.set(texId, blp);
+                }
+            }
+        }
+
+        for (let modelId of this.wmo.doodad_file_ids) {
+            if (modelId !== 0 && !this.models.has(modelId)) {
+                const modelData = new ModelData(modelId);
+                await modelData.load(dataFetcher);
+                this.models.set(modelId, modelData);
+            }
+        }
+
+        for (let gfid of this.wmo.group_file_ids) {
+            const group = new WmoGroupData(gfid);
+            await group.load(dataFetcher);
+            this.groups.push(group);
+        }
+    }
+}
+
 export class SkinData {
   public submeshes: WowSkinSubmesh[];
   public batches: WowBatch[];
@@ -46,10 +96,12 @@ export class SkinData {
 export class AdtData {
   public blps: Map<number, WowBlp>;
   public models: Map<number, ModelData>;
+  public wmos: Map<number, WmoData>;
 
   constructor(public innerAdt: WowAdt) {
     this.blps = new Map();
     this.models = new Map();
+    this.wmos = new Map();
   }
   
   public async load(dataFetcher: DataFetcher) {
@@ -64,6 +116,13 @@ export class AdtData {
         const model = new ModelData(modelId);
         await model.load(dataFetcher);
         this.models.set(modelId, model);
+      }
+
+      const mapObjectDefs = this.innerAdt.map_object_defs;
+      for (let wmoDef of mapObjectDefs) {
+        const wmoData = new WmoData(wmoDef.name_id);
+        await wmoData.load(dataFetcher);
+        this.wmos.set(wmoDef.name_id, wmoData);
       }
   }
 

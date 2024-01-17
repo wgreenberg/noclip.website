@@ -16,7 +16,6 @@ pub struct WmoHeader {
     pub num_doodad_defs: u32,
     pub num_doodad_sets: u32,
     pub ambient_color: Argb,
-    #[deku(pad_bytes_after = "0x1c")]
     pub wmo_id: u32,
     pub bounding_box: AABBox,
     pub flags: u16,
@@ -29,6 +28,7 @@ pub struct Wmo {
     pub header: WmoHeader,
     pub textures: Vec<WmoTextures>,
     pub group_infos: Vec<GroupInfo>,
+    pub group_file_ids: Vec<u32>,
     pub doodad_defs: Vec<DoodadDef>,
     pub doodad_file_ids: Vec<u32>,
     pub fogs: Vec<Fog>,
@@ -41,12 +41,14 @@ impl Wmo {
         let (mver, _) = chunked_data.next().unwrap();
         assert_eq!(mver.magic_str(), "REVM");
         let (mhdr, mhdr_data) = chunked_data.next().unwrap();
+        assert_eq!(mhdr.magic_str(), "DHOM");
         let header: WmoHeader = mhdr.parse(mhdr_data)?;
         let mut momt: Option<Vec<WmoTextures>> = None;
         let mut mogi: Option<Vec<GroupInfo>> = None;
         let mut modd: Option<Vec<DoodadDef>> = None;
         let mut mfog: Option<Vec<Fog>> = None;
         let mut modi: Option<Vec<u32>> = None;
+        let mut gfid: Option<Vec<u32>> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"TMOM" => momt = Some(chunk.parse_array(chunk_data, 0x40)?),
@@ -54,6 +56,7 @@ impl Wmo {
                 b"DDOM" => modd = Some(chunk.parse_array(chunk_data, 40)?),
                 b"GOFM" => mfog = Some(chunk.parse_array(chunk_data, 48)?),
                 b"IDOM" => modi = Some(chunk.parse_array(chunk_data, 4)?),
+                b"DIFG" => gfid = Some(chunk.parse_array(chunk_data, 4)?),
                 _ => println!("skipping {} chunk", chunk.magic_str()),
             }
         }
@@ -62,13 +65,15 @@ impl Wmo {
             textures: momt.ok_or("WMO file didn't have MOMT chunk")?,
             group_infos: mogi.ok_or("WMO file didn't have MOGI chunk")?,
             doodad_defs: modd.ok_or("WMO file didn't have MODD chunk")?,
-            doodad_file_ids: modi.ok_or("WMO file didn't have MODI chunk")?,
+            doodad_file_ids: modi.unwrap_or(vec![]),
             fogs: mfog.ok_or("WMO file didn't have MFOG chunk")?,
+            group_file_ids: gfid.ok_or("WMO file didn't have group ids")?,
         })
     }
 }
 
 #[wasm_bindgen(js_name = "WowWmoGroup", getter_with_clone)]
+#[derive(Debug, Clone)]
 pub struct WmoGroup {
     pub header: WmoGroupHeader,
     pub material_info: Vec<MaterialInfo>,
@@ -189,7 +194,6 @@ pub struct Fog {
 #[derive(DekuRead, Debug, Clone)]
 pub struct DoodadDef {
     pub name_index: u32,
-    pub flags: u32,
     pub position: Vec3,
     pub orientation: Quat,
     pub scale: f32,
@@ -220,4 +224,15 @@ pub struct WmoTextures {
     pub color_2: Argb,
     pub flags_2: u32,
     runtime_data: [u32; 4],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test() {
+        let wmoData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/lorderon/collidabledoodads/plaguelandbridge/plaguelandsbridge_000.wmo").unwrap();
+        dbg!(WmoGroup::new(wmoData));
+    }
 }
