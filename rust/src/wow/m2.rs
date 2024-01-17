@@ -59,13 +59,13 @@ pub struct M2Header {
     blend_map_overrides: WowArray<u16>,
 }
 
-#[wasm_bindgen(js_name = "WowM2")]
+#[wasm_bindgen(js_name = "WowM2", getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct M2 {
     data: Vec<u8>,
     header: M2Header,
-    texture_ids: Txid,
-    skin_ids: Sfid,
+    pub texture_ids: Vec<u32>,
+    pub skin_ids: Vec<u32>,
 }
 
 #[wasm_bindgen(js_class = "WowM2")]
@@ -78,12 +78,12 @@ impl M2 {
         let (_, header) = M2Header::from_bytes((chunk_data, 0))
             .map_err(|e| format!("{:?}", e))?;
 
-        let mut txid = None;
-        let mut sfid = None;
+        let mut txid: Option<Vec<u32>> = None;
+        let mut sfid: Option<Vec<u32>> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"TXID" => txid = Some(chunk.parse_with_byte_size(&chunk_data)?),
-                b"SFID" => sfid = Some(chunk.parse_with_byte_size(&chunk_data)?),
+                b"TXID" => txid = Some(chunk.parse_array(&chunk_data, 4)?),
+                b"SFID" => sfid = Some(chunk.parse_array(&chunk_data, 4)?),
                 _ => {},
             }
         }
@@ -119,8 +119,6 @@ impl M2 {
         Ok(self.get_m2_data()[vertex_data_start..vertex_data_end].to_vec())
     }
 
-    pub fn get_texture_ids(&self) -> Vec<u32> { self.texture_ids.file_data_ids.clone() }
-    pub fn get_skin_ids(&self) -> Vec<u32> { self.skin_ids.skin_file_ids.clone() }
     pub fn get_texture_lookup_table(&self) -> Result<Vec<u16>, String> {
         self.header.texture_lookup_table.to_vec(self.get_m2_data())
             .map_err(|e| format!("{:?}", e))

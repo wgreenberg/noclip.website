@@ -250,13 +250,13 @@ class ModelRenderer {
 
   public async load(dataFetcher: DataFetcher, device: GfxDevice): Promise<undefined> {
     this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
-    for (let txid of this.m2.get_texture_ids()) {
+    for (let txid of this.m2.texture_ids) {
       const blp = await fetchFileByID(txid, dataFetcher, rust.WowBlp.new);
       this.blpIds.push(txid);
       this.blps.push(blp);
     }
 
-    for (let skid of this.m2.get_skin_ids()) {
+    for (let skid of this.m2.skin_ids) {
       const skin = await fetchFileByID(skid, dataFetcher, rust.WowSkin.new);
       this.skins.push(skin);
     }

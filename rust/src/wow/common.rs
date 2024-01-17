@@ -19,6 +19,23 @@ impl Chunk {
         self.parse_inner(data, ())
     }
 
+    pub fn parse_array<T>(&self, data: &[u8], size_per_data: usize) -> Result<Vec<T>, String>
+        where for<'a> T: DekuRead<'a, ()> {
+        if self.size as usize % size_per_data != 0 {
+            return Err(format!(
+                "chunk size {} not evenly divisible by element size {}",
+                self.size,
+                size_per_data
+            ));
+        }
+        let num_elements = self.size as usize / size_per_data;
+        let mut result = Vec::with_capacity(num_elements);
+        for i in 0..num_elements {
+            result.push(self.parse(&data[i * size_per_data..])?);
+        }
+        Ok(result)
+    }
+
     fn parse_inner<T, V>(&self, data:&[u8], ctx: V) -> Result<T, String>
         where for<'a> T: DekuRead<'a, V> {
         let bitvec = BitVec::from_slice(&data[..]);
@@ -72,6 +89,15 @@ impl WowArray<u8> {
     }
 }
 
+#[wasm_bindgen(js_name = "WowQuat")]
+#[derive(DekuRead, Debug, Clone, Copy)]
+pub struct Quat {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
+}
+
 #[wasm_bindgen(js_name = "WowVec3")]
 #[derive(DekuRead, Debug, Clone, Copy)]
 pub struct Vec3 {
@@ -85,6 +111,16 @@ pub struct Vec3 {
 pub struct Vec2 {
     pub x: f32,
     pub y: f32,
+}
+
+#[wasm_bindgen(js_name = "WowArgb")]
+#[derive(DekuRead, Debug, Clone, Copy)]
+
+pub struct Argb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
 }
 
 // Axis-aligned bounding box
