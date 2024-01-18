@@ -11,7 +11,7 @@ pub struct Adt {
     pub doodads: Vec<Doodad>,
     height_tex_ids: Option<HeightTexIds>,
     diffuse_tex_ids: Option<DiffuseTexIds>,
-    pub map_object_defs: Vec<MapObjectDefinition>,
+    pub map_object_defs: Vec<WmoDefinition>,
 }
 
 #[wasm_bindgen(js_class = "WowAdt")]
@@ -381,9 +381,9 @@ pub struct Doodad {
     pub flags: u16
 }
 
-#[wasm_bindgen(js_name = "WowAdtMapObjectDefinition")]
+#[wasm_bindgen(js_name = "WowAdtWmoDefinition")]
 #[derive(Debug, DekuRead, Clone)]
-pub struct MapObjectDefinition {
+pub struct WmoDefinition {
     pub name_id: u32,
     pub unique_id: u32,
     pub position: Vec3,

@@ -1,14 +1,15 @@
 use deku::{prelude::*, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
 
-use super::common::ChunkedData;
+use super::common::{ChunkedData, AABBox, Vec3};
 
-#[wasm_bindgen(js_name = "WowWdt")]
+#[wasm_bindgen(js_name = "WowWdt", getter_with_clone)]
 pub struct Wdt {
     data: Vec<u8>,
     pub header: Mphd,
     area_infos: Vec<AreaInfo>,
     map_filedata_ids: Vec<MapFileDataIDs>,
+    pub global_wmo: Option<GlobalWmoDefinition>,
 }
 
 #[wasm_bindgen(js_class = "WowWdt")]
@@ -18,6 +19,7 @@ impl Wdt {
         let mut header: Option<Mphd> = None;
         let mut area_infos: Vec<AreaInfo> = Vec::with_capacity(4096);
         let mut map_filedata_ids: Vec<MapFileDataIDs> = Vec::with_capacity(4096);
+        let mut global_wmo: Option<GlobalWmoDefinition> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"NIAM" => {
@@ -33,6 +35,7 @@ impl Wdt {
                     }
                 },
                 b"DHPM" => header = Some(chunk.parse(&chunk_data)?),
+                b"FDOM" => global_wmo = Some(chunk.parse(&chunk_data)?),
                 _ => println!("skipping {}", chunk.magic_str()),
             }
         }
@@ -44,6 +47,7 @@ impl Wdt {
             header: header.ok_or("WDT has no header chunk!".to_string())?,
             area_infos,
             map_filedata_ids,
+            global_wmo,
         })
     }
 
@@ -56,6 +60,20 @@ impl Wdt {
         }
         result
     }
+}
+
+#[wasm_bindgen(js_name = "WowGlobalWmoDefinition")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct GlobalWmoDefinition {
+    pub name_id: u32,
+    pub unique_id: u32,
+    pub position: Vec3,
+    pub rotation: Vec3,
+    pub extents: AABBox,
+    pub flags: u16,
+    pub doodad_set: u16,
+    #[deku(pad_bytes_after = "2")]
+    pub name_set: u16,
 }
 
 #[wasm_bindgen(js_name = "WowAreaInfo")]

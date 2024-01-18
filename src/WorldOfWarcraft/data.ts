@@ -1,5 +1,5 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtMapObjectDefinition } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage } from "../gfx/platform/GfxPlatform.js";
@@ -87,6 +87,7 @@ export class WmoData {
   public blps: Map<number, WowBlp>;
   public models: Map<number, ModelData>;
   public materials: WowWmoMaterial[] = [];
+  public modelIds: Uint32Array;
 
   constructor(public fileId: number) {
     this.blps = new Map();
@@ -106,7 +107,8 @@ export class WmoData {
       }
     }
 
-    for (let modelId of this.wmo.doodad_file_ids) {
+    this.modelIds = this.wmo.doodad_file_ids;
+    for (let modelId of this.modelIds) {
       if (modelId !== 0 && !this.models.has(modelId)) {
         const modelData = new ModelData(modelId);
         await modelData.load(dataFetcher);
@@ -134,26 +136,46 @@ export class SkinData {
   }
 }
 
-export class AdtWmoDef {
+export class WmoDefinition {
   public modelMatrix: mat4;
-  public wmoId: number;
 
-  constructor(public def: WowAdtMapObjectDefinition) {
-    this.wmoId = def.name_id;
-    this.modelMatrix = mat4.create();
+  static fromAdtDefinition(def: WowAdtWmoDefinition) {
     const scale = def.scale / 1024;
-    //mat4.rotateX(this.modelMatrix, this.modelMatrix, MathConstants.TAU / 4);
-    //mat4.rotateY(this.modelMatrix, this.modelMatrix, MathConstants.TAU / 4);
-    setMatrixTranslation(this.modelMatrix, [
+    const position: vec3 = [
       def.position.x - 17066,
       def.position.y,
       def.position.z - 17066,
-    ]);
-    // TODO rotation
+    ];
+    const rotation: vec3 = [
+      def.rotation.x,
+      def.rotation.y,
+      def.rotation.z,
+    ];
+    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation);
+  }
+
+  static fromGlobalDefinition(def: WowGlobalWmoDefinition) {
+    const scale = 1.0;
+    const position: vec3 = [
+      def.position.x - 17066,
+      def.position.y,
+      def.position.z - 17066,
+    ];
+    const rotation: vec3 = [
+      def.rotation.x,
+      def.rotation.y,
+      def.rotation.z,
+    ];
+    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation);
+  }
+
+  constructor(public wmoId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3) {
+    this.modelMatrix = mat4.create();
+    setMatrixTranslation(this.modelMatrix, position);
     mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
-    mat4.rotateZ(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * def.rotation.z);
-    mat4.rotateY(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * def.rotation.y);
-    mat4.rotateX(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * def.rotation.x);
+    mat4.rotateZ(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[2]);
+    mat4.rotateY(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[1]);
+    mat4.rotateX(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[0]);
     mat4.mul(this.modelMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.modelMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
   }
@@ -163,7 +185,7 @@ export class AdtData {
   public blps: Map<number, WowBlp>;
   public models: Map<number, ModelData>;
   public wmos: Map<number, WmoData>;
-  public wmoDefs: AdtWmoDef[] = [];
+  public wmoDefs: WmoDefinition[] = [];
 
   constructor(public innerAdt: WowAdt) {
     this.blps = new Map();
@@ -187,7 +209,7 @@ export class AdtData {
 
       const mapObjectDefs = this.innerAdt.map_object_defs;
       for (let wmoDef of mapObjectDefs) {
-        this.wmoDefs.push(new AdtWmoDef(wmoDef));
+        this.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef));
         if (!this.wmos.has(wmoDef.name_id)) {
           const wmoData = new WmoData(wmoDef.name_id);
           await wmoData.load(dataFetcher);
@@ -212,72 +234,72 @@ export class AdtData {
 }
 
 export class DoodadData {
-  public modelMatrix: mat4;
+  public visible = true;
 
-  constructor(public position: vec3, public rotation: vec3 | quat, public scale: number, public color: number[] | null) {
-    this.modelMatrix = this.getDoodadTranformMat();
+  constructor(public modelId: number, public modelMatrix: mat4, public color: number[] | null) {
   }
 
   static fromAdtDoodad(doodad: WowDoodad): DoodadData {
     let position: vec3 = [doodad.position.x - 17066, doodad.position.y, doodad.position.z - 17066];
     let rotation: vec3 = [doodad.rotation.x, doodad.rotation.y, doodad.rotation.z];
     let scale = doodad.scale / 1024;
-    return new DoodadData(position, rotation, scale, null);
+    const doodadMat = mat4.create();
+    setMatrixTranslation(doodadMat, position);
+    mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
+    mat4.rotateZ(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[2]);
+    mat4.rotateY(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[1]);
+    mat4.rotateX(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[0]);
+    mat4.mul(doodadMat, doodadMat, placementSpaceFromModelSpace);
+    mat4.mul(doodadMat, adtSpaceFromPlacementSpace, doodadMat);
+    return new DoodadData(doodad.name_id, doodadMat, null);
   }
 
-  static fromWmoDoodad(doodad: WowDoodadDef): DoodadData {
+  static fromWmoDoodad(doodad: WowDoodadDef, wmo: WmoData): DoodadData {
     let position: vec3 = [doodad.position.x, doodad.position.y, doodad.position.z];
     let rotation: quat = [doodad.orientation.x, doodad.orientation.y, doodad.orientation.z, doodad.orientation.w];
     let scale = doodad.scale;
     let color = [doodad.color.g, doodad.color.b, doodad.color.r, doodad.color.a]; // BRGA
-    return new DoodadData(position, rotation, scale, color);
-  }
-
-  private getDoodadTranformMat(): mat4 {
-    const rotation = mat4.create();
-    mat4.identity(rotation);
-    if (this.rotation.length === 3) {
-        mat4.rotateX(rotation, rotation, MathConstants.DEG_TO_RAD * this.rotation[0]);
-        mat4.rotateY(rotation, rotation, MathConstants.DEG_TO_RAD * this.rotation[1]);
-        mat4.rotateZ(rotation, rotation, MathConstants.DEG_TO_RAD * this.rotation[2]);
-    } else if (this.rotation.length === 4) {
-        mat4.fromQuat(rotation, this.rotation);
-    }
-    const doodadMat = mat4.create();
-    mat4.fromRotationTranslationScale(
-      doodadMat,
-      rotation,
-      this.position,
-      [this.scale, this.scale, this.scale]
-    );
-    mat4.mul(doodadMat, adtSpaceFromPlacementSpace, doodadMat);
-    return doodadMat;
+    const modelId = wmo.modelIds[doodad.name_index];
+    let doodadMat = mat4.create();
+    setMatrixTranslation(doodadMat, position);
+    const rotMat = mat4.fromQuat(mat4.create(), rotation.map((deg) => MathConstants.DEG_TO_RAD * deg) as quat);
+    mat4.mul(doodadMat, doodadMat, rotMat);
+    mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
+    return new DoodadData(modelId, doodadMat, color);
   }
 }
 
 export class WorldData {
   public wdt: WowWdt;
   public adts: AdtData[] = [];
+  public globalWmo: WmoData | null = null;
+  public globalWmoDef: WmoDefinition | null = null;
 
   constructor(public fileId: number) {
   }
 
   public async load(dataFetcher: DataFetcher) {
     this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
-    for (let fileIDs of this.wdt.get_loaded_map_data()) {
-      if (fileIDs.root_adt === 0) {
-        console.log('null ADTs?')
-        continue;
+    const globalWmo = this.wdt.global_wmo;
+    if (globalWmo) {
+      this.globalWmo = new WmoData(globalWmo.name_id);
+      await this.globalWmo.load(dataFetcher);
+      this.globalWmoDef = WmoDefinition.fromGlobalDefinition(globalWmo);
+    } else {
+      for (let fileIDs of this.wdt.get_loaded_map_data()) {
+        if (fileIDs.root_adt === 0) {
+          throw new Error(`null ADTs in a non-global-WMO WDT`);
+        }
+        // TODO handle obj1 (LOD) adts
+        const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
+        wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
+        wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
+
+        const adt = new AdtData(wowAdt);
+        await adt.load(dataFetcher);
+
+        this.adts.push(adt);
       }
-      // TODO handle obj1 (LOD) adts
-      const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-      wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
-      wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
-
-      const adt = new AdtData(wowAdt);
-      await adt.load(dataFetcher);
-
-      this.adts.push(adt);
     }
   }
 }
