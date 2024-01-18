@@ -1,4 +1,4 @@
-import { WowBlp, WowPixelFormat } from "../../rust/pkg/index.js";
+import { WowBlp, WowColorEncoding, WowPixelFormat } from "../../rust/pkg/index.js";
 import * as Viewer from '../viewer.js';
 import ArrayBufferSlice from "../ArrayBufferSlice.js";
 import { decompressBC, surfaceToCanvas } from "../Common/bc_texture.js";
@@ -11,71 +11,68 @@ import { GfxTexture, GfxSampler } from "../gfx/platform/GfxPlatformImpl.js";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache.js";
 import { rust } from "../rustlib.js";
 
-function getImageFormatByteLength(fmt: GfxFormat, width: number, height: number): number {
-  if (fmt === GfxFormat.BC1 || fmt === GfxFormat.BC2 || fmt === GfxFormat.BC3) {
-    width = Math.max(width, 4);
-    height = Math.max(height, 4);
-    const count = ((width * height) / 16);
-    if (fmt === GfxFormat.BC1)
-      return count * 8;
-    else if (fmt === GfxFormat.BC2)
-      return count * 16;
-    else if (fmt === GfxFormat.BC3)
-      return count * 16;
-  } else {
-    if (fmt === GfxFormat.U8_RGBA_NORM)
-      return (width * height) * 4;
-    else if (fmt === GfxFormat.U16_RGB_565)
-      return (width * height) * 2;
-  }
-  throw new Error(`unrecognized compressed format ${GfxFormat[fmt]}`)
+function getTextureType(blpFile: WowBlp): GfxFormat | undefined {
+    switch (blpFile.header.preferred_format) {
+        case rust.WowPixelFormat.Dxt1:
+            if (blpFile.header.alpha_bit_depth > 0) {
+                return GfxFormat.BC1;
+            } else {
+                return GfxFormat.BC1_SRGB;
+            }
+        case rust.WowPixelFormat.Dxt3:
+            return GfxFormat.BC3;
+        case rust.WowPixelFormat.Argb8888:
+        case rust.WowPixelFormat.Unspecified:
+            return GfxFormat.U8_RGBA;
+        case rust.WowPixelFormat.Argb1555:
+            return GfxFormat.U16_RGBA_5551;
+        case rust.WowPixelFormat.Argb4444:
+            return GfxFormat.U16_RGBA_NORM;
+        case rust.WowPixelFormat.Rgb565:
+          return GfxFormat.U16_RGB_565;
+        case rust.WowPixelFormat.Dxt5:
+          return GfxFormat.BC5_SNORM;
+        case rust.WowPixelFormat.Argb2565:
+            return GfxFormat.U8_RGBA_SRGB; // this seems wrong?
+        default:
+            break;
+    }
+    return undefined;
 }
 
 function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
   if (blp === undefined) {
     return null!;
   }
-  const format = getTextureFormat(blp.header.preferred_format);
+  const format = getTextureType(blp)!;
   const mipMetadata = blp.get_mip_metadata();
   const texData = blp.get_texture_data();
-  //const mipmapCount = mipMetadata.length - 1;
-  const mipmapCount = 1;
-
-  const dimension = GfxTextureDimension.n2D;
-  let depth = 1;
+  const mipmapCount = mipMetadata.length;
 
   const textureDescriptor = {
-    dimension,
+    dimension: GfxTextureDimension.n2D,
     pixelFormat: format,
     width: blp.header.width,
     height: blp.header.height,
     numLevels: mipmapCount,
-    depth,
+    depth: 1,
     usage: GfxTextureUsage.Sampled,
   };
 
   const texture = device.createTexture(textureDescriptor!);
   const levelDatas = [];
-  let byteOffset = 0;
-  let w = blp.header.width;
-  let h = blp.header.height;
   for (let i = 0; i < mipmapCount; i++) {
-    const sliceByteLength = getImageFormatByteLength(format, w, h);
-
-    let buffer = new ArrayBufferSlice(texData.buffer, byteOffset, sliceByteLength * depth);
+    const metadata = mipMetadata[i];
+    let buffer = new ArrayBufferSlice(texData.buffer, metadata.offset, metadata.size);
 
     let levelData: ArrayBufferView;
-    if (format === GfxFormat.U16_RGB_565) {
+    if ([GfxFormat.U16_RGB_565, GfxFormat.U16_RGBA_5551, GfxFormat.U16_RGBA_NORM].includes(format)) {
       levelData = buffer.createTypedArray(Uint16Array);
     } else {
       levelData = buffer.createTypedArray(Uint8Array);
     }
 
     levelDatas.push(levelData);
-
-    byteOffset += sliceByteLength * depth;
-    w = Math.max(w >>> 1, 1);
-    h = Math.max(h >>> 1, 1);
   }
 
   device.uploadTextureData(texture, 0, levelDatas);

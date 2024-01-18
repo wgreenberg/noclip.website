@@ -73,11 +73,11 @@ pub struct BlpMipMetadata {
 #[wasm_bindgen(js_class = "WowBlp")]
 impl Blp {
     pub fn new(data: Vec<u8>) -> Result<Blp, String> {
-        let ((texture_data, _), header) = BlpHeader::from_bytes((&data, 0))
+        let (_, header) = BlpHeader::from_bytes((&data, 0))
             .map_err(|e| format!("{:?}", e))?;
 
         Ok(Blp {
-            texture_data: texture_data.to_vec(),
+            texture_data: data[1172..].to_vec(),
             header,
         })
     }
@@ -104,13 +104,28 @@ impl Blp {
     pub fn get_mip_metadata(&self) -> Vec<BlpMipMetadata> {
         let mut metadata = Vec::new();
         for i in 0..16 {
-            if self.header.mip_offsets[i] != 0 {
-                metadata.push(BlpMipMetadata {
-                    offset: self.header.mip_offsets[i],
-                    size: self.header.mip_sizes[i],
-                })
+            if self.header.mip_offsets[i] == 0 || self.header.mip_sizes[i] == 0 {
+                break;
             }
+            metadata.push(BlpMipMetadata {
+                // offsets are relative to the start of the chunk, so subtract
+                // the size of the header
+                offset: self.header.mip_offsets[i] - 1172,
+                size: self.header.mip_sizes[i],
+            })
         }
         metadata
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test() {
+        let data = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/tileset/plaguelandswest/westplaguedmudgrass_s.blp").unwrap();
+        let blp = Blp::new(data).unwrap();
+        dbg!(blp.header);
     }
 }

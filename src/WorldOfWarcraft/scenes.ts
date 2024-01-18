@@ -124,7 +124,7 @@ void mainPS() {
     float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
     float t_LightTint = 0.3 * t_LightIntensity;
     vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
-    gl_FragColor = tex + vec4(t_LightTint, t_LightTint, t_LightTint, 0.0);
+    gl_FragColor = tex;
 }
 #endif
 `;
@@ -178,9 +178,9 @@ void mainVS() {
 #ifdef FRAG
 void mainPS() {
     float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
-    float t_LightTint = 0.3 * t_LightIntensity;
+    float t_LightTint = 0.1 * t_LightIntensity;
     vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
-    gl_FragColor = tex + vec4(t_LightTint, t_LightTint, t_LightTint, 0.0);
+    gl_FragColor = tex + t_LightTint;
 }
 #endif
 `;
@@ -239,7 +239,7 @@ void mainPS() {
     float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
     float t_LightTint = 0.3 * t_LightIntensity;
     vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
-    gl_FragColor = tex + vec4(t_LightTint, t_LightTint, t_LightTint, 0.0);
+    gl_FragColor = tex;
 }
 #endif
 `;
@@ -434,28 +434,11 @@ class WmoStructureRenderer {
   }
 }
 
-class WmoModelRenderer {
-  public doodadRenderer: DoodadRenderer;
-
-  constructor(device: GfxDevice, wmo: WmoData, textureCache: TextureCache, renderHelper: GfxRenderHelper) {
-    const doodads = wmo.wmo.doodad_defs.map(def => DoodadData.fromWmoDoodad(def, wmo));
-    this.doodadRenderer = new DoodadRenderer(device, textureCache, doodads, wmo.models, renderHelper);
-  }
-
-  public prepareToRender(renderInstManager: GfxRenderInstManager, wmoModelMatrix: mat4) {
-    this.doodadRenderer.prepareToRender(renderInstManager, wmoModelMatrix);
-  }
-
-  public destroy(device: GfxDevice) {
-    this.doodadRenderer.destroy(device);
-  }
-}
-
 class WmoRenderer {
   public wmoProgram: GfxProgram;
   public modelProgram: GfxProgram;
   public wmoIdToRenderer: Map<number, WmoStructureRenderer>;
-  public wmoIdToModelRenderer: Map<number, WmoModelRenderer>;
+  public wmoIdToModelRenderer: Map<number, DoodadRenderer>;
   public wmoIdToWmoDefs: Map<number, WmoDefinition[]>;
 
   constructor(device: GfxDevice, wmoDefs: WmoDefinition[], wmos: WmoData[], textureCache: TextureCache, renderHelper: GfxRenderHelper) {
@@ -476,7 +459,8 @@ class WmoRenderer {
 
     for (let wmo of wmos) {
       this.wmoIdToRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, textureCache, renderHelper));
-      this.wmoIdToModelRenderer.set(wmo.fileId, new WmoModelRenderer(device, wmo, textureCache, renderHelper));
+      const doodads = wmo.wmo.doodad_defs.map(def => DoodadData.fromWmoDoodad(def, wmo));
+      this.wmoIdToModelRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, wmo.models, renderHelper));
     }
   }
 
@@ -622,7 +606,7 @@ class WorldScene implements Viewer.SceneGfx {
     let rs = [];
     for (let w of this.wmoRenderers) {
       for (let wm of w.wmoIdToModelRenderer.values()) {
-        for (let ds of wm.doodadRenderer.modelIdsToDoodads.values()) {
+        for (let ds of wm.modelIdsToDoodads.values()) {
           for (let d of ds) {
             rs.push(d);
           }
