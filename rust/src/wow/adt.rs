@@ -1,5 +1,6 @@
 use deku::prelude::*;
 use deku::ctx::ByteSize;
+use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
 
 use super::common::{Chunk, ChunkedData, Vec3, AABBox};
@@ -89,6 +90,8 @@ impl Adt {
         let unit_size: f32 = (1600.0 / 3.0) / 16.0 / 8.0;
         for mcnk in &self.map_chunks {
             for j in 0..(9*9 + 8*8) {
+                result.push(j as f32);
+
                 let mut iX = (j as f32) % 17.0;
                 let mut iY = ((j as f32) / 17.0).floor();
 
@@ -121,12 +124,12 @@ impl Adt {
         result
     }
 
-    fn get_index_buffer_and_descriptors(&self) -> (Vec<u16>, Vec<ChunkDescriptor>) {
+    fn get_index_buffer_and_descriptors(&self, adt_has_big_alpha: bool, adt_has_height_texturing: bool) -> (Vec<u16>, Vec<ChunkDescriptor>) {
         let mut index_buffer = Vec::new();
         let mut descriptors = Vec::with_capacity(256);
         for (i, mcnk) in self.map_chunks.iter().enumerate() {
             let texture_layers = match (&mcnk.texture_layers, &self.diffuse_tex_ids) {
-                (Some(layers), Some(mdid)) => layers.layers.iter()
+                (layers, Some(mdid)) => layers.iter()
                     .map(|layer| mdid.file_data_ids[layer.texture_index as usize])
                     .collect(),
                 _ => vec![],
@@ -145,18 +148,20 @@ impl Adt {
                     }
                 }
             }
+            let alpha_texture = mcnk.build_alpha_texture(adt_has_big_alpha, adt_has_height_texturing);
             descriptors.push(ChunkDescriptor {
                 texture_layers,
                 index_offset,
+                alpha_texture,
                 index_count,
             });
         }
         (index_buffer, descriptors)
     }
 
-    pub fn get_render_result(&self) -> AdtRenderResult {
+    pub fn get_render_result(&self, adt_has_big_alpha: bool, adt_has_height_texturing: bool) -> AdtRenderResult {
         let vertex_buffer = self.get_vertex_buffer();
-        let (index_buffer, chunks) = self.get_index_buffer_and_descriptors();
+        let (index_buffer, chunks) = self.get_index_buffer_and_descriptors(adt_has_big_alpha, adt_has_height_texturing);
         AdtRenderResult {
             vertex_buffer,
             index_buffer,
@@ -180,6 +185,7 @@ pub struct AdtRenderResult {
 #[derive(Debug, Clone)]
 pub struct ChunkDescriptor {
     pub texture_layers: Vec<u32>,
+    pub alpha_texture: Option<Vec<u8>>,
     pub index_offset: usize,
     pub index_count: usize,
 }
@@ -187,10 +193,10 @@ pub struct ChunkDescriptor {
 static SQUARE_INDICES_TRIANGLE: &[u16] = &[9, 0, 17, 9, 1, 0, 9, 18, 1, 9, 17, 18];
 
 pub static ADT_VBO_INFO: AdtVBOInfo = AdtVBOInfo {
-    stride: (3 + 3 + 4) * 4,
-    vertex_offset: 0,
-    normal_offset: 3 * 4,
-    color_offset: 6 * 4,
+    stride: (1 + 3 + 3 + 4) * 4,
+    vertex_offset: 1 * 4,
+    normal_offset: (1 + 3) * 4,
+    color_offset: (1 + 3 + 3) * 4,
 };
 
 #[wasm_bindgen(js_name = "WowAdtVBOInfo")]
@@ -268,7 +274,8 @@ pub struct MapChunk {
     pub normals: NormalChunk,
     pub shadows: Option<ShadowMapChunk>,
     pub vertex_colors: Option<VertexColors>,
-    pub texture_layers: Option<MapChunkTextureLayers>,
+    pub texture_layers: Vec<MapChunkTextureLayer>,
+    pub alpha_map: Option<AlphaMap>,
 }
 
 impl MapChunk {
@@ -297,8 +304,69 @@ impl MapChunk {
 
             // these will be appended in separate ADT files
             vertex_colors: None,
-            texture_layers: None,
+            alpha_map: None,
+            texture_layers: vec![],
         })
+    }
+
+    // These two flags come from the WDT definition block flags
+    pub fn build_alpha_texture(&self, adt_has_big_alpha: bool, adt_has_height_texturing: bool) -> Option<Vec<u8>> {
+        let alpha_map = &self.alpha_map.as_ref()?.data;
+        assert!(self.texture_layers.len() > 0);
+        let mut result = vec![0; (64 * 4) * 64];
+        for layer_idx in 0..self.texture_layers.len() {
+            let layer = &self.texture_layers[layer_idx];
+            let mut alpha_offset = layer.offset_in_mcal as usize;
+            let mut off_o = layer_idx;
+            let settings = MapChunkTextureLayerSettings::from(layer.settings);
+            if !settings.use_alpha_map {
+                for i in 0..4096 {
+                    result[off_o + i*4] = 255;
+                }
+            } else if settings.alpha_map_compressed {
+                let mut read_this_layer = 0;
+                while read_this_layer < 4096 {
+                    let fill = (alpha_map[alpha_offset] & 0x80) > 0;
+                    let n = alpha_map[alpha_offset] & 0x7F;
+                    alpha_offset += 1;
+
+                    for _ in 0..n {
+                        if read_this_layer >= 4096 {
+                            break;
+                        }
+                        result[off_o] = alpha_map[alpha_offset];
+                        read_this_layer += 1;
+                        off_o += 4;
+
+                        if !fill {
+                            alpha_offset += 1;
+                        }
+                    }
+                    if !fill {
+                        alpha_offset += 1;
+                    }
+                }
+            } else {
+                if adt_has_big_alpha || adt_has_height_texturing {
+                    // uncompressed (4096)
+                    for _ in 0..4096 {
+                        result[off_o] = alpha_map[alpha_offset];
+                        off_o += 4;
+                        alpha_offset += 1;
+                    }
+                } else {
+                    // uncompressed (2048)
+                    for _ in 0..2048 {
+                        result[off_o] = (alpha_map[alpha_offset] & 0x0f) * 17;
+                        off_o += 4;
+                        result[off_o] = ((alpha_map[alpha_offset] & 0xf0) >> 4) * 17;
+                        off_o += 4;
+                        alpha_offset += 1;
+                    }
+                }
+            }
+        }
+        Some(result)
     }
 
     fn append_obj_chunk(&mut self, chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
@@ -316,32 +384,65 @@ impl MapChunk {
 
     fn append_tex_chunk(&mut self, chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
         let mut chunked_data = ChunkedData::new(&chunk_data);
-        let mut mcly: Option<MapChunkTextureLayers> = None;
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
-                b"YLCM" => mcly = Some(subchunk.parse_with_byte_size(subchunk_data)?),
+                b"YLCM" => self.texture_layers = subchunk.parse_array(subchunk_data, 16)?,
+                b"LACM" => self.alpha_map = subchunk.parse_with_byte_size(subchunk_data)?,
                 _ => {},
             }
         }
-        self.texture_layers = mcly;
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, DekuRead)]
-#[deku(ctx = "ByteSize(size): ByteSize")]
-pub struct MapChunkTextureLayers {
-    #[deku(count = "size / 16")]
-    layers: Vec<MapChunkTextureLayer>,
 }
 
 #[wasm_bindgen(js_name = "WowAdtChunkTextureLayer")]
 #[derive(Debug, Clone, DekuRead)]
 pub struct MapChunkTextureLayer {
     pub texture_index: u32, // index into MDID?
-    pub flags: u32,
+    pub settings: u32,
     pub offset_in_mcal: u32,
     pub effect_id: u32,
+}
+
+#[wasm_bindgen(js_class = "WowAdtChunkTextureLayer")]
+impl MapChunkTextureLayer {
+    pub fn get_settings(&self) -> MapChunkTextureLayerSettings {
+        MapChunkTextureLayerSettings::from(self.settings)
+    }
+}
+
+#[wasm_bindgen(js_name = "WowAdtChunkTextureLayerSettings")]
+#[derive(Debug, Clone, Copy)]
+pub struct MapChunkTextureLayerSettings {
+    pub use_cube_map_reflection: bool,
+    pub alpha_map_compressed: bool,
+    pub use_alpha_map: bool,
+    pub overbright: bool,
+    pub animation_enabled: bool,
+    pub animation_speed: u32,
+    pub animation_rotation: u32,
+}
+
+impl From<u32> for MapChunkTextureLayerSettings {
+    fn from(value: u32) -> Self {
+        MapChunkTextureLayerSettings {
+            animation_rotation:       value & 0b00000000111,
+            animation_speed:          value & 0b00000111000,
+            animation_enabled:       (value & 0b00001000000) > 0,
+            overbright:              (value & 0b00010000000) > 0,
+            use_alpha_map:           (value & 0b00100000000) > 0,
+            alpha_map_compressed:    (value & 0b01000000000) > 0,
+            use_cube_map_reflection: (value & 0b10000000000) > 0,
+        }
+    }
+}
+
+#[wasm_bindgen(js_name = "WowAdtChunkAlphaMap")]
+#[derive(DekuRead, Debug, Clone)]
+#[deku(ctx = "ByteSize(size): ByteSize")]
+pub struct AlphaMap {
+    #[deku(count = "size")]
+    data: Vec<u8>
 }
 
 #[derive(Debug, Clone, DekuRead)]
@@ -419,6 +520,15 @@ mod tests {
     #[test]
     fn test() {
         let data = std::fs::read("D:/woof/wow uncasced/world/maps/tanarisinstance/tanarisinstance_29_27.adt").unwrap();
-        //let adt = Adt::new(data);
+        let mut adt = Adt::new(data).unwrap();
+        adt.append_tex_adt(std::fs::read("D:/woof/wow uncasced/world/maps/tanarisinstance/tanarisinstance_29_27_tex0.adt").unwrap()).unwrap();
+        for chunk in &adt.map_chunks {
+            if let Some(map) = &chunk.alpha_map {
+                for layer in &chunk.texture_layers {
+                    print!("{:?} ", layer.get_settings());
+                }
+                print!("{}\n\n", map.data.len());
+            }
+        }
     }
 }

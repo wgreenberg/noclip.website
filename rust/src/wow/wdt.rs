@@ -51,6 +51,11 @@ impl Wdt {
         })
     }
 
+    pub fn wdt_uses_global_map_obj(&self) -> bool { (self.header.flags & 0x0001) > 0 }
+    pub fn adt_has_mccv(&self) -> bool { (self.header.flags & 0x0002) > 0 }
+    pub fn adt_has_big_alpha(&self) -> bool { (self.header.flags & 0x0004) > 0 }
+    pub fn adt_has_height_texturing(&self) -> bool { (self.header.flags & 0x0080) > 0 }
+
     pub fn get_loaded_map_data(&self) -> Vec<MapFileDataIDs> {
         let mut result = Vec::new();
         for i in 0..self.area_infos.len() {
@@ -118,4 +123,15 @@ pub struct MapFileDataIDs {
     pub map_texture: u32, // reference to fdid of mapname_xx_yy.blp
     pub map_texture_n: u32, // reference to fdid of mapname_xx_yy_n.blp
     pub minimap_texture: u32, // reference to fdid of mapxx_yy.blp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test() {
+        let data = std::fs::read("../data/wow/world/maps/blackrockdepths/blackrockdepths.wdt").unwrap();
+        dbg!(Wdt::new(data).unwrap().header.flags);
+    }
 }

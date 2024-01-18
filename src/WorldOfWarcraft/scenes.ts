@@ -61,11 +61,7 @@ mat4.mul(placementSpaceFromModelSpace, placementSpaceFromModelSpace, noclipSpace
 export const modelSpaceFromAdtSpace: mat4 = mat4.invert(mat4.create(), adtSpaceFromModelSpace);
 
 const wmoBindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: 2, numSamplers: 4 }, // ub_SceneParams
-];
-
-const terrainBindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: 1, numSamplers: 4 }, // ub_SceneParams
+    { numUniformBuffers: 2, numSamplers: 4 },
 ];
 
 class WmoProgram extends DeviceProgram {
@@ -130,10 +126,15 @@ void mainPS() {
 `;
 }
 
+const terrainBindingLayouts: GfxBindingLayoutDescriptor[] = [
+    { numUniformBuffers: 1, numSamplers: 5 },
+];
+
 class TerrainProgram extends DeviceProgram {
   public static a_Position = 0;
   public static a_Normal = 1;
   public static a_Color = 2;
+  public static a_ChunkIndex = 3;
 
   public static ub_SceneParams = 0;
   public static ub_ModelParams = 1;
@@ -150,37 +151,50 @@ layout(binding = 0) uniform sampler2D u_Texture0;
 layout(binding = 1) uniform sampler2D u_Texture1;
 layout(binding = 2) uniform sampler2D u_Texture2;
 layout(binding = 3) uniform sampler2D u_Texture3;
+layout(binding = 4) uniform sampler2D u_AlphaTexture0;
 
-varying vec2 v_LightIntensity;
-varying vec2 v_UV;
 varying vec3 v_Normal;
 varying vec4 v_Color;
 varying vec3 v_Binormal;
 varying vec3 v_Tangent;
 varying vec3 v_Position;
+varying vec2 v_ChunkCoords;
 
 #ifdef VERT
 layout(location = ${TerrainProgram.a_Position}) attribute vec3 a_Position;
 layout(location = ${TerrainProgram.a_Normal}) attribute vec3 a_Normal;
 layout(location = ${TerrainProgram.a_Color}) attribute vec4 a_Color;
+layout(location = ${TerrainProgram.a_ChunkIndex}) attribute float a_ChunkIndex;
 
 void mainVS() {
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
-    vec3 t_LightDirection = normalize(vec3(.2, -1, .5));
-    v_UV = a_Position.xy;
+    float iX = mod(a_ChunkIndex, 17.0);
+    float iY = floor(a_ChunkIndex/17.0);
+
+    if (iX > 8.01) {
+        iY = iY + 0.5;
+        iX = iX - 8.5;
+    }
+
+    v_ChunkCoords = vec2(iX, iY);
     v_Color = a_Color;
-    float t_LightIntensityF = dot(-a_Normal, t_LightDirection);
-    float t_LightIntensityB = dot( a_Normal, t_LightDirection);
-    v_LightIntensity = vec2(t_LightIntensityF, t_LightIntensityB);
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
 }
 #endif
 
 #ifdef FRAG
+vec4 mixTex(vec4 tex0, vec4 tex1, float alpha) {
+  return (alpha * (tex1 - tex0) + tex0);
+}
+
 void mainPS() {
-    float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
-    float t_LightTint = 0.1 * t_LightIntensity;
-    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
-    gl_FragColor = tex + t_LightTint;
+    vec2 alphaCoord = v_ChunkCoords / 8.0;
+    vec3 alphaBlend = texture(SAMPLER_2D(u_AlphaTexture0), alphaCoord).rgb;
+    vec4 tex0 = texture(SAMPLER_2D(u_Texture0), v_ChunkCoords);
+    vec4 tex1 = texture(SAMPLER_2D(u_Texture1), v_ChunkCoords);
+    vec4 tex2 = texture(SAMPLER_2D(u_Texture2), v_ChunkCoords);
+    vec4 tex3 = texture(SAMPLER_3D(u_Texture3), v_ChunkCoords);
+    vec4 final = mixTex(mixTex(mixTex(tex0, tex1, alphaBlend.r), tex2, alphaBlend.g), tex3, alphaBlend.b);
+    gl_FragColor = final * 2.0 * v_Color;
 }
 #endif
 `;
@@ -507,13 +521,15 @@ class AdtTerrainRenderer {
   public indexBuffer: GfxIndexBufferDescriptor;
   public vertexBuffer: GfxVertexBufferDescriptor;
   public adtChunks: WowAdtChunkDescriptor[] = [];
+  public alphaTextureMappings: (TextureMapping | null)[] = [];
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
     const adtVboInfo = rust.WowAdt.get_vbo_info();
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-      { location: TerrainProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
-      { location: TerrainProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: adtVboInfo.normal_offset, format: GfxFormat.F32_RGB, },
-      { location: TerrainProgram.a_Color, bufferIndex: 0, bufferByteOffset: adtVboInfo.color_offset, format: GfxFormat.F32_RGBA, },
+      { location: TerrainProgram.a_ChunkIndex, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_R },
+      { location: TerrainProgram.a_Position,   bufferIndex: 0, bufferByteOffset: adtVboInfo.vertex_offset, format: GfxFormat.F32_RGB, },
+      { location: TerrainProgram.a_Normal,     bufferIndex: 0, bufferByteOffset: adtVboInfo.normal_offset, format: GfxFormat.F32_RGB, },
+      { location: TerrainProgram.a_Color,      bufferIndex: 0, bufferByteOffset: adtVboInfo.color_offset, format: GfxFormat.F32_RGBA, },
     ];
     const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
       { byteStride: adtVboInfo.stride, frequency: GfxVertexBufferFrequency.PerVertex },
@@ -522,6 +538,14 @@ class AdtTerrainRenderer {
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
     [this.vertexBuffer, this.indexBuffer, this.adtChunks] = this.adt.getBufsAndChunks(device);
+    for (let chunk of this.adtChunks) {
+      const alphaTex = chunk.alpha_texture;
+      if (alphaTex) {
+        this.alphaTextureMappings.push(textureCache.getAlphaTextureMapping(device, alphaTex));
+      } else {
+        this.alphaTextureMappings.push(null);
+      }
+    }
   }
 
   private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
@@ -539,9 +563,10 @@ class AdtTerrainRenderer {
   public prepareToRender(renderInstManager: GfxRenderInstManager) {
     const template = renderInstManager.pushTemplateRenderInst();
     template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
-    this.adtChunks.forEach(chunk => {
+    this.adtChunks.forEach((chunk, i) => {
       const renderInst = renderInstManager.newRenderInst();
       const textureMapping = this.getChunkTextureMapping(chunk);
+      textureMapping.push(this.alphaTextureMappings[i])
       renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
       renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
       renderInstManager.submitRenderInst(renderInst);

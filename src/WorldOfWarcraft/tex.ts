@@ -5,7 +5,7 @@ import { decompressBC, surfaceToCanvas } from "../Common/bc_texture.js";
 import { SamplerSettings } from "../Halo1/tex.js";
 import { TextureMapping, TextureHolder, LoadedTexture } from "../TextureHolder.js";
 import { makeSolidColorTexture2D } from "../gfx/helpers/TextureHelpers.js";
-import { GfxDevice, GfxTextureDimension, GfxTextureUsage, GfxTexFilterMode, GfxMipFilterMode, GfxWrapMode, makeTextureDescriptor2D } from "../gfx/platform/GfxPlatform.js";
+import { GfxDevice, GfxTextureDimension, GfxTextureUsage, GfxTexFilterMode, GfxMipFilterMode, GfxWrapMode, makeTextureDescriptor2D, GfxTextureDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { GfxFormat } from "../gfx/platform/GfxPlatformFormat.js";
 import { GfxTexture, GfxSampler } from "../gfx/platform/GfxPlatformImpl.js";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache.js";
@@ -123,6 +123,26 @@ export class TextureCache {
       const mapping = new TextureMapping();
       mapping.gfxTexture = this.getTexture(fileId, blp, debug, submap);
       mapping.gfxSampler = this.getSampler(samplerSettings);
+      return mapping;
+    }
+
+    public getAlphaTextureMapping(device: GfxDevice, texData: Uint8Array): TextureMapping {
+      let w = 64;
+      let h = texData.length === 2048 ? 32 : 64;
+      const textureDescriptor: GfxTextureDescriptor = {
+        dimension: GfxTextureDimension.n2D,
+        pixelFormat: GfxFormat.U8_RGBA_NORM,
+        width: w,
+        height: h,
+        numLevels: 1,
+        depth: 1,
+        usage: GfxTextureUsage.Sampled,
+      };
+      const texture = device.createTexture(textureDescriptor);
+      device.uploadTextureData(texture, 0, [texData]);
+      const mapping = new TextureMapping();
+      mapping.gfxTexture = texture;
+      mapping.gfxSampler = this.getSampler({ wrap: true });
       return mapping;
     }
 

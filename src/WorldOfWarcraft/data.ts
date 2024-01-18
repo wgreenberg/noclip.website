@@ -186,6 +186,8 @@ export class AdtData {
   public models: Map<number, ModelData>;
   public wmos: Map<number, WmoData>;
   public wmoDefs: WmoDefinition[] = [];
+  public hasBigAlpha: boolean;
+  public hasHeightTexturing: boolean;
 
   constructor(public innerAdt: WowAdt) {
     this.blps = new Map();
@@ -218,8 +220,17 @@ export class AdtData {
       }
   }
 
+  public setWorldFlags(wdt: WowWdt) {
+    this.hasBigAlpha = wdt.adt_has_big_alpha();
+    this.hasHeightTexturing = wdt.adt_has_height_texturing();
+
+    if (this.hasHeightTexturing) {
+      console.log('height texturing!', this);
+    }
+  }
+
   public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, WowAdtChunkDescriptor[]] {
-    const renderResult = this.innerAdt.get_render_result();
+    const renderResult = this.innerAdt.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
     const vertexBuffer = {
       buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
       byteOffset: 0,
@@ -280,8 +291,8 @@ export class WorldData {
 
   public async load(dataFetcher: DataFetcher) {
     this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
-    const globalWmo = this.wdt.global_wmo;
-    if (globalWmo) {
+    if (this.wdt.wdt_uses_global_map_obj()) {
+      const globalWmo = this.wdt.global_wmo!;
       this.globalWmo = new WmoData(globalWmo.name_id);
       await this.globalWmo.load(dataFetcher);
       this.globalWmoDef = WmoDefinition.fromGlobalDefinition(globalWmo);
@@ -297,6 +308,7 @@ export class WorldData {
 
         const adt = new AdtData(wowAdt);
         await adt.load(dataFetcher);
+        adt.setWorldFlags(this.wdt);
 
         this.adts.push(adt);
       }
