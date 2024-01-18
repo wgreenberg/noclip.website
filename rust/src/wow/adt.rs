@@ -224,7 +224,7 @@ pub struct MapChunkFlags {
 
 #[derive(DekuRead, Debug, Clone)]
 pub struct MapChunkHeader {
-    pub flags: MapChunkFlags,
+    pub flags: u32,
     pub index_x: u32,
     pub index_y: u32,
     pub n_layers: u32,
@@ -254,7 +254,7 @@ pub struct MapChunkHeader {
 
 impl MapChunkHeader {
     pub fn is_hole(&self, x: usize, y: usize) -> bool {
-        if self.flags.high_res_holes {
+        if (self.flags & 0x10000) > 0 {
             let hole_bytes = self.holes_high_res.to_le_bytes();
             ((hole_bytes[y] >> x) & 1) > 0
         } else {

@@ -20,7 +20,7 @@ function getTextureType(blpFile: WowBlp): GfxFormat | undefined {
                 return GfxFormat.BC1_SRGB;
             }
         case rust.WowPixelFormat.Dxt3:
-            return GfxFormat.BC3;
+            return GfxFormat.BC2;
         case rust.WowPixelFormat.Argb8888:
         case rust.WowPixelFormat.Unspecified:
             return GfxFormat.U8_RGBA;
@@ -31,7 +31,7 @@ function getTextureType(blpFile: WowBlp): GfxFormat | undefined {
         case rust.WowPixelFormat.Rgb565:
           return GfxFormat.U16_RGB_565;
         case rust.WowPixelFormat.Dxt5:
-          return GfxFormat.BC5_SNORM;
+          return GfxFormat.BC3;
         case rust.WowPixelFormat.Argb2565:
             return GfxFormat.U8_RGBA_SRGB; // this seems wrong?
         default:
@@ -61,9 +61,17 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
 
   const texture = device.createTexture(textureDescriptor!);
   const levelDatas = [];
+  let w = blp.header.width;
+  let h = blp.header.height;
   for (let i = 0; i < mipmapCount; i++) {
     const metadata = mipMetadata[i];
-    let buffer = new ArrayBufferSlice(texData.buffer, metadata.offset, metadata.size);
+    let size = metadata.size;
+    if ([GfxFormat.BC3, GfxFormat.BC2].includes(format)) {
+      size = Math.floor((w + 3) / 4) * Math.floor((h + 3) / 4) * 16;
+    } else if ([GfxFormat.BC1, GfxFormat.BC1_SRGB].includes(format)) {
+      size = Math.floor((w + 3) / 4) * Math.floor((h + 3) / 4) * 8;
+    }
+    let buffer = new ArrayBufferSlice(texData.buffer, metadata.offset, size);
 
     let levelData: ArrayBufferView;
     if ([GfxFormat.U16_RGB_565, GfxFormat.U16_RGBA_5551, GfxFormat.U16_RGBA_NORM].includes(format)) {
@@ -73,6 +81,8 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
     }
 
     levelDatas.push(levelData);
+    w = Math.max(w >>> 1, 1);
+    h = Math.max(h >>> 1, 1);
   }
 
   device.uploadTextureData(texture, 0, levelDatas);
@@ -82,6 +92,8 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
 export class TextureCache {
     public textures: Map<number, GfxTexture>;
     public default2DTexture: GfxTexture;
+    public allBlackTexture: GfxTexture;
+    public allWhiteTexture: GfxTexture;
 
     constructor(private renderCache: GfxRenderCache) {
       this.textures = new Map();
@@ -91,6 +103,32 @@ export class TextureCache {
         b: 0.5,
         a: 1.0,
       });
+      this.allBlackTexture = makeSolidColorTexture2D(renderCache.device, {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+      });
+      this.allWhiteTexture = makeSolidColorTexture2D(renderCache.device, {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+      });
+    }
+
+    public getAllBlackTextureMapping(): TextureMapping {
+      const mapping = new TextureMapping();
+      mapping.gfxTexture = this.allBlackTexture;
+      mapping.gfxSampler = this.getSampler({ wrap: false });
+      return mapping;
+    }
+
+    public getAllWhiteTextureMapping(): TextureMapping {
+      const mapping = new TextureMapping();
+      mapping.gfxTexture = this.allWhiteTexture;
+      mapping.gfxSampler = this.getSampler({ wrap: false });
+      return mapping;
     }
 
     public getTexture(fileId: number, blp: WowBlp, debug = false, submap = 0): GfxTexture {
@@ -148,6 +186,8 @@ export class TextureCache {
 
     public destroy(device: GfxDevice) {
       device.destroyTexture(this.default2DTexture);
+      device.destroyTexture(this.allBlackTexture);
+      device.destroyTexture(this.allWhiteTexture);
       for (let tex of this.textures.values()) {
         device.destroyTexture(tex);
       }

@@ -413,7 +413,7 @@ class WmoStructureRenderer {
     const mappings = []
     for (let blpId of [material.texture_1, material.texture_2, material.texture_3]) {
       if (blpId === 0) {
-        mappings.push(null);
+        mappings.push(this.textureCache.getAllWhiteTextureMapping());
       } else {
         const blp = this.wmo.blps.get(blpId);
         if (!blp) {
@@ -543,13 +543,18 @@ class AdtTerrainRenderer {
       if (alphaTex) {
         this.alphaTextureMappings.push(textureCache.getAlphaTextureMapping(device, alphaTex));
       } else {
-        this.alphaTextureMappings.push(null);
+        this.alphaTextureMappings.push(textureCache.getAllBlackTextureMapping());
       }
     }
   }
 
   private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
-    let mapping: (TextureMapping | null)[] = [null, null, null, null];
+    let mapping: (TextureMapping | null)[] = [
+      this.textureCache.getAllWhiteTextureMapping(),
+      this.textureCache.getAllWhiteTextureMapping(),
+      this.textureCache.getAllWhiteTextureMapping(),
+      this.textureCache.getAllWhiteTextureMapping(),
+    ];
     chunk.texture_layers.forEach((textureFileId, i) => {
       const blp = this.adt.blps.get(textureFileId);
       if (!blp) {
@@ -564,12 +569,14 @@ class AdtTerrainRenderer {
     const template = renderInstManager.pushTemplateRenderInst();
     template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
     this.adtChunks.forEach((chunk, i) => {
-      const renderInst = renderInstManager.newRenderInst();
-      const textureMapping = this.getChunkTextureMapping(chunk);
-      textureMapping.push(this.alphaTextureMappings[i])
-      renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
-      renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
-      renderInstManager.submitRenderInst(renderInst);
+      if (chunk.index_count > 0) {
+        const renderInst = renderInstManager.newRenderInst();
+        const textureMapping = this.getChunkTextureMapping(chunk);
+        textureMapping.push(this.alphaTextureMappings[i])
+        renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
+        renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
+        renderInstManager.submitRenderInst(renderInst);
+      }
     })
     renderInstManager.popTemplateRenderInst();
   }
@@ -613,32 +620,6 @@ class WorldScene implements Viewer.SceneGfx {
         ));
       }
     }
-  }
-
-  public getAdtDoodads(): DoodadData[] {
-    let rs = [];
-    for (let m of this.modelRenderers) {
-      for (let ds of m.modelIdsToDoodads.values()) {
-        for (let d of ds) {
-          rs.push(d);
-        }
-      }
-    }
-    return rs;
-  }
-
-  public getWmoDoodads(): DoodadData[] {
-    let rs = [];
-    for (let w of this.wmoRenderers) {
-      for (let wm of w.wmoIdToModelRenderer.values()) {
-        for (let ds of wm.modelIdsToDoodads.values()) {
-          for (let d of ds) {
-            rs.push(d);
-          }
-        }
-      }
-    }
-    return rs;
   }
 
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
