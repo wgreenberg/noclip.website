@@ -131,6 +131,17 @@ pub struct AABBox {
     pub max: Vec3,
 }
 
+impl AABBox {
+    pub fn update(&mut self, x: f32, y: f32, z: f32) {
+        if x < self.min.x { self.min.x = x; }
+        if x > self.max.x { self.max.x = x; }
+        if y < self.min.y { self.min.y = y; }
+        if y > self.max.y { self.max.y = y; }
+        if z < self.min.z { self.min.z = z; }
+        if z > self.max.z { self.max.z = z; }
+    }
+}
+
 #[derive(Debug, DekuRead, Clone, Copy)]
 pub struct WowArray<T> {
     pub count: u32,

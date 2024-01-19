@@ -6,7 +6,8 @@ import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBuff
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
-import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace } from "./scenes.js";
+import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace } from "./scenes.js";
+import { AABB } from "../Geometry.js";
 
 
 export class ModelData {
@@ -138,6 +139,9 @@ export class SkinData {
 
 export class WmoDefinition {
   public modelMatrix: mat4;
+  public worldSpaceAABB: AABB;
+  public visible: boolean;
+  public doodadsVisible: boolean;
 
   static fromAdtDefinition(def: WowAdtWmoDefinition) {
     const scale = def.scale / 1024;
@@ -151,7 +155,15 @@ export class WmoDefinition {
       def.rotation.y,
       def.rotation.z,
     ];
-    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation);
+    const aabb = new AABB(
+      def.extents.min.x - 17066,
+      def.extents.min.y,
+      def.extents.min.z - 17066,
+      def.extents.max.x - 17066,
+      def.extents.max.y,
+      def.extents.max.z - 17066,
+    )
+    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation, aabb);
   }
 
   static fromGlobalDefinition(def: WowGlobalWmoDefinition) {
@@ -166,10 +178,19 @@ export class WmoDefinition {
       def.rotation.y,
       def.rotation.z,
     ];
-    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation);
+    const aabb = new AABB(
+      def.extents.min.x - 17066,
+      def.extents.min.y,
+      def.extents.min.z - 17066,
+      def.extents.max.x - 17066,
+      def.extents.max.y,
+      def.extents.max.z - 17066,
+    )
+    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation, aabb);
   }
 
-  constructor(public wmoId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3) {
+  // AABB should be in placement space
+  constructor(public wmoId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3, extents: AABB) {
     this.modelMatrix = mat4.create();
     setMatrixTranslation(this.modelMatrix, position);
     mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
@@ -178,6 +199,10 @@ export class WmoDefinition {
     mat4.rotateX(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[0]);
     mat4.mul(this.modelMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.modelMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
+
+    this.worldSpaceAABB = extents;
+    this.visible = true;
+    this.doodadsVisible = true;
   }
 }
 
@@ -229,7 +254,7 @@ export class AdtData {
     }
   }
 
-  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, WowAdtChunkDescriptor[]] {
+  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, WowAdtChunkDescriptor[], AABB] {
     const renderResult = this.innerAdt.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
     const vertexBuffer = {
       buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
@@ -240,7 +265,17 @@ export class AdtData {
       byteOffset: 0,
     };
     const adtChunks = renderResult.chunks;
-    return [vertexBuffer, indexBuffer, adtChunks];
+    const extents = renderResult.extents;
+    const aabb = new AABB(
+      extents.min.x,
+      extents.min.y,
+      extents.min.z,
+      extents.max.x,
+      extents.max.y,
+      extents.max.z,
+    );
+    aabb.transform(aabb, noclipSpaceFromAdtSpace);
+    return [vertexBuffer, indexBuffer, adtChunks, aabb];
   }
 }
 

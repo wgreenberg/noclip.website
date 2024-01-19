@@ -84,26 +84,40 @@ impl Adt {
         Ok(())
     }
 
+    fn chunk_index_to_coords(index: usize) -> (f32, f32) {
+        let mut x = (index as f32) % 17.0;
+        let mut y = ((index as f32) / 17.0).floor();
+
+        if x > 8.01 {
+            y += 0.5;
+            x -= 8.5;
+        }
+        (x, y)
+    }
+
     // it's probably faster to just send the normals/colors as separate raw bufs but w/e
-    fn get_vertex_buffer(&self) -> Vec<f32> {
+    fn get_vertex_buffer_and_extents(&self) -> (Vec<f32>, AABBox) {
         let mut result = Vec::with_capacity(256 * ADT_VBO_INFO.stride);
+        let mut aabb = AABBox {
+            min: Vec3 { x: f32::INFINITY, y: f32::INFINITY, z: f32::INFINITY },
+            max: Vec3 { x: f32::NEG_INFINITY, y: f32::NEG_INFINITY, z: f32::NEG_INFINITY },
+        };
         let unit_size: f32 = (1600.0 / 3.0) / 16.0 / 8.0;
         for mcnk in &self.map_chunks {
             for j in 0..(9*9 + 8*8) {
-                result.push(j as f32);
-
-                let mut iX = (j as f32) % 17.0;
-                let mut iY = ((j as f32) / 17.0).floor();
-
-                if iX > 8.01 {
-                    iY += 0.5;
-                    iX -= 8.5;
-                }
+                result.push(j as f32); // add the chunk index
 
                 // position
-                result.push(mcnk.header.position.x - (iY * unit_size));
-                result.push(mcnk.header.position.y - (iX * unit_size));
-                result.push(mcnk.header.position.z + mcnk.heightmap.heightmap[j]);
+                let (x, y) = Adt::chunk_index_to_coords(j);
+                let x_coord = mcnk.header.position.x - (y * unit_size); 
+                let y_coord = mcnk.header.position.y - (x * unit_size);
+                let z_coord = mcnk.header.position.z + mcnk.heightmap.heightmap[j];
+                result.push(x_coord);
+                result.push(y_coord);
+                result.push(z_coord);
+
+                // update aabb
+                aabb.update(x_coord, y_coord, z_coord);
 
                 // normals
                 let normals = &mcnk.normals.normals[j*3..];
@@ -121,7 +135,7 @@ impl Adt {
                 result.push(vertex_colors[3] as f32 / 255.0); // a
             }
         }
-        result
+        (result, aabb)
     }
 
     fn get_index_buffer_and_descriptors(&self, adt_has_big_alpha: bool, adt_has_height_texturing: bool) -> (Vec<u16>, Vec<ChunkDescriptor>) {
@@ -154,18 +168,25 @@ impl Adt {
                 index_offset,
                 alpha_texture,
                 index_count,
+                debug_string: format!(
+                    "big_alpha: {}, height_texturing: {}, layers: {:?}",
+                    adt_has_big_alpha,
+                    adt_has_height_texturing,
+                    &mcnk.texture_layers
+                ),
             });
         }
         (index_buffer, descriptors)
     }
 
     pub fn get_render_result(&self, adt_has_big_alpha: bool, adt_has_height_texturing: bool) -> AdtRenderResult {
-        let vertex_buffer = self.get_vertex_buffer();
+        let (vertex_buffer, extents) = self.get_vertex_buffer_and_extents();
         let (index_buffer, chunks) = self.get_index_buffer_and_descriptors(adt_has_big_alpha, adt_has_height_texturing);
         AdtRenderResult {
             vertex_buffer,
             index_buffer,
             chunks,
+            extents,
         }
     }
 
@@ -179,6 +200,7 @@ pub struct AdtRenderResult {
     pub vertex_buffer: Vec<f32>,
     pub index_buffer: Vec<u16>,
     pub chunks: Vec<ChunkDescriptor>,
+    pub extents: AABBox,
 }
 
 #[wasm_bindgen(js_name = "WowAdtChunkDescriptor", getter_with_clone)]
@@ -188,6 +210,7 @@ pub struct ChunkDescriptor {
     pub alpha_texture: Option<Vec<u8>>,
     pub index_offset: usize,
     pub index_count: usize,
+    pub debug_string: String,
 }
 
 static SQUARE_INDICES_TRIANGLE: &[u16] = &[9, 0, 17, 9, 1, 0, 9, 18, 1, 9, 17, 18];
@@ -342,7 +365,7 @@ impl MapChunk {
                             alpha_offset += 1;
                         }
                     }
-                    if !fill {
+                    if fill {
                         alpha_offset += 1;
                     }
                 }
@@ -396,12 +419,23 @@ impl MapChunk {
 }
 
 #[wasm_bindgen(js_name = "WowAdtChunkTextureLayer")]
-#[derive(Debug, Clone, DekuRead)]
+#[derive(Clone, DekuRead)]
 pub struct MapChunkTextureLayer {
     pub texture_index: u32, // index into MDID?
     pub settings: u32,
     pub offset_in_mcal: u32,
     pub effect_id: u32,
+}
+
+impl std::fmt::Debug for MapChunkTextureLayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MapChunkTextureLayer")
+            .field("texture_index", &self.texture_index)
+            .field("settings", &MapChunkTextureLayerSettings::from(self.settings))
+            .field("offset_in_mcal", &self.offset_in_mcal)
+            .field("effect_id", &self.effect_id)
+            .finish()
+    }
 }
 
 #[wasm_bindgen(js_class = "WowAdtChunkTextureLayer")]

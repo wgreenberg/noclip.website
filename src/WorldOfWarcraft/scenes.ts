@@ -20,34 +20,37 @@ import { mat4, vec3 } from 'gl-matrix';
 import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition } from './data.js';
 import { getMatrixTranslation } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
-import { CameraController } from '../Camera.js';
+import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
-import { drawWorldSpaceText, getDebugOverlayCanvas2D } from '../DebugJunk.js';
+import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D } from '../DebugJunk.js';
+import { AABB } from '../Geometry.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
 
-const noclipSpaceFromAdtSpace = mat4.fromValues(
+export const noclipSpaceFromAdtSpace = mat4.fromValues(
   0, 0, -1, 0,
   -1, 0, 0, 0,
   0, 1, 0, 0,
   0, 0, 0, 1,
 );
 
-const noclipSpaceFromModelSpace = mat4.fromValues(
+export const noclipSpaceFromModelSpace = mat4.fromValues(
   0, 0, 1, 0,
   1, 0, 0, 0,
   0, 1, 0, 0,
   0, 0, 0, 1,
 );
 
-const noclipSpaceFromPlacementSpace = mat4.fromValues(
+export const noclipSpaceFromPlacementSpace = mat4.fromValues(
   1, 0, 0, 0,
   0, 1, 0, 0,
   0, 0, 1, 0,
   0, 0, 0, 1,
 )
+
+const MAX_RENDER_DIST = 10000;
 
 export const adtSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
 mat4.mul(adtSpaceFromPlacementSpace, adtSpaceFromPlacementSpace, noclipSpaceFromPlacementSpace);
@@ -188,13 +191,14 @@ vec4 mixTex(vec4 tex0, vec4 tex1, float alpha) {
 
 void mainPS() {
     vec2 alphaCoord = v_ChunkCoords / 8.0;
-    vec3 alphaBlend = texture(SAMPLER_2D(u_AlphaTexture0), alphaCoord).rgb;
+    vec4 alphaBlend = texture(SAMPLER_2D(u_AlphaTexture0), alphaCoord);
     vec4 tex0 = texture(SAMPLER_2D(u_Texture0), v_ChunkCoords);
     vec4 tex1 = texture(SAMPLER_2D(u_Texture1), v_ChunkCoords);
     vec4 tex2 = texture(SAMPLER_2D(u_Texture2), v_ChunkCoords);
     vec4 tex3 = texture(SAMPLER_3D(u_Texture3), v_ChunkCoords);
-    vec4 final = mixTex(mixTex(mixTex(tex0, tex1, alphaBlend.r), tex2, alphaBlend.g), tex3, alphaBlend.b);
+    vec4 final = mixTex(mixTex(mixTex(tex0, tex1, alphaBlend.g), tex2, alphaBlend.b), tex3, alphaBlend.a);
     gl_FragColor = final * 2.0 * v_Color;
+    gl_FragColor.a = 1.0;
 }
 #endif
 `;
@@ -454,6 +458,7 @@ class WmoRenderer {
   public wmoIdToRenderer: Map<number, WmoStructureRenderer>;
   public wmoIdToModelRenderer: Map<number, DoodadRenderer>;
   public wmoIdToWmoDefs: Map<number, WmoDefinition[]>;
+  public wmoIdToVisible: Map<number, boolean>;
 
   constructor(device: GfxDevice, wmoDefs: WmoDefinition[], wmos: WmoData[], textureCache: TextureCache, renderHelper: GfxRenderHelper) {
     this.wmoProgram = renderHelper.renderCache.createProgram(new WmoProgram());
@@ -478,6 +483,19 @@ class WmoRenderer {
     }
   }
 
+  public setCulling(viewerInput: Viewer.ViewerRenderInput) {
+    const cameraPosition: vec3 = [0, 0, 0];
+    getMatrixTranslation(cameraPosition, viewerInput.camera.worldMatrix);
+    for (let wmoDefs of this.wmoIdToWmoDefs.values()) {
+      for (let def of wmoDefs) {
+        let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, def.worldSpaceAABB);
+        const isCloseEnough = distance < MAX_RENDER_DIST;
+        def.visible = viewerInput.camera.frustum.contains(def.worldSpaceAABB) && isCloseEnough;
+        def.doodadsVisible = def.worldSpaceAABB.containsPoint(cameraPosition);
+      }
+    }
+  }
+
   public prepareToRender(renderInstManager: GfxRenderInstManager) {
     const cam = mat4.create();
     mat4.mul(cam, window.main.viewer.camera.clipFromWorldMatrix, noclipSpaceFromAdtSpace);
@@ -487,6 +505,7 @@ class WmoRenderer {
     for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
       let renderer = this.wmoIdToRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
+        if (!def.visible) continue;
         let offs = template.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16);
         const mapped = template.mapUniformBufferF32(ModelProgram.ub_ModelParams);
         offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
@@ -499,6 +518,7 @@ class WmoRenderer {
     for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
       let renderer = this.wmoIdToModelRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
+        if (!def.doodadsVisible) continue;
         renderer.prepareToRender(renderInstManager, def.modelMatrix);
       }
     }
@@ -516,12 +536,20 @@ class WmoRenderer {
   }
 }
 
+interface VisibleGuy {
+  visible: boolean;
+  data: any;
+}
+
 class AdtTerrainRenderer {
   private inputLayout: GfxInputLayout;
   public indexBuffer: GfxIndexBufferDescriptor;
   public vertexBuffer: GfxVertexBufferDescriptor;
   public adtChunks: WowAdtChunkDescriptor[] = [];
   public alphaTextureMappings: (TextureMapping | null)[] = [];
+  public chunkVisible: VisibleGuy[] = [];
+  public worldSpaceAABB: AABB;
+  public visible: boolean = true;
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
     const adtVboInfo = rust.WowAdt.get_vbo_info();
@@ -537,9 +565,17 @@ class AdtTerrainRenderer {
     const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-    [this.vertexBuffer, this.indexBuffer, this.adtChunks] = this.adt.getBufsAndChunks(device);
+    [this.vertexBuffer, this.indexBuffer, this.adtChunks, this.worldSpaceAABB] = this.adt.getBufsAndChunks(device);
+    console.log(this.worldSpaceAABB)
     for (let chunk of this.adtChunks) {
       const alphaTex = chunk.alpha_texture;
+      this.chunkVisible.push({
+        visible: true,
+        data: {
+          alphaTex: alphaTex,
+          chunk: chunk,
+        }
+      });
       if (alphaTex) {
         this.alphaTextureMappings.push(textureCache.getAlphaTextureMapping(device, alphaTex));
       } else {
@@ -548,12 +584,16 @@ class AdtTerrainRenderer {
     }
   }
 
+  public setCulling(viewerInput: Viewer.ViewerRenderInput) {
+    //drawWorldSpaceAABB(getDebugOverlayCanvas2D(), viewerInput.camera.clipFromWorldMatrix, this.worldSpaceAABB);
+    let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, this.worldSpaceAABB);
+    const isCloseEnough = distance < MAX_RENDER_DIST;
+    this.visible = viewerInput.camera.frustum.contains(this.worldSpaceAABB) && isCloseEnough;
+  }
+
   private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
     let mapping: (TextureMapping | null)[] = [
-      this.textureCache.getAllWhiteTextureMapping(),
-      this.textureCache.getAllWhiteTextureMapping(),
-      this.textureCache.getAllWhiteTextureMapping(),
-      this.textureCache.getAllWhiteTextureMapping(),
+      null, null, null, null
     ];
     chunk.texture_layers.forEach((textureFileId, i) => {
       const blp = this.adt.blps.get(textureFileId);
@@ -566,10 +606,11 @@ class AdtTerrainRenderer {
   }
 
   public prepareToRender(renderInstManager: GfxRenderInstManager) {
+    if (!this.visible) return;
     const template = renderInstManager.pushTemplateRenderInst();
     template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
     this.adtChunks.forEach((chunk, i) => {
-      if (chunk.index_count > 0) {
+      if (this.chunkVisible[i].visible && chunk.index_count > 0) {
         const renderInst = renderInstManager.newRenderInst();
         const textureMapping = this.getChunkTextureMapping(chunk);
         textureMapping.push(this.alphaTextureMappings[i])
@@ -636,6 +677,7 @@ class WorldScene implements Viewer.SceneGfx {
     offs += fillMatrix4x4(mapped, offs, viewMat);
 
     this.terrainRenderers.forEach(terrainRenderer => {
+      terrainRenderer.setCulling(viewerInput);
       terrainRenderer.prepareToRender(this.renderHelper.renderInstManager);
     });
 
@@ -646,6 +688,7 @@ class WorldScene implements Viewer.SceneGfx {
     });
 
     this.wmoRenderers.forEach(wmoRenderer => {
+      wmoRenderer.setCulling(viewerInput)
       wmoRenderer.prepareToRender(this.renderHelper.renderInstManager);
     });
 
