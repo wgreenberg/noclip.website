@@ -23,7 +23,7 @@ function getTextureType(blpFile: WowBlp): GfxFormat | undefined {
             return GfxFormat.BC2;
         case rust.WowPixelFormat.Argb8888:
         case rust.WowPixelFormat.Unspecified:
-            return GfxFormat.U8_RGBA;
+            return GfxFormat.U8_RGBA_NORM;
         case rust.WowPixelFormat.Argb1555:
             return GfxFormat.U16_RGBA_5551;
         case rust.WowPixelFormat.Argb4444:
@@ -45,6 +45,9 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
     return null!;
   }
   const format = getTextureType(blp)!;
+  if (format === GfxFormat.U8_RGBA_NORM) {
+    return null!;
+  }
   const mipMetadata = blp.get_mip_metadata();
   const texData = blp.get_texture_data();
   const mipmapCount = mipMetadata.length;

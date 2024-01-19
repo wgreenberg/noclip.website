@@ -121,7 +121,7 @@ impl WmoGroup {
             vertices: vertices.ok_or("WMO group didn't have vertices")?,
             normals: normals.ok_or("WMO group didn't have normals")?,
             uvs: uvs.ok_or("WMO group didn't have uvs")?,
-            batches: batches.ok_or("WMO group didn't have material batches")?,
+            batches: batches.unwrap_or(vec![]),
             doodad_refs: doodad_refs.unwrap_or(vec![]),
         })
     }

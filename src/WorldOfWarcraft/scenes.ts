@@ -50,7 +50,8 @@ export const noclipSpaceFromPlacementSpace = mat4.fromValues(
   0, 0, 0, 1,
 )
 
-const MAX_RENDER_DIST = 10000;
+const MAX_WMO_RENDER_DIST = 10000;
+const MAX_ADT_RENDER_DIST = 10000;
 
 export const adtSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
 mat4.mul(adtSpaceFromPlacementSpace, adtSpaceFromPlacementSpace, noclipSpaceFromPlacementSpace);
@@ -208,6 +209,9 @@ const modelBindingLayouts: GfxBindingLayoutDescriptor[] = [
     { numUniformBuffers: 2, numSamplers: 4 }, // ub_SceneParams
 ];
 
+
+const MAX_DOODAD_INSTANCES = 32;
+
 class ModelProgram extends DeviceProgram {
   public static a_Position = 0;
   public static a_Normal = 1;
@@ -225,17 +229,12 @@ layout(std140) uniform ub_SceneParams {
 };
 
 layout(std140) uniform ub_ModelParams {
-    Mat4x4 u_Transform;
+    Mat4x4 u_Transform[${MAX_DOODAD_INSTANCES}];
 };
 
 layout(binding = 0) uniform sampler2D u_Texture0;
 
-varying vec2 v_LightIntensity;
 varying vec2 v_UV;
-varying vec3 v_Normal;
-varying vec3 v_Binormal;
-varying vec3 v_Tangent;
-varying vec3 v_Position;
 
 #ifdef VERT
 layout(location = ${ModelProgram.a_Position}) attribute vec3 a_Position;
@@ -243,21 +242,18 @@ layout(location = ${ModelProgram.a_Normal}) attribute vec3 a_Normal;
 layout(location = ${ModelProgram.a_TexCoord}) attribute vec2 a_TexCoord;
 
 void mainVS() {
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform, vec4(a_Position, 1.0))));
-    vec3 t_LightDirection = normalize(vec3(.2, -1, .5));
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform[gl_InstanceID], vec4(a_Position, 1.0))));
     v_UV = a_TexCoord;
-    float t_LightIntensityF = dot(-a_Normal, t_LightDirection);
-    float t_LightIntensityB = dot( a_Normal, t_LightDirection);
-    v_LightIntensity = vec2(t_LightIntensityF, t_LightIntensityB);
 }
 #endif
 
 #ifdef FRAG
 void mainPS() {
-    float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
-    float t_LightTint = 0.3 * t_LightIntensity;
     vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
     gl_FragColor = tex;
+    if (tex.a < 0.2) {
+      discard;
+    }
 }
 #endif
 `;
@@ -305,7 +301,7 @@ class ModelRenderer {
     return nBatches > 0;
   }
 
-  public prepareToRender(renderInstManager: GfxRenderInstManager): void {
+  public prepareToRenderModelRenderer(renderInstManager: GfxRenderInstManager, numInstances: number): void {
     for (let i=0; i<this.skinData.length; i++) {
       const skinData = this.skinData[i];
       const indexBuffer = this.indexBuffers[i];
@@ -313,11 +309,12 @@ class ModelRenderer {
         let renderInst = renderInstManager.newRenderInst();
         renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
         const submesh = skinData.submeshes[batch.skin_submesh_index];
-        renderInst.drawIndexes(submesh.index_count, submesh.index_start);
+        renderInst.drawIndexesInstanced(submesh.index_count, numInstances, submesh.index_start);
         const m2TextureIndex = this.model.textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
         const blp = this.model.blps[m2TextureIndex];
         const blpId = this.model.blpIds[m2TextureIndex];
         const mapping = this.textureCache.getTextureMapping(blpId, blp);
+        renderInst.setAllowSkippingIfPipelineNotReady(false);
         renderInst.setSamplerBindingsFromTextureMappings([mapping]);
         renderInstManager.submitRenderInst(renderInst);
       }
@@ -348,6 +345,10 @@ class DoodadRenderer {
       }
     }
 
+    for (let [modelId, doodads] of this.modelIdsToDoodads) {
+      //console.log(`model ${modelId}: ${doodads.length} doodads`)
+    }
+
     for (let modelId of this.modelIdsToDoodads.keys()) {
       const modelData = models.get(modelId);
       if (!modelData) {
@@ -357,24 +358,29 @@ class DoodadRenderer {
     }
   }
 
-  public prepareToRender(renderInstManager: GfxRenderInstManager, parentModelMatrix: mat4 | null): void {
+  public prepareToRenderDoodadRenderer(renderInstManager: GfxRenderInstManager, parentModelMatrix: mat4 | null): void {
     for (let [modelId, doodads] of this.modelIdsToDoodads) {
       const modelRenderer = this.modelIdsToModelRenderers.get(modelId)!;
       if (!modelRenderer.isDrawable()) continue;
-      for (let doodad of doodads) {
-        if (!doodad.visible) continue;
-        const template = renderInstManager.pushTemplateRenderInst();
-        let offs = template.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16);
+
+      const visibleDoodads = doodads.filter(d => d.visible);
+
+      const template = renderInstManager.pushTemplateRenderInst();
+
+      for (let doodads of chunk(visibleDoodads, MAX_DOODAD_INSTANCES)) {
+        let offs = template.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16 * MAX_DOODAD_INSTANCES);
         const mapped = template.mapUniformBufferF32(ModelProgram.ub_ModelParams);
-        if (parentModelMatrix) {
-          const combinedModelMatrix = mat4.mul(mat4.create(), parentModelMatrix, doodad.modelMatrix);
-          offs += fillMatrix4x4(mapped, offs, combinedModelMatrix);
-        } else {
-          offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
+        for (let doodad of doodads) {
+          if (parentModelMatrix) {
+            const combinedModelMatrix = mat4.mul(mat4.create(), parentModelMatrix, doodad.modelMatrix);
+            offs += fillMatrix4x4(mapped, offs, combinedModelMatrix);
+          } else {
+            offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
+          }
         }
-        modelRenderer.prepareToRender(renderInstManager);
-        renderInstManager.popTemplateRenderInst();
+        modelRenderer.prepareToRenderModelRenderer(renderInstManager, doodads.length);
       }
+      renderInstManager.popTemplateRenderInst();
     }
   }
 
@@ -383,6 +389,13 @@ class DoodadRenderer {
       modelRenderer.destroy(device);
     }
   }
+}
+
+function chunk<T>(arr: T[], chunkSize: number): T[][] {
+  const ret: T[][] = [];
+  for (let i = 0; i < arr.length; i += chunkSize)
+      ret.push(arr.slice(i, i + chunkSize));
+  return ret;
 }
 
 class WmoStructureRenderer {
@@ -429,7 +442,7 @@ class WmoStructureRenderer {
     return mappings;
   }
 
-  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+  public prepareToRenderWmoStructure(renderInstManager: GfxRenderInstManager) {
     const template = renderInstManager.pushTemplateRenderInst();
     for (let i=0; i<this.vertexBuffers.length; i++) {
       template.setVertexInput(this.inputLayout, this.vertexBuffers[i], this.indexBuffers[i]);
@@ -489,14 +502,14 @@ class WmoRenderer {
     for (let wmoDefs of this.wmoIdToWmoDefs.values()) {
       for (let def of wmoDefs) {
         let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, def.worldSpaceAABB);
-        const isCloseEnough = distance < MAX_RENDER_DIST;
+        const isCloseEnough = distance < MAX_WMO_RENDER_DIST;
         def.visible = viewerInput.camera.frustum.contains(def.worldSpaceAABB) && isCloseEnough;
         def.doodadsVisible = def.worldSpaceAABB.containsPoint(cameraPosition);
       }
     }
   }
 
-  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+  public prepareToRenderWmoRenderer(renderInstManager: GfxRenderInstManager) {
     const cam = mat4.create();
     mat4.mul(cam, window.main.viewer.camera.clipFromWorldMatrix, noclipSpaceFromAdtSpace);
     const template = renderInstManager.pushTemplateRenderInst();
@@ -509,7 +522,7 @@ class WmoRenderer {
         let offs = template.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16);
         const mapped = template.mapUniformBufferF32(ModelProgram.ub_ModelParams);
         offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
-        renderer.prepareToRender(renderInstManager);
+        renderer.prepareToRenderWmoStructure(renderInstManager);
       }
     }
 
@@ -519,7 +532,7 @@ class WmoRenderer {
       let renderer = this.wmoIdToModelRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
         if (!def.doodadsVisible) continue;
-        renderer.prepareToRender(renderInstManager, def.modelMatrix);
+        renderer.prepareToRenderDoodadRenderer(renderInstManager, def.modelMatrix);
       }
     }
 
@@ -566,7 +579,6 @@ class AdtTerrainRenderer {
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
     [this.vertexBuffer, this.indexBuffer, this.adtChunks, this.worldSpaceAABB] = this.adt.getBufsAndChunks(device);
-    console.log(this.worldSpaceAABB)
     for (let chunk of this.adtChunks) {
       const alphaTex = chunk.alpha_texture;
       this.chunkVisible.push({
@@ -585,9 +597,8 @@ class AdtTerrainRenderer {
   }
 
   public setCulling(viewerInput: Viewer.ViewerRenderInput) {
-    //drawWorldSpaceAABB(getDebugOverlayCanvas2D(), viewerInput.camera.clipFromWorldMatrix, this.worldSpaceAABB);
     let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, this.worldSpaceAABB);
-    const isCloseEnough = distance < MAX_RENDER_DIST;
+    const isCloseEnough = distance < MAX_ADT_RENDER_DIST;
     this.visible = viewerInput.camera.frustum.contains(this.worldSpaceAABB) && isCloseEnough;
   }
 
@@ -605,7 +616,7 @@ class AdtTerrainRenderer {
     return mapping;
   }
 
-  public prepareToRender(renderInstManager: GfxRenderInstManager) {
+  public prepareToRenderAdtTerrain(renderInstManager: GfxRenderInstManager) {
     if (!this.visible) return;
     const template = renderInstManager.pushTemplateRenderInst();
     template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
@@ -666,7 +677,7 @@ class WorldScene implements Viewer.SceneGfx {
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
     const template = this.renderHelper.pushTemplateRenderInst();
     template.setBindingLayouts(terrainBindingLayouts);
-    template.setGfxProgram(this.terrainProgram);
+    template.setGfxProgram(this.terrainProgram)
     template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
 
     let offs = template.allocateUniformBuffer(ModelProgram.ub_SceneParams, 32);
@@ -678,25 +689,31 @@ class WorldScene implements Viewer.SceneGfx {
 
     this.terrainRenderers.forEach(terrainRenderer => {
       terrainRenderer.setCulling(viewerInput);
-      terrainRenderer.prepareToRender(this.renderHelper.renderInstManager);
+      terrainRenderer.prepareToRenderAdtTerrain(this.renderHelper.renderInstManager);
     });
 
     template.setBindingLayouts(modelBindingLayouts);
     template.setGfxProgram(this.modelProgram);
     this.modelRenderers.forEach(modelRenderer => {
-      modelRenderer.prepareToRender(this.renderHelper.renderInstManager, null);
+      modelRenderer.prepareToRenderDoodadRenderer(this.renderHelper.renderInstManager, null);
     });
 
     this.wmoRenderers.forEach(wmoRenderer => {
-      wmoRenderer.setCulling(viewerInput)
-      wmoRenderer.prepareToRender(this.renderHelper.renderInstManager);
+      if (!this.world.globalWmo)
+        wmoRenderer.setCulling(viewerInput)
+      wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager);
     });
 
     this.renderHelper.renderInstManager.popTemplateRenderInst();
     this.renderHelper.prepareToRender();
   }
 
+  public adjustCameraController(c: CameraController) {
+      c.setSceneMoveSpeedMult(.1);
+  }
+
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
+    viewerInput.camera.setClipPlanes(0.1);
     const renderInstManager = this.renderHelper.renderInstManager;
 
     const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
@@ -783,6 +800,9 @@ const sceneDescs = [
     new WdtSceneDesc("Ahn'qiraj", 775637),
     new WdtSceneDesc("Deeprun Tram", 780788),
     new WdtSceneDesc("Blackrock Depths", 780172),
+    new WdtSceneDesc("Upper Blackrock Spire", 1101201),
+    new WdtSceneDesc("Deadmines", 780605),
+    new WdtSceneDesc("Shadowfang Keep", 790796),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
