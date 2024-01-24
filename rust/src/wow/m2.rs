@@ -35,7 +35,7 @@ pub struct M2Header {
     texture_weights: WowArray<()>,
     texture_transforms: WowArray<()>,
     replacable_texture_lookup: WowArray<u8>,
-    materials: WowArray<()>,
+    materials: WowArray<M2Material>,
     bone_lookup_table: WowArray<u16>,
     texture_lookup_table: WowArray<u16>,
     texture_unit_lookup_table: WowArray<u16>,
@@ -107,6 +107,11 @@ impl M2 {
             .map_err(|e| format!("{:?}", e))
     }
 
+    pub fn get_materials(&self) -> Result<Vec<M2Material>, String> {
+        self.header.materials.to_vec(self.get_m2_data())
+            .map_err(|e| format!("{:?}", e))
+    }
+
     pub fn get_vertex_stride() -> usize {
         // position + bone weights + bone indices + normal + texture coords
         12 + 4 + 4 + 12 + 2 * 8
@@ -122,6 +127,49 @@ impl M2 {
     pub fn get_texture_lookup_table(&self) -> Result<Vec<u16>, String> {
         self.header.texture_lookup_table.to_vec(self.get_m2_data())
             .map_err(|e| format!("{:?}", e))
+    }
+}
+
+#[wasm_bindgen(js_name = "WowM2Material")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct M2Material {
+    pub flags: u16,
+    pub blending_mode: M2BlendingMode,
+}
+
+#[wasm_bindgen(js_name = "WowM2BlendingMode")]
+#[derive(DekuRead, Debug, Copy, Clone)]
+#[deku(type = "u16")]
+pub enum M2BlendingMode {
+    Opaque = 0,
+    AlphaKey = 1,
+    Alpha = 2,
+    NoAlphaAdd = 3, // unused
+    Add = 4,
+    Mod = 5,
+    Mod2x = 6,
+    BlendAdd = 7, // unused
+}
+
+#[wasm_bindgen(js_name = "WowM2MaterialFlags")]
+pub struct M2MaterialFlags {
+    pub unlit: bool,
+    pub unfogged: bool,
+    pub two_sided: bool,
+    pub depth_tested: bool,
+    pub depth_write: bool,
+}
+
+#[wasm_bindgen(js_class = "WowM2MaterialFlags")]
+impl M2MaterialFlags {
+    pub fn new(x: u16) -> Self {
+        Self {
+            unlit:        (x & 0x01) > 0,
+            unfogged:     (x & 0x02) > 0,
+            two_sided:    (x & 0x04) > 0,
+            depth_tested: (x & 0x08) > 0,
+            depth_write:  (x & 0x10) > 0,
+        }
     }
 }
 

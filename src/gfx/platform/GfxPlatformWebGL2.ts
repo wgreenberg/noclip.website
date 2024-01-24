@@ -1358,7 +1358,6 @@ class GfxImplP_GL implements GfxSwapChain, GfxDevice {
                     }
                 }
             }
-            if (gl.getError() !== gl.NO_ERROR) debugger;
 
             w = Math.max((w / 2) | 0, 1);
             h = Math.max((h / 2) | 0, 1);

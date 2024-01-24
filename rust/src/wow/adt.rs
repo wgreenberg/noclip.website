@@ -129,10 +129,20 @@ impl Adt {
                     Some(mccv) => &mccv.vertex_colors[j*4..],
                     None => &[127, 127, 127, 127],
                 };
-                result.push(vertex_colors[2] as f32 / 255.0); // r
-                result.push(vertex_colors[1] as f32 / 255.0); // g
-                result.push(vertex_colors[0] as f32 / 255.0); // b
-                result.push(vertex_colors[3] as f32 / 255.0); // a
+                let mccv_norm = 0x7f as f32;
+                result.push(vertex_colors[2] as f32 / mccv_norm); // r
+                result.push(vertex_colors[1] as f32 / mccv_norm); // g
+                result.push(vertex_colors[0] as f32 / mccv_norm); // b
+                result.push(vertex_colors[3] as f32 / mccv_norm); // a
+
+                let vertex_lighting = match mcnk.vertex_lighting.as_ref() {
+                    Some(mclv) => &mclv.vertex_lighting[j*4..],
+                    None => &[127, 127, 127, 127],
+                };
+                result.push(vertex_lighting[0] as f32 / 255.0); // r
+                result.push(vertex_lighting[1] as f32 / 255.0); // g
+                result.push(vertex_lighting[2] as f32 / 255.0); // b
+                result.push(vertex_lighting[3] as f32 / 255.0); // a
             }
         }
         (result, aabb)
@@ -216,10 +226,11 @@ pub struct ChunkDescriptor {
 static SQUARE_INDICES_TRIANGLE: &[u16] = &[9, 0, 17, 9, 1, 0, 9, 18, 1, 9, 17, 18];
 
 pub static ADT_VBO_INFO: AdtVBOInfo = AdtVBOInfo {
-    stride: (1 + 3 + 3 + 4) * 4,
-    vertex_offset: 1 * 4,
-    normal_offset: (1 + 3) * 4,
-    color_offset: (1 + 3 + 3) * 4,
+    stride:          (1 + 3 + 3 + 4 + 4) * 4,
+    vertex_offset:   (1) * 4,
+    normal_offset:   (1 + 3) * 4,
+    color_offset:    (1 + 3 + 3) * 4,
+    lighting_offset: (1 + 3 + 3 + 4) * 4,
 };
 
 #[wasm_bindgen(js_name = "WowAdtVBOInfo")]
@@ -229,6 +240,7 @@ struct AdtVBOInfo {
     pub vertex_offset: usize,
     pub normal_offset: usize,
     pub color_offset: usize,
+    pub lighting_offset: usize,
 }
 
 #[derive(DekuRead, Debug, Clone)]
@@ -297,6 +309,7 @@ pub struct MapChunk {
     pub normals: NormalChunk,
     pub shadows: Option<ShadowMapChunk>,
     pub vertex_colors: Option<VertexColors>,
+    pub vertex_lighting: Option<VertexLighting>,
     pub texture_layers: Vec<MapChunkTextureLayer>,
     pub alpha_map: Option<AlphaMap>,
 }
@@ -327,6 +340,7 @@ impl MapChunk {
 
             // these will be appended in separate ADT files
             vertex_colors: None,
+            vertex_lighting: None,
             alpha_map: None,
             texture_layers: vec![],
         })
@@ -395,13 +409,14 @@ impl MapChunk {
     fn append_obj_chunk(&mut self, chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
         let mut chunked_data = ChunkedData::new(&chunk_data);
         let mut mccv: Option<VertexColors> = None;
+        let mut mccv: Option<VertexLighting> = None;
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
-                b"VCCM" => mccv = Some(subchunk.parse(subchunk_data)?),
+                b"VCCM" => self.vertex_colors = Some(subchunk.parse(subchunk_data)?),
+                b"VLCM" => self.vertex_lighting = Some(subchunk.parse(subchunk_data)?),
                 _ => {},
             }
         }
-        self.vertex_colors = mccv;
         Ok(())
     }
 
@@ -482,6 +497,11 @@ pub struct AlphaMap {
 #[derive(Debug, Clone, DekuRead)]
 pub struct VertexColors {
     pub vertex_colors: [u8; 4 * (9*9 + 8*8)],
+}
+
+#[derive(Debug, Clone, DekuRead)]
+pub struct VertexLighting {
+    pub vertex_lighting: [u8; 4 * (9*9 + 8*8)],
 }
 
 #[derive(Debug, DekuRead)]

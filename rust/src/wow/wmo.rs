@@ -32,6 +32,7 @@ pub struct Wmo {
     pub doodad_defs: Vec<DoodadDef>,
     pub doodad_file_ids: Vec<u32>,
     pub fogs: Vec<Fog>,
+    pub skybox_file_id: Option<u32>,
 }
 
 #[wasm_bindgen(js_class = "WowWmo")]
@@ -49,6 +50,7 @@ impl Wmo {
         let mut mfog: Option<Vec<Fog>> = None;
         let mut modi: Option<Vec<u32>> = None;
         let mut gfid: Option<Vec<u32>> = None;
+        let mut mosi: Option<Mosi> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"TMOM" => momt = Some(chunk.parse_array(chunk_data, 0x40)?),
@@ -57,6 +59,7 @@ impl Wmo {
                 b"GOFM" => mfog = Some(chunk.parse_array(chunk_data, 48)?),
                 b"IDOM" => modi = Some(chunk.parse_array(chunk_data, 4)?),
                 b"DIFG" => gfid = Some(chunk.parse_array(chunk_data, 4)?),
+                b"ISOM" => mosi = Some(chunk.parse(chunk_data)?),
                 _ => println!("skipping {} chunk", chunk.magic_str()),
             }
         }
@@ -68,8 +71,14 @@ impl Wmo {
             doodad_file_ids: modi.unwrap_or(vec![]),
             fogs: mfog.ok_or("WMO file didn't have MFOG chunk")?,
             group_file_ids: gfid.ok_or("WMO file didn't have group ids")?,
+            skybox_file_id: mosi.map(|m| m.skybox_file_id),
         })
     }
+}
+
+#[derive(DekuRead)]
+pub struct Mosi {
+    pub skybox_file_id: u32,
 }
 
 #[wasm_bindgen(js_name = "WowWmoGroup", getter_with_clone)]

@@ -1,7 +1,7 @@
 import * as Viewer from '../viewer.js';
 import { SceneContext } from '../SceneBase.js';
 import { rust } from '../rustlib.js';
-import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowSkinSubmesh, WowBatch, WowAdtWmoDefinition } from '../../rust/pkg/index.js';
+import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowSkinSubmesh, WowModelBatch, WowAdtWmoDefinition } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage, GfxInputLayoutDescriptor } from '../gfx/platform/GfxPlatform.js';
@@ -25,6 +25,7 @@ import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
 import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D } from '../DebugJunk.js';
 import { AABB } from '../Geometry.js';
+import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram } from './program.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
@@ -64,201 +65,6 @@ mat4.mul(placementSpaceFromModelSpace, placementSpaceFromModelSpace, noclipSpace
 
 export const modelSpaceFromAdtSpace: mat4 = mat4.invert(mat4.create(), adtSpaceFromModelSpace);
 
-const wmoBindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: 2, numSamplers: 4 },
-];
-
-class WmoProgram extends DeviceProgram {
-  public static a_Position = 0;
-  public static a_Normal = 1;
-  public static a_Color = 2;
-  public static a_TexCoord = 3;
-
-  public static ub_SceneParams = 0;
-  public static ub_ModelParams = 1;
-
-  public override both = `
-precision mediump float;
-
-layout(std140) uniform ub_SceneParams {
-    Mat4x4 u_Projection;
-    Mat4x4 u_ModelView;
-};
-
-layout(std140) uniform ub_ModelParams {
-    Mat4x4 u_Transform;
-};
-
-layout(binding = 0) uniform sampler2D u_Texture0;
-layout(binding = 1) uniform sampler2D u_Texture1;
-layout(binding = 2) uniform sampler2D u_Texture2;
-layout(binding = 3) uniform sampler2D u_Texture3;
-
-varying vec2 v_LightIntensity;
-varying vec2 v_UV;
-varying vec3 v_Normal;
-varying vec4 v_Color;
-varying vec3 v_Binormal;
-varying vec3 v_Tangent;
-varying vec3 v_Position;
-
-#ifdef VERT
-layout(location = ${WmoProgram.a_Position}) attribute vec3 a_Position;
-layout(location = ${WmoProgram.a_Normal}) attribute vec3 a_Normal;
-layout(location = ${WmoProgram.a_Color}) attribute vec4 a_Color;
-layout(location = ${WmoProgram.a_TexCoord}) attribute vec2 a_TexCoord;
-
-void mainVS() {
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform, vec4(a_Position, 1.0))));
-    vec3 t_LightDirection = normalize(vec3(.2, -1, .5));
-    v_UV = a_TexCoord;
-    v_Color = a_Color;
-    float t_LightIntensityF = dot(-a_Normal, t_LightDirection);
-    float t_LightIntensityB = dot( a_Normal, t_LightDirection);
-    v_LightIntensity = vec2(t_LightIntensityF, t_LightIntensityB);
-}
-#endif
-
-#ifdef FRAG
-void mainPS() {
-    float t_LightIntensity = gl_FrontFacing ? v_LightIntensity.x : v_LightIntensity.y;
-    float t_LightTint = 0.3 * t_LightIntensity;
-    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
-    gl_FragColor = tex;
-}
-#endif
-`;
-}
-
-const terrainBindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: 1, numSamplers: 5 },
-];
-
-class TerrainProgram extends DeviceProgram {
-  public static a_Position = 0;
-  public static a_Normal = 1;
-  public static a_Color = 2;
-  public static a_ChunkIndex = 3;
-
-  public static ub_SceneParams = 0;
-  public static ub_ModelParams = 1;
-
-  public override both = `
-precision mediump float;
-
-layout(std140) uniform ub_SceneParams {
-    Mat4x4 u_Projection;
-    Mat4x4 u_ModelView;
-};
-
-layout(binding = 0) uniform sampler2D u_Texture0;
-layout(binding = 1) uniform sampler2D u_Texture1;
-layout(binding = 2) uniform sampler2D u_Texture2;
-layout(binding = 3) uniform sampler2D u_Texture3;
-layout(binding = 4) uniform sampler2D u_AlphaTexture0;
-
-varying vec3 v_Normal;
-varying vec4 v_Color;
-varying vec3 v_Binormal;
-varying vec3 v_Tangent;
-varying vec3 v_Position;
-varying vec2 v_ChunkCoords;
-
-#ifdef VERT
-layout(location = ${TerrainProgram.a_Position}) attribute vec3 a_Position;
-layout(location = ${TerrainProgram.a_Normal}) attribute vec3 a_Normal;
-layout(location = ${TerrainProgram.a_Color}) attribute vec4 a_Color;
-layout(location = ${TerrainProgram.a_ChunkIndex}) attribute float a_ChunkIndex;
-
-void mainVS() {
-    float iX = mod(a_ChunkIndex, 17.0);
-    float iY = floor(a_ChunkIndex/17.0);
-
-    if (iX > 8.01) {
-        iY = iY + 0.5;
-        iX = iX - 8.5;
-    }
-
-    v_ChunkCoords = vec2(iX, iY);
-    v_Color = a_Color;
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
-}
-#endif
-
-#ifdef FRAG
-vec4 mixTex(vec4 tex0, vec4 tex1, float alpha) {
-  return (alpha * (tex1 - tex0) + tex0);
-}
-
-void mainPS() {
-    vec2 alphaCoord = v_ChunkCoords / 8.0;
-    vec4 alphaBlend = texture(SAMPLER_2D(u_AlphaTexture0), alphaCoord);
-    vec4 tex0 = texture(SAMPLER_2D(u_Texture0), v_ChunkCoords);
-    vec4 tex1 = texture(SAMPLER_2D(u_Texture1), v_ChunkCoords);
-    vec4 tex2 = texture(SAMPLER_2D(u_Texture2), v_ChunkCoords);
-    vec4 tex3 = texture(SAMPLER_3D(u_Texture3), v_ChunkCoords);
-    vec4 final = mixTex(mixTex(mixTex(tex0, tex1, alphaBlend.g), tex2, alphaBlend.b), tex3, alphaBlend.a);
-    gl_FragColor = final * 2.0 * v_Color;
-    gl_FragColor.a = 1.0;
-}
-#endif
-`;
-}
-
-const modelBindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: 2, numSamplers: 4 }, // ub_SceneParams
-];
-
-
-const MAX_DOODAD_INSTANCES = 32;
-
-class ModelProgram extends DeviceProgram {
-  public static a_Position = 0;
-  public static a_Normal = 1;
-  public static a_TexCoord = 2;
-
-  public static ub_SceneParams = 0;
-  public static ub_ModelParams = 1;
-
-  public override both = `
-precision mediump float;
-
-layout(std140) uniform ub_SceneParams {
-    Mat4x4 u_Projection;
-    Mat4x4 u_ModelView;
-};
-
-layout(std140) uniform ub_ModelParams {
-    Mat4x4 u_Transform[${MAX_DOODAD_INSTANCES}];
-};
-
-layout(binding = 0) uniform sampler2D u_Texture0;
-
-varying vec2 v_UV;
-
-#ifdef VERT
-layout(location = ${ModelProgram.a_Position}) attribute vec3 a_Position;
-layout(location = ${ModelProgram.a_Normal}) attribute vec3 a_Normal;
-layout(location = ${ModelProgram.a_TexCoord}) attribute vec2 a_TexCoord;
-
-void mainVS() {
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform[gl_InstanceID], vec4(a_Position, 1.0))));
-    v_UV = a_TexCoord;
-}
-#endif
-
-#ifdef FRAG
-void mainPS() {
-    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
-    gl_FragColor = tex;
-    if (tex.a < 0.2) {
-      discard;
-    }
-}
-#endif
-`;
-}
-
 class ModelRenderer {
   private skinData: SkinData[] = [];
   private vertexBuffer: GfxVertexBufferDescriptor;
@@ -270,7 +76,8 @@ class ModelRenderer {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
       { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
-      { location: ModelProgram.a_TexCoord, bufferIndex: 0, bufferByteOffset: 32, format: GfxFormat.F32_RG, },
+      { location: ModelProgram.a_TexCoord0, bufferIndex: 0, bufferByteOffset: 32, format: GfxFormat.F32_RG, },
+      { location: ModelProgram.a_TexCoord1, bufferIndex: 0, bufferByteOffset: 40, format: GfxFormat.F32_RG, },
     ];
     const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
       { byteStride: rust.WowM2.get_vertex_stride(), frequency: GfxVertexBufferFrequency.PerVertex, },
@@ -284,7 +91,7 @@ class ModelRenderer {
     };
 
     for (let skin of this.model.skins) {
-      const skinData = new SkinData(skin);
+      const skinData = new SkinData(skin, this.model);
       this.indexBuffers.push({
         buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, skinData.indexBuffer.buffer),
         byteOffset: 0,
@@ -305,17 +112,16 @@ class ModelRenderer {
     for (let i=0; i<this.skinData.length; i++) {
       const skinData = this.skinData[i];
       const indexBuffer = this.indexBuffers[i];
-      for (let batch of skinData.batches) {
+      for (let renderPass of skinData.renderPasses) {
         let renderInst = renderInstManager.newRenderInst();
         renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
-        const submesh = skinData.submeshes[batch.skin_submesh_index];
-        renderInst.drawIndexesInstanced(submesh.index_count, numInstances, submesh.index_start);
-        const m2TextureIndex = this.model.textureLookupTable[batch.texture_combo_index]; // FIXME handle more than 1 batch texture
-        const blp = this.model.blps[m2TextureIndex];
-        const blpId = this.model.blpIds[m2TextureIndex];
-        const mapping = this.textureCache.getTextureMapping(blpId, blp);
+        renderInst.setMegaStateFlags({ cullMode: renderPass.materialFlags.two_sided ? GfxCullMode.None : GfxCullMode.Back });
+        renderInst.drawIndexesInstanced(renderPass.submesh.index_count, numInstances, renderPass.submesh.index_start);
+        const mappings = [renderPass.tex0FileId, renderPass.tex1FileId]
+          .map(texId => texId === null ? null : this.textureCache.getTextureMapping(texId, this.model.blps[texId]));
         renderInst.setAllowSkippingIfPipelineNotReady(false);
-        renderInst.setSamplerBindingsFromTextureMappings([mapping]);
+        renderInst.setSamplerBindingsFromTextureMappings(mappings);
+        renderPass.setModelParams(renderInst);
         renderInstManager.submitRenderInst(renderInst);
       }
     }
@@ -345,10 +151,6 @@ class DoodadRenderer {
       }
     }
 
-    for (let [modelId, doodads] of this.modelIdsToDoodads) {
-      //console.log(`model ${modelId}: ${doodads.length} doodads`)
-    }
-
     for (let modelId of this.modelIdsToDoodads.keys()) {
       const modelData = models.get(modelId);
       if (!modelData) {
@@ -368,8 +170,8 @@ class DoodadRenderer {
       const template = renderInstManager.pushTemplateRenderInst();
 
       for (let doodads of chunk(visibleDoodads, MAX_DOODAD_INSTANCES)) {
-        let offs = template.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16 * MAX_DOODAD_INSTANCES);
-        const mapped = template.mapUniformBufferF32(ModelProgram.ub_ModelParams);
+        let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, 16 * MAX_DOODAD_INSTANCES);
+        const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
         for (let doodad of doodads) {
           if (parentModelMatrix) {
             const combinedModelMatrix = mat4.mul(mat4.create(), parentModelMatrix, doodad.modelMatrix);
@@ -514,20 +316,20 @@ class WmoRenderer {
     mat4.mul(cam, window.main.viewer.camera.clipFromWorldMatrix, noclipSpaceFromAdtSpace);
     const template = renderInstManager.pushTemplateRenderInst();
     template.setGfxProgram(this.wmoProgram);
-    template.setBindingLayouts(wmoBindingLayouts);
+    template.setBindingLayouts(WmoProgram.bindingLayouts);
     for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
       let renderer = this.wmoIdToRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
         if (!def.visible) continue;
-        let offs = template.allocateUniformBuffer(ModelProgram.ub_ModelParams, 16);
-        const mapped = template.mapUniformBufferF32(ModelProgram.ub_ModelParams);
+        let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, 16);
+        const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
         offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
         renderer.prepareToRenderWmoStructure(renderInstManager);
       }
     }
 
     template.setGfxProgram(this.modelProgram);
-    template.setBindingLayouts(modelBindingLayouts);
+    template.setBindingLayouts(ModelProgram.bindingLayouts);
     for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
       let renderer = this.wmoIdToModelRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
@@ -571,6 +373,7 @@ class AdtTerrainRenderer {
       { location: TerrainProgram.a_Position,   bufferIndex: 0, bufferByteOffset: adtVboInfo.vertex_offset, format: GfxFormat.F32_RGB, },
       { location: TerrainProgram.a_Normal,     bufferIndex: 0, bufferByteOffset: adtVboInfo.normal_offset, format: GfxFormat.F32_RGB, },
       { location: TerrainProgram.a_Color,      bufferIndex: 0, bufferByteOffset: adtVboInfo.color_offset, format: GfxFormat.F32_RGBA, },
+      { location: TerrainProgram.a_Lighting,   bufferIndex: 0, bufferByteOffset: adtVboInfo.lighting_offset, format: GfxFormat.F32_RGBA, },
     ];
     const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
       { byteStride: adtVboInfo.stride, frequency: GfxVertexBufferFrequency.PerVertex },
@@ -676,7 +479,7 @@ class WorldScene implements Viewer.SceneGfx {
 
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
     const template = this.renderHelper.pushTemplateRenderInst();
-    template.setBindingLayouts(terrainBindingLayouts);
+    template.setBindingLayouts(TerrainProgram.bindingLayouts);
     template.setGfxProgram(this.terrainProgram)
     template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
 
@@ -692,7 +495,7 @@ class WorldScene implements Viewer.SceneGfx {
       terrainRenderer.prepareToRenderAdtTerrain(this.renderHelper.renderInstManager);
     });
 
-    template.setBindingLayouts(modelBindingLayouts);
+    template.setBindingLayouts(ModelProgram.bindingLayouts);
     template.setGfxProgram(this.modelProgram);
     this.modelRenderers.forEach(modelRenderer => {
       modelRenderer.prepareToRenderDoodadRenderer(this.renderHelper.renderInstManager, null);
@@ -709,7 +512,7 @@ class WorldScene implements Viewer.SceneGfx {
   }
 
   public adjustCameraController(c: CameraController) {
-      c.setSceneMoveSpeedMult(.1);
+      c.setSceneMoveSpeedMult(0.08);
   }
 
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
