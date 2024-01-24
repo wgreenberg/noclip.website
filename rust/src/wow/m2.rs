@@ -8,7 +8,7 @@ use super::common::{
     WowCharArray,
     AABBox,
     Vec3,
-    Vec2,
+    Vec2, Quat,
 };
 
 // if it's an MD21 chunk, all pointers are relative to the end of that chunk
@@ -30,10 +30,10 @@ pub struct M2Header {
     key_bone_lookup: WowArray<u16>,
     vertices: WowArray<()>,
     pub num_skin_profiles: u32,
-    colors: WowArray<()>,
+    colors: WowArray<M2Color>,
     textures: WowArray<M2Texture>,
     texture_weights: WowArray<()>,
-    texture_transforms: WowArray<()>,
+    texture_transforms: WowArray<M2TextureTransform>,
     replacable_texture_lookup: WowArray<u8>,
     materials: WowArray<M2Material>,
     bone_lookup_table: WowArray<u16>,
@@ -112,6 +112,35 @@ impl M2 {
             .map_err(|e| format!("{:?}", e))
     }
 
+    pub fn get_vertex_colors(&self) -> Result<Vec<M2ColorAllocated>, String> {
+        let colors = self.header.colors.to_vec(self.get_m2_data())
+            .map_err(|e| format!("{:?}", e))?;
+
+        let mut result = Vec::with_capacity(colors.len());
+        for c in colors {
+            result.push(M2ColorAllocated {
+                color: c.color.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
+                alpha: c.alpha.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
+            });
+        }
+        Ok(result)
+    }
+
+    pub fn get_texture_transforms(&self) -> Result<Vec<M2TextureTransformAllocated>, String> {
+        let texture_transforms = self.header.texture_transforms.to_vec(self.get_m2_data())
+            .map_err(|e| format!("{:?}", e))?;
+
+        let mut result = Vec::with_capacity(texture_transforms.len());
+        for tex in texture_transforms {
+            result.push(M2TextureTransformAllocated {
+                translation: tex.translation.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
+                rotation: tex.rotation.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
+                scaling: tex.scaling.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
+            });
+        }
+        Ok(result)
+    }
+
     pub fn get_vertex_stride() -> usize {
         // position + bone weights + bone indices + normal + texture coords
         12 + 4 + 4 + 12 + 2 * 8
@@ -127,6 +156,112 @@ impl M2 {
     pub fn get_texture_lookup_table(&self) -> Result<Vec<u16>, String> {
         self.header.texture_lookup_table.to_vec(self.get_m2_data())
             .map_err(|e| format!("{:?}", e))
+    }
+
+    pub fn get_texture_transforms_lookup_table(&self) -> Result<Vec<u16>, String> {
+        self.header.texture_transforms_lookup_table.to_vec(self.get_m2_data())
+            .map_err(|e| format!("{:?}", e))
+    }
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct M2Track<T> {
+    pub interpolation_type: u16,
+    pub global_sequence: i16,
+    pub timestamps: WowArray<WowArray<u32>>,
+    pub values: WowArray<WowArray<T>>,
+}
+
+impl<T> M2Track<T> {
+    pub fn to_allocated(&self, data: &[u8]) -> Result<M2TrackAllocated<T>, DekuError>
+        where for<'a> T: DekuRead<'a> {
+        let mut timestamps = Vec::new();
+        for arr in self.timestamps.to_vec(data)? {
+            timestamps.push(arr.to_vec(data)?);
+        }
+
+        let mut values = Vec::new();
+        for arr in self.values.to_vec(data)? {
+            values.push(arr.to_vec(data)?);
+        }
+
+        Ok(M2TrackAllocated {
+            interpolation_type: self.interpolation_type,
+            global_sequence: self.global_sequence,
+            timestamps,
+            values,
+        })
+    }
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct M2TextureTransform {
+    translation: M2Track<Vec3>,
+    rotation: M2Track<Quat>,
+    scaling: M2Track<Vec3>,
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct M2Color {
+    color: M2Track<Vec3>, // rgb
+    alpha: M2Track<u16>, // 0 = transparent, 0x7FFF = opaque
+}
+
+#[derive(Debug, Clone)]
+pub struct M2TrackAllocated<T> {
+    pub interpolation_type: u16,
+    pub global_sequence: i16,
+    pub timestamps: Vec<Vec<u32>>,
+    pub values: Vec<Vec<T>>,
+}
+
+#[wasm_bindgen(js_name = "WowM2TextureTransform")]
+#[derive(Debug, Clone)]
+pub struct M2TextureTransformAllocated {
+    translation: M2TrackAllocated<Vec3>,
+    rotation: M2TrackAllocated<Quat>,
+    scaling: M2TrackAllocated<Vec3>,
+}
+
+// TODO: actually implement animation logic
+#[wasm_bindgen(js_class = "WowM2TextureTransform")]
+impl M2TextureTransformAllocated {
+    pub fn get_first_translation(&self) -> Option<Vec3> {
+        self.translation.values.get(0)?.get(0).copied()
+    }
+
+    pub fn get_first_rotation(&self) -> Option<Quat> {
+        self.rotation.values.get(0)?.get(0).copied()
+    }
+
+    pub fn get_first_scaling(&self) -> Option<Vec3> {
+        self.scaling.values.get(0)?.get(0).copied()
+    }
+}
+
+#[wasm_bindgen(js_name = "WowM2VertexColor")]
+#[derive(Debug, Clone)]
+pub struct M2ColorAllocated {
+    color: M2TrackAllocated<Vec3>,
+    alpha: M2TrackAllocated<u16>,
+}
+
+#[wasm_bindgen(js_class = "WowM2VertexColor")]
+impl M2ColorAllocated {
+    pub fn get_first_color(&self) -> Option<Vec3> {
+        self.color.values.get(0)?.get(0).copied()
+    }
+
+    pub fn get_nth_color(&self, n: usize) -> Option<Vec3> {
+        self.color.values.get(n)?.get(0).copied()
+    }
+
+    pub fn get_nth_alpha(&self, n: usize) -> Option<u16> {
+        self.alpha.values.get(n)?.get(0).copied()
+    }
+
+    pub fn get_first_alpha(&self) -> Option<u16> {
+        self.alpha.values.get(0)?.get(0).copied()
     }
 }
 
@@ -219,6 +354,6 @@ mod tests {
     fn test() {
         let data = std::fs::read("D:/woof/wow uncasced/world/lordaeron/arathi/passivedoodads/farmhouses/arathifarmhouse01.m2").unwrap();
         let m2 = M2::new(data).unwrap();
-        dbg!(m2.texture_ids);
+        dbg!(m2.header.colors.to_vec(m2.get_m2_data()));
     }
 }

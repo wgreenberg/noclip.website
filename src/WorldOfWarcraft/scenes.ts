@@ -117,8 +117,8 @@ class ModelRenderer {
         renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
         renderInst.setMegaStateFlags({ cullMode: renderPass.materialFlags.two_sided ? GfxCullMode.None : GfxCullMode.Back });
         renderInst.drawIndexesInstanced(renderPass.submesh.index_count, numInstances, renderPass.submesh.index_start);
-        const mappings = [renderPass.tex0FileId, renderPass.tex1FileId]
-          .map(texId => texId === null ? null : this.textureCache.getTextureMapping(texId, this.model.blps[texId]));
+        const mappings = [renderPass.tex0, renderPass.tex1, renderPass.tex2, renderPass.tex3]
+          .map(tex => tex === null ? null : this.textureCache.getTextureMapping(tex[0], tex[1]));
         renderInst.setAllowSkippingIfPipelineNotReady(false);
         renderInst.setSamplerBindingsFromTextureMappings(mappings);
         renderPass.setModelParams(renderInst);
@@ -305,8 +305,8 @@ class WmoRenderer {
       for (let def of wmoDefs) {
         let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, def.worldSpaceAABB);
         const isCloseEnough = distance < MAX_WMO_RENDER_DIST;
-        def.visible = viewerInput.camera.frustum.contains(def.worldSpaceAABB) && isCloseEnough;
-        def.doodadsVisible = def.worldSpaceAABB.containsPoint(cameraPosition);
+        //def.visible = viewerInput.camera.frustum.contains(def.worldSpaceAABB) && isCloseEnough;
+        //def.doodadsVisible = def.worldSpaceAABB.containsPoint(cameraPosition);
       }
     }
   }

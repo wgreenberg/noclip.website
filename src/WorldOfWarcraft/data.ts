@@ -1,5 +1,5 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2VertexColor, WowM2TextureTransform } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage } from "../gfx/platform/GfxPlatform.js";
@@ -10,6 +10,7 @@ import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromM
 import { AABB } from "../Geometry.js";
 import { GfxRenderInst } from "../gfx/render/GfxRenderInstManager.js";
 import { ModelProgram } from "./program.js";
+import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
 
 
 export class ModelData {
@@ -17,8 +18,11 @@ export class ModelData {
   public skins: WowSkin[] = [];
   public blps: WowBlp[] = [];
   public blpIds: number[] = [];
+  public vertexColors: WowM2VertexColor[] = [];
+  public textureTransforms: WowM2TextureTransform[] = [];
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
   public textureLookupTable: Uint16Array;
+  public textureTransformsLookupTable: Uint16Array;
 
   constructor(public fileId: number) {
   }
@@ -26,6 +30,7 @@ export class ModelData {
   public async load(dataFetcher: DataFetcher): Promise<undefined> {
     this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
     this.textureLookupTable = this.m2.get_texture_lookup_table();
+    this.textureTransformsLookupTable = this.m2.get_texture_transforms_lookup_table();
     for (let txid of this.m2.texture_ids) {
       if (txid === 0) continue;
       this.blpIds.push(txid);
@@ -35,6 +40,9 @@ export class ModelData {
     this.materials = this.m2.get_materials().map(mat => {
       return [mat.blending_mode, rust.WowM2MaterialFlags.new(mat.flags)];
     })
+
+    this.vertexColors = this.m2.get_vertex_colors();
+    this.textureTransforms = this.m2.get_texture_transforms();
 
     for (let skid of this.m2.skin_ids) {
       this.skins.push(await fetchFileByID(skid, dataFetcher, rust.WowSkin.new));
@@ -152,39 +160,61 @@ export class ModelRenderPass {
   public blendMode: WowM2BlendingMode;
   public materialFlags: WowM2MaterialFlags;
   public submesh: WowSkinSubmesh;
-  public tex0FileId: number;
-  public tex1FileId: number | null;
+  public textureTransform: WowM2TextureTransform;
+  public vertexColor: WowM2VertexColor;
+  public tex0: [number, WowBlp];
+  public tex1: [number, WowBlp] | null;
+  public tex2: [number, WowBlp] | null;
+  public tex3: [number, WowBlp] | null;
 
   constructor(public batch: WowModelBatch, public skin: WowSkin, public model: ModelData) {
-    this.fragmentShaderId = batch.get_pixel_shader() || 0;
-    this.vertexShaderId = 0;
+    this.fragmentShaderId = batch.get_pixel_shader();
+    this.vertexShaderId = batch.get_vertex_shader();
     this.submesh = skin.submeshes[batch.skin_submesh_index];
+    this.vertexColor = model.vertexColors[batch.color_index];
+    this.textureTransform = model.textureTransforms[model.textureTransformsLookupTable[batch.texture_transform_combo_index]];
     [this.blendMode, this.materialFlags] = model.materials[this.batch.material_index];
-    this.tex0FileId = this.getBlpId(0)!;
-    this.tex1FileId = this.getBlpId(1);
-    console.log(this);
+    this.tex0 = this.getBlpId(0)!;
+    this.tex1 = this.getBlpId(1);
+    this.tex2 = this.getBlpId(2);
+    this.tex3 = this.getBlpId(3);
   }
 
-  private getBlpId(n: number): number | null {
+  private getBlpId(n: number): [number, WowBlp] | null {
     if (n < this.batch.texture_count) {
-      return this.model.blpIds[this.model.textureLookupTable[this.batch.texture_combo_index + n]];
+      const i = this.model.textureLookupTable[this.batch.texture_combo_index + n];
+      return [this.model.blpIds[i], this.model.blps[i]];
     }
     return null;
   }
 
+  // TODO eventually handle animation logic
+  private getCurrentVertexColor(): vec4 {
+    return [10, 11, 12, 13]
+    if (this.vertexColor) {
+      let rgb = this.vertexColor.get_nth_color(this.batch.color_index) || { x: 1.0, y: 1.0, z: 1.0 };
+      let alpha = this.vertexColor.get_nth_alpha(this.batch.color_index) || 0x7FFF;
+      return [rgb.x, rgb.y, rgb.z, alpha / 0x7FFF];
+    }
+    return [1.0, 1.0, 1.0, 1.0];
+  }
+
+  // TODO eventually handle animation logic
+  private getCurrentTextureTransforms(): [mat4, mat4] {
+    return [mat4.identity(mat4.create()), mat4.identity(mat4.create())];
+  }
+
   public setModelParams(renderInst: GfxRenderInst) {
-    let offset = renderInst.allocateUniformBuffer(ModelProgram.ub_MaterialParams, 10 * 4);
+    let offset = renderInst.allocateUniformBuffer(ModelProgram.ub_MaterialParams, (5 + 4 + 16 + 16 + 4) * 4);
     const uniformBuf = renderInst.mapUniformBufferF32(ModelProgram.ub_MaterialParams);
-    uniformBuf[offset++] = this.fragmentShaderId;
-    uniformBuf[offset++] = this.vertexShaderId;
-    uniformBuf[offset++] = this.blendMode;
-    uniformBuf[offset++] = this.materialFlags.unfogged ? 1 : 0;
-    uniformBuf[offset++] = this.materialFlags.unlit ? 1 : 0;
-    uniformBuf[offset++] = 0.1; // alphaTest
-    uniformBuf[offset++] = 1; // meshColor.r
-    uniformBuf[offset++] = 1; // meshColor.g
-    uniformBuf[offset++] = 1; // meshColor.b
-    uniformBuf[offset++] = 1; // meshColor.a
+    offset += fillVec4(uniformBuf, offset, this.fragmentShaderId, this.vertexShaderId, 0, 0);
+    offset += fillVec4(uniformBuf, offset, this.blendMode, this.materialFlags.unfogged ? 1 : 0, this.materialFlags.unlit ? 1 : 0, 0);
+    offset += fillVec4v(uniformBuf, offset, this.getCurrentVertexColor());
+    const [t0, t1] = this.getCurrentTextureTransforms();
+    offset += fillMatrix4x4(uniformBuf, offset, t0);
+    offset += fillMatrix4x4(uniformBuf, offset, t1);
+    const textureWeight: vec4 = [2.0, 3.0, 4.0, 5.0]; // TODO
+    offset += fillVec4v(uniformBuf, offset, textureWeight);
   }
 }
 
