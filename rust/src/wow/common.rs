@@ -98,12 +98,42 @@ pub struct Quat {
     pub w: f32,
 }
 
+#[wasm_bindgen(js_name = "WowQuat16")]
+#[derive(DekuRead, Debug, Clone, Copy)]
+pub struct Quat16 {
+    pub x: i16,
+    pub y: i16,
+    pub z: i16,
+    pub w: i16,
+}
+
 #[wasm_bindgen(js_name = "WowVec3")]
 #[derive(DekuRead, Debug, Clone, Copy)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+}
+
+impl Vec3 {
+    pub fn new(v: f32) -> Self {
+        Vec3 { x: v, y: v, z: v }
+    }
+}
+
+#[wasm_bindgen(js_name = "WowVec4")]
+#[derive(DekuRead, Debug, Clone, Copy)]
+pub struct Vec4 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
+}
+
+impl Vec4 {
+    pub fn new(v: f32) -> Self {
+        Vec4 { x: v, y: v, z: v, w: v }
+    }
 }
 
 #[wasm_bindgen(js_name = "WowVec2")]

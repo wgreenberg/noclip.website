@@ -1,3 +1,4 @@
+mod animation;
 mod wdt;
 mod common;
 mod m2;

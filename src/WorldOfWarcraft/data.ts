@@ -1,16 +1,19 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2VertexColor, WowM2TextureTransform } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4 } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
-import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage } from "../gfx/platform/GfxPlatform.js";
+import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
 import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace } from "./scenes.js";
 import { AABB } from "../Geometry.js";
-import { GfxRenderInst } from "../gfx/render/GfxRenderInstManager.js";
+import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
 import { ModelProgram } from "./program.js";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
+import { AttachmentStateSimple, setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
+import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.js";
+import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 
 
 export class ModelData {
@@ -18,11 +21,14 @@ export class ModelData {
   public skins: WowSkin[] = [];
   public blps: WowBlp[] = [];
   public blpIds: number[] = [];
-  public vertexColors: WowM2VertexColor[] = [];
-  public textureTransforms: WowM2TextureTransform[] = [];
+  public vertexColors: WowVec4[] = [];
+  public textureWeights: Float32Array;
+  public textureTransforms: mat4[] = [];
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
+  public animationManager: WowM2AnimationManager;
   public textureLookupTable: Uint16Array;
   public textureTransformsLookupTable: Uint16Array;
+  public transparencyLookupTable: Uint16Array;
 
   constructor(public fileId: number) {
   }
@@ -31,6 +37,8 @@ export class ModelData {
     this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
     this.textureLookupTable = this.m2.get_texture_lookup_table();
     this.textureTransformsLookupTable = this.m2.get_texture_transforms_lookup_table();
+    this.transparencyLookupTable = this.m2.get_transparency_lookup_table();
+    this.animationManager = this.m2.get_animation_manager();
     for (let txid of this.m2.texture_ids) {
       if (txid === 0) continue;
       this.blpIds.push(txid);
@@ -41,12 +49,30 @@ export class ModelData {
       return [mat.blending_mode, rust.WowM2MaterialFlags.new(mat.flags)];
     })
 
-    this.vertexColors = this.m2.get_vertex_colors();
-    this.textureTransforms = this.m2.get_texture_transforms();
-
     for (let skid of this.m2.skin_ids) {
       this.skins.push(await fetchFileByID(skid, dataFetcher, rust.WowSkin.new));
     }
+
+    this.updateAnimation(0, 0);
+  }
+
+  public updateAnimation(delaTime: number, globalDeltaTime: number) {
+    this.animationManager.update(delaTime, globalDeltaTime);
+    this.vertexColors = this.animationManager.calculated_colors!;
+    this.textureWeights = this.animationManager.calculated_transparencies!;
+
+    const rotations = this.animationManager.calculated_texture_rotations!;
+    const translations = this.animationManager.calculated_texture_translations!;
+    const scalings = this.animationManager.calculated_texture_scalings!;
+    const transforms: mat4[] = [];
+    for (let i = 0; i < rotations.length; i++) {
+      const transform = mat4.create();
+      mat4.fromQuat(transform, [rotations[i].x, rotations[i].y, rotations[i].z, rotations[i].w]);
+      mat4.translate(transform, transform, [translations[i].x, translations[i].y, translations[i].z]);
+      mat4.scale(transform, transform, [scalings[i].x, scalings[i].y, scalings[i].z]);
+      transforms.push(transform);
+    }
+    this.textureTransforms = transforms;
   }
 }
 
@@ -160,24 +186,57 @@ export class ModelRenderPass {
   public blendMode: WowM2BlendingMode;
   public materialFlags: WowM2MaterialFlags;
   public submesh: WowSkinSubmesh;
-  public textureTransform: WowM2TextureTransform;
-  public vertexColor: WowM2VertexColor;
   public tex0: [number, WowBlp];
   public tex1: [number, WowBlp] | null;
   public tex2: [number, WowBlp] | null;
   public tex3: [number, WowBlp] | null;
+  public normalMat: mat4;
 
   constructor(public batch: WowModelBatch, public skin: WowSkin, public model: ModelData) {
     this.fragmentShaderId = batch.get_pixel_shader();
     this.vertexShaderId = batch.get_vertex_shader();
     this.submesh = skin.submeshes[batch.skin_submesh_index];
-    this.vertexColor = model.vertexColors[batch.color_index];
-    this.textureTransform = model.textureTransforms[model.textureTransformsLookupTable[batch.texture_transform_combo_index]];
     [this.blendMode, this.materialFlags] = model.materials[this.batch.material_index];
     this.tex0 = this.getBlpId(0)!;
     this.tex1 = this.getBlpId(1);
     this.tex2 = this.getBlpId(2);
     this.tex3 = this.getBlpId(3);
+    this.normalMat = this.createNormalMat();
+  }
+
+  public setMegaStateFlags(renderInst: GfxRenderInst) {
+    let settings = {
+      cullMode: this.materialFlags.two_sided ? GfxCullMode.None : GfxCullMode.Back,
+      depthWrite: this.materialFlags.depth_write,
+      //depthCompare: this.materialFlags.depth_tested ? reverseDepthForCompareMode(GfxCompareMode.LessEqual) : GfxCompareMode.Always,
+    };
+    // TODO setSortKeyDepth based on distance to transparent object
+    switch (this.blendMode) {
+      case rust.WowM2BlendingMode.Alpha: {
+        setAttachmentStateSimple(settings, {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.SrcAlpha,
+          blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
+        });
+        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        break;
+      }
+      case rust.WowM2BlendingMode.NoAlphaAdd:
+      case rust.WowM2BlendingMode.Add:
+      case rust.WowM2BlendingMode.Mod:
+      case rust.WowM2BlendingMode.Mod2x:
+      case rust.WowM2BlendingMode.BlendAdd:
+      case rust.WowM2BlendingMode.Opaque:
+      case rust.WowM2BlendingMode.AlphaKey:
+        break;
+    }
+    renderInst.setMegaStateFlags(settings);
+  }
+
+  private createNormalMat(): mat4 {
+    const result = mat4.create();
+    mat4.identity(result);// TODO
+    return result;
   }
 
   private getBlpId(n: number): [number, WowBlp] | null {
@@ -188,13 +247,10 @@ export class ModelRenderPass {
     return null;
   }
 
-  // TODO eventually handle animation logic
   private getCurrentVertexColor(): vec4 {
-    return [10, 11, 12, 13]
-    if (this.vertexColor) {
-      let rgb = this.vertexColor.get_nth_color(this.batch.color_index) || { x: 1.0, y: 1.0, z: 1.0 };
-      let alpha = this.vertexColor.get_nth_alpha(this.batch.color_index) || 0x7FFF;
-      return [rgb.x, rgb.y, rgb.z, alpha / 0x7FFF];
+    const vertexColor = this.model.vertexColors[this.batch.color_index];
+    if (vertexColor) {
+      return [vertexColor.x, vertexColor.y, vertexColor.z, vertexColor.w];
     }
     return [1.0, 1.0, 1.0, 1.0];
   }
@@ -204,17 +260,57 @@ export class ModelRenderPass {
     return [mat4.identity(mat4.create()), mat4.identity(mat4.create())];
   }
 
+  private getTextureWeight(texIndex: number): number {
+    const lookupIndex = this.batch.texture_weight_combo_index + texIndex;
+    if (lookupIndex < this.model.transparencyLookupTable.length) {
+      const transparencyIndex = this.model.transparencyLookupTable[lookupIndex];
+      if (transparencyIndex < this.model.textureWeights.length) {
+        return this.model.textureWeights[transparencyIndex];
+      }
+    }
+    return 1.0;
+  }
+
+  private getAlphaTest(): number {
+    if (this.blendMode == rust.WowM2BlendingMode.AlphaKey) {
+      const color = this.getCurrentVertexColor();
+      let finalTransparency = color[3];
+      if (!(this.batch.flags & 0x40))
+        finalTransparency *= this.getTextureWeight(0);
+      // TODO skyboxes need another alpha value mixed in
+      return (128/255) * finalTransparency;
+    } else {
+      return 1/255;
+    }
+  }
+
   public setModelParams(renderInst: GfxRenderInst) {
-    let offset = renderInst.allocateUniformBuffer(ModelProgram.ub_MaterialParams, (5 + 4 + 16 + 16 + 4) * 4);
+    let offset = renderInst.allocateUniformBuffer(ModelProgram.ub_MaterialParams, (4 + 4 + 4 + 16 + 16 + 4 + 16) * 4);
     const uniformBuf = renderInst.mapUniformBufferF32(ModelProgram.ub_MaterialParams);
-    offset += fillVec4(uniformBuf, offset, this.fragmentShaderId, this.vertexShaderId, 0, 0);
-    offset += fillVec4(uniformBuf, offset, this.blendMode, this.materialFlags.unfogged ? 1 : 0, this.materialFlags.unlit ? 1 : 0, 0);
+    offset += fillVec4(uniformBuf, offset,
+      this.fragmentShaderId,
+      this.vertexShaderId,
+      0,
+      0
+    );
+    offset += fillVec4(uniformBuf, offset,
+      this.blendMode,
+      this.materialFlags.unfogged ? 1 : 0,
+      this.materialFlags.unlit ? 1 : 0,
+      this.getAlphaTest()
+    );
     offset += fillVec4v(uniformBuf, offset, this.getCurrentVertexColor());
     const [t0, t1] = this.getCurrentTextureTransforms();
     offset += fillMatrix4x4(uniformBuf, offset, t0);
     offset += fillMatrix4x4(uniformBuf, offset, t1);
-    const textureWeight: vec4 = [2.0, 3.0, 4.0, 5.0]; // TODO
+    const textureWeight: vec4 = [
+      this.getTextureWeight(0),
+      this.getTextureWeight(1),
+      this.getTextureWeight(2),
+      this.getTextureWeight(3),
+    ];
     offset += fillVec4v(uniformBuf, offset, textureWeight);
+    offset += fillMatrix4x4(uniformBuf, offset, this.normalMat);
   }
 }
 
@@ -389,7 +485,7 @@ export class DoodadData {
     const modelId = wmo.modelIds[doodad.name_index];
     let doodadMat = mat4.create();
     setMatrixTranslation(doodadMat, position);
-    const rotMat = mat4.fromQuat(mat4.create(), rotation.map((deg) => MathConstants.DEG_TO_RAD * deg) as quat);
+    const rotMat = mat4.fromQuat(mat4.create(), rotation as quat);
     mat4.mul(doodadMat, doodadMat, rotMat);
     mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
     return new DoodadData(modelId, doodadMat, color);

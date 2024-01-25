@@ -78,6 +78,10 @@ void mainVS() {
 #ifdef FRAG
 void mainPS() {
     vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
+    bool enableAlpha = false; // TODO: bring in params, which will let us know whether to discard or not
+    if (enableAlpha && tex.a < 0.5) {
+      discard;
+    }
     gl_FragColor = tex;
 }
 #endif
@@ -212,11 +216,12 @@ layout(std140) uniform ub_DoodadParams {
 
 layout(std140) uniform ub_MaterialParams {
     vec4 shaderTypes; // [pixelShader, vertexShader, _, _]
-    vec4 materialParams; // [blendMode, unfogged, unlit, _]
+    vec4 materialParams; // [blendMode, unfogged, unlit, alphaTest]
     vec4 meshColor;
     Mat4x4 texMat0;
     Mat4x4 texMat1;
     vec4 textureWeight;
+    Mat4x4 normalMat;
 };
 
 layout(binding = 0) uniform sampler2D u_Texture0;
@@ -236,12 +241,28 @@ layout(location = ${ModelProgram.a_Normal}) attribute vec3 a_Normal;
 layout(location = ${ModelProgram.a_TexCoord0}) attribute vec2 a_TexCoord0;
 layout(location = ${ModelProgram.a_TexCoord1}) attribute vec2 a_TexCoord1;
 
+vec2 posToTexCoord(const vec3 vertexPosInView, const vec3 normal){
+    //Blizz seems to have vertex in view space as vector from "vertex to eye", while in this implementation, it's
+    //vector from "eye to vertex". So the minus here is not needed
+    vec3 viewVecNormalized = normalize(vertexPosInView.xyz);
+    vec3 reflection = reflect(viewVecNormalized, normalize(normal));
+    vec3 temp_657 = vec3(reflection.x, reflection.y, (reflection.z + 1.0));
+
+    return ((normalize(temp_657).xy * 0.5) + vec2(0.5));
+}
+
+float edgeScan(vec3 position, vec3 normal){
+    float dotProductClamped = clamp(dot(-normalize(position),normal), 0.0, 1.0);
+    return clamp(2.7* dotProductClamped * dotProductClamped - 0.4, 0.0, 1.0);
+}
+
 void mainVS() {
     gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform[gl_InstanceID], vec4(a_Position, 1.0))));
+    vec3 normal = normalize(Mul(normalMat, vec4(a_Normal, 0.0)).xyz);
     vec4 combinedColor = clamp(meshColor, 0.0, 1.0);
     vec4 combinedColorHalved = combinedColor * 0.5;
-    vec2 envCoord = vec2(0.0); // TODO
-    float edgeScanVal = 1.0; // TODO
+    vec2 envCoord = posToTexCoord(gl_Position.xyz, normal);
+    float edgeScanVal = edgeScan(gl_Position.xyz, normal);
     int vertexShader = int(shaderTypes.g);
 
     v_UV0 = a_TexCoord0;
@@ -458,7 +479,7 @@ void mainPS() {
       finalOpacity = discardAlpha * v_DiffuseColor.a;
     }
 
-    finalColor = vec4(matDiffuse, 1.0);
+    finalColor = vec4(matDiffuse, finalOpacity);
     
     gl_FragColor = finalColor;
 }

@@ -23,7 +23,7 @@ import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./u
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
-import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D } from '../DebugJunk.js';
+import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D, interactiveVizSliderSelect } from '../DebugJunk.js';
 import { AABB } from '../Geometry.js';
 import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram } from './program.js';
 
@@ -115,7 +115,7 @@ class ModelRenderer {
       for (let renderPass of skinData.renderPasses) {
         let renderInst = renderInstManager.newRenderInst();
         renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
-        renderInst.setMegaStateFlags({ cullMode: renderPass.materialFlags.two_sided ? GfxCullMode.None : GfxCullMode.Back });
+        renderPass.setMegaStateFlags(renderInst);
         renderInst.drawIndexesInstanced(renderPass.submesh.index_count, numInstances, renderPass.submesh.index_start);
         const mappings = [renderPass.tex0, renderPass.tex1, renderPass.tex2, renderPass.tex3]
           .map(tex => tex === null ? null : this.textureCache.getTextureMapping(tex[0], tex[1]));
@@ -163,7 +163,7 @@ class DoodadRenderer {
   public prepareToRenderDoodadRenderer(renderInstManager: GfxRenderInstManager, parentModelMatrix: mat4 | null): void {
     for (let [modelId, doodads] of this.modelIdsToDoodads) {
       const modelRenderer = this.modelIdsToModelRenderers.get(modelId)!;
-      if (!modelRenderer.isDrawable()) continue;
+      if (!modelRenderer.isDrawable() || !modelRenderer.visible) continue;
 
       const visibleDoodads = doodads.filter(d => d.visible);
 
@@ -305,8 +305,8 @@ class WmoRenderer {
       for (let def of wmoDefs) {
         let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, def.worldSpaceAABB);
         const isCloseEnough = distance < MAX_WMO_RENDER_DIST;
-        //def.visible = viewerInput.camera.frustum.contains(def.worldSpaceAABB) && isCloseEnough;
-        //def.doodadsVisible = def.worldSpaceAABB.containsPoint(cameraPosition);
+        def.visible = viewerInput.camera.frustum.contains(def.worldSpaceAABB) && isCloseEnough;
+        def.doodadsVisible = def.worldSpaceAABB.containsPoint(cameraPosition);
       }
     }
   }
@@ -477,6 +477,25 @@ class WorldScene implements Viewer.SceneGfx {
     }
   }
 
+  public debugModelRenderers() {
+    const modelRenderers: ModelRenderer[] = [];
+    this.wmoRenderers.forEach(d => {
+      for (let r of d.wmoIdToModelRenderer.values()) {
+        for (let m of r.modelIdsToModelRenderers.values()) {
+          modelRenderers.push(m);
+        }
+      }
+    })
+    this.modelRenderers.forEach(d => {
+      for (let m of d.modelIdsToModelRenderers.values()) {
+        modelRenderers.push(m);
+      }
+    })
+    console.log(modelRenderers);
+
+    interactiveVizSliderSelect(modelRenderers);
+  }
+
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
     const template = this.renderHelper.pushTemplateRenderInst();
     template.setBindingLayouts(TerrainProgram.bindingLayouts);
@@ -512,7 +531,7 @@ class WorldScene implements Viewer.SceneGfx {
   }
 
   public adjustCameraController(c: CameraController) {
-      c.setSceneMoveSpeedMult(0.08);
+      c.setSceneMoveSpeedMult(0.01);
   }
 
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
