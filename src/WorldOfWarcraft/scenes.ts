@@ -17,7 +17,7 @@ import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition } from './data.js';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData } from './data.js';
 import { getMatrixTranslation } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
@@ -26,6 +26,7 @@ import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/Topolo
 import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D, interactiveVizSliderSelect } from '../DebugJunk.js';
 import { AABB } from '../Geometry.js';
 import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram } from './program.js';
+import { ViewerRenderInput } from '../viewer.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
@@ -100,6 +101,11 @@ class ModelRenderer {
     }
   }
 
+  public update(viewer: ViewerRenderInput) {
+    if (this.visible)
+      this.model.updateAnimation(viewer.deltaTime);
+  }
+
   public isDrawable(): boolean {
     let nBatches = 0;
     for (let skinData of this.skinData) {
@@ -157,6 +163,12 @@ class DoodadRenderer {
         throw new Error(`couldn't find model with id ${modelId}`)
       }
       this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper, textureCache));
+    }
+  }
+
+  public update(viewer: ViewerRenderInput) {
+    for (let modelRenderer of this.modelIdsToModelRenderers.values()) {
+      modelRenderer.update(viewer);
     }
   }
 
@@ -270,16 +282,16 @@ class WmoStructureRenderer {
 class WmoRenderer {
   public wmoProgram: GfxProgram;
   public modelProgram: GfxProgram;
-  public wmoIdToRenderer: Map<number, WmoStructureRenderer>;
-  public wmoIdToModelRenderer: Map<number, DoodadRenderer>;
+  public wmoIdToStructureRenderer: Map<number, WmoStructureRenderer>;
+  public wmoIdToDoodadRenderer: Map<number, DoodadRenderer>;
   public wmoIdToWmoDefs: Map<number, WmoDefinition[]>;
   public wmoIdToVisible: Map<number, boolean>;
 
   constructor(device: GfxDevice, wmoDefs: WmoDefinition[], wmos: WmoData[], textureCache: TextureCache, renderHelper: GfxRenderHelper) {
     this.wmoProgram = renderHelper.renderCache.createProgram(new WmoProgram());
     this.modelProgram = renderHelper.renderCache.createProgram(new ModelProgram());
-    this.wmoIdToRenderer = new Map();
-    this.wmoIdToModelRenderer = new Map();
+    this.wmoIdToStructureRenderer = new Map();
+    this.wmoIdToDoodadRenderer = new Map();
     this.wmoIdToWmoDefs = new Map();
 
     for (let wmoDef of wmoDefs) {
@@ -292,9 +304,15 @@ class WmoRenderer {
     }
 
     for (let wmo of wmos) {
-      this.wmoIdToRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, textureCache, renderHelper));
+      this.wmoIdToStructureRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, textureCache, renderHelper));
       const doodads = wmo.wmo.doodad_defs.map(def => DoodadData.fromWmoDoodad(def, wmo));
-      this.wmoIdToModelRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, wmo.models, renderHelper));
+      this.wmoIdToDoodadRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, wmo.models, renderHelper));
+    }
+  }
+
+  public update(viewer: ViewerRenderInput) {
+    for (let doodadRenderer of this.wmoIdToDoodadRenderer.values()) {
+      doodadRenderer.update(viewer);
     }
   }
 
@@ -318,7 +336,7 @@ class WmoRenderer {
     template.setGfxProgram(this.wmoProgram);
     template.setBindingLayouts(WmoProgram.bindingLayouts);
     for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
-      let renderer = this.wmoIdToRenderer.get(wmoId)!;
+      let renderer = this.wmoIdToStructureRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
         if (!def.visible) continue;
         let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, 16);
@@ -331,7 +349,7 @@ class WmoRenderer {
     template.setGfxProgram(this.modelProgram);
     template.setBindingLayouts(ModelProgram.bindingLayouts);
     for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
-      let renderer = this.wmoIdToModelRenderer.get(wmoId)!;
+      let renderer = this.wmoIdToDoodadRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
         if (!def.doodadsVisible) continue;
         renderer.prepareToRenderDoodadRenderer(renderInstManager, def.modelMatrix);
@@ -342,10 +360,10 @@ class WmoRenderer {
   }
 
   public destroy(device: GfxDevice) {
-    for (let renderer of this.wmoIdToModelRenderer.values()) {
+    for (let renderer of this.wmoIdToDoodadRenderer.values()) {
       renderer.destroy(device);
     }
-    for (let renderer of this.wmoIdToRenderer.values()) {
+    for (let renderer of this.wmoIdToStructureRenderer.values()) {
       renderer.destroy(device);
     }
   }
@@ -444,7 +462,7 @@ class AdtTerrainRenderer {
 
 class WorldScene implements Viewer.SceneGfx {
   private terrainRenderers: AdtTerrainRenderer[] = [];
-  private modelRenderers: DoodadRenderer[] = [];
+  private doodadRenderers: DoodadRenderer[] = [];
   private wmoRenderers: WmoRenderer[] = [];
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
@@ -465,7 +483,7 @@ class WorldScene implements Viewer.SceneGfx {
       for (let adt of this.world.adts) {
         this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache));
         const adtDoodads = adt.innerAdt.doodads.map(DoodadData.fromAdtDoodad);
-        this.modelRenderers.push(new DoodadRenderer(device, textureCache, adtDoodads, adt.models, renderHelper));
+        this.doodadRenderers.push(new DoodadRenderer(device, textureCache, adtDoodads, adt.models, renderHelper));
         this.wmoRenderers.push(new WmoRenderer(
           device,
           adt.wmoDefs,
@@ -477,21 +495,26 @@ class WorldScene implements Viewer.SceneGfx {
     }
   }
 
+  public update(viewer: ViewerRenderInput) {
+    for (let doodadRenderer of this.doodadRenderers) {
+      doodadRenderer.update(viewer);
+    }
+  }
+
   public debugModelRenderers() {
     const modelRenderers: ModelRenderer[] = [];
     this.wmoRenderers.forEach(d => {
-      for (let r of d.wmoIdToModelRenderer.values()) {
+      for (let r of d.wmoIdToDoodadRenderer.values()) {
         for (let m of r.modelIdsToModelRenderers.values()) {
           modelRenderers.push(m);
         }
       }
     })
-    this.modelRenderers.forEach(d => {
+    this.doodadRenderers.forEach(d => {
       for (let m of d.modelIdsToModelRenderers.values()) {
         modelRenderers.push(m);
       }
     })
-    console.log(modelRenderers);
 
     interactiveVizSliderSelect(modelRenderers);
   }
@@ -516,13 +539,15 @@ class WorldScene implements Viewer.SceneGfx {
 
     template.setBindingLayouts(ModelProgram.bindingLayouts);
     template.setGfxProgram(this.modelProgram);
-    this.modelRenderers.forEach(modelRenderer => {
-      modelRenderer.prepareToRenderDoodadRenderer(this.renderHelper.renderInstManager, null);
+    this.doodadRenderers.forEach(doodadRenderer => {
+      doodadRenderer.update(viewerInput);
+      doodadRenderer.prepareToRenderDoodadRenderer(this.renderHelper.renderInstManager, null);
     });
 
     this.wmoRenderers.forEach(wmoRenderer => {
       if (!this.world.globalWmo)
         wmoRenderer.setCulling(viewerInput)
+      wmoRenderer.update(viewerInput);
       wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager);
     });
 
@@ -565,7 +590,7 @@ class WorldScene implements Viewer.SceneGfx {
     this.terrainRenderers.forEach(terrainRenderer => {
       terrainRenderer.destroy(device);
     });
-    this.modelRenderers.forEach(modelRenderer => {
+    this.doodadRenderers.forEach(modelRenderer => {
       modelRenderer.destroy(device);
     })
     this.wmoRenderers.forEach(wmoRenderer => {
@@ -608,6 +633,156 @@ class WdtSceneDesc implements Viewer.SceneDesc {
   }
 }
 
+class ContinentScene implements Viewer.SceneGfx {
+  private terrainRenderers: AdtTerrainRenderer[] = [];
+  private doodadRenderers: DoodadRenderer[] = [];
+  private wmoRenderers: WmoRenderer[] = [];
+  private terrainProgram: GfxProgram;
+  private modelProgram: GfxProgram;
+
+  constructor(device: GfxDevice, public world: LazyWorldData, public renderHelper: GfxRenderHelper) {
+    const textureCache = new TextureCache(this.renderHelper.renderCache);
+    this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
+    this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
+
+    for (let adt of this.world.adts) {
+      this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache));
+      const adtDoodads = adt.innerAdt.doodads.map(DoodadData.fromAdtDoodad);
+      this.doodadRenderers.push(new DoodadRenderer(device, textureCache, adtDoodads, adt.models, renderHelper));
+      this.wmoRenderers.push(new WmoRenderer(
+        device,
+        adt.wmoDefs,
+        Array.from(adt.wmos.values()),
+        textureCache,
+        this.renderHelper
+      ));
+    }
+  }
+
+  public update(viewer: ViewerRenderInput) {
+    for (let doodadRenderer of this.doodadRenderers) {
+      doodadRenderer.update(viewer);
+    }
+  }
+
+  public debugModelRenderers() {
+    const modelRenderers: ModelRenderer[] = [];
+    this.wmoRenderers.forEach(d => {
+      for (let r of d.wmoIdToDoodadRenderer.values()) {
+        for (let m of r.modelIdsToModelRenderers.values()) {
+          modelRenderers.push(m);
+        }
+      }
+    })
+    this.doodadRenderers.forEach(d => {
+      for (let m of d.modelIdsToModelRenderers.values()) {
+        modelRenderers.push(m);
+      }
+    })
+
+    interactiveVizSliderSelect(modelRenderers);
+  }
+
+  private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
+    const template = this.renderHelper.pushTemplateRenderInst();
+    template.setBindingLayouts(TerrainProgram.bindingLayouts);
+    template.setGfxProgram(this.terrainProgram)
+    template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
+
+    let offs = template.allocateUniformBuffer(ModelProgram.ub_SceneParams, 32);
+    const mapped = template.mapUniformBufferF32(ModelProgram.ub_SceneParams);
+    offs += fillMatrix4x4(mapped, offs, viewerInput.camera.projectionMatrix);
+    const viewMat = mat4.create();
+    mat4.mul(viewMat, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
+    offs += fillMatrix4x4(mapped, offs, viewMat);
+
+    this.terrainRenderers.forEach(terrainRenderer => {
+      terrainRenderer.setCulling(viewerInput);
+      terrainRenderer.prepareToRenderAdtTerrain(this.renderHelper.renderInstManager);
+    });
+
+    template.setBindingLayouts(ModelProgram.bindingLayouts);
+    template.setGfxProgram(this.modelProgram);
+    this.doodadRenderers.forEach(doodadRenderer => {
+      doodadRenderer.update(viewerInput);
+      doodadRenderer.prepareToRenderDoodadRenderer(this.renderHelper.renderInstManager, null);
+    });
+
+    this.wmoRenderers.forEach(wmoRenderer => {
+      if (!this.world.globalWmo)
+        wmoRenderer.setCulling(viewerInput)
+      wmoRenderer.update(viewerInput);
+      wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager);
+    });
+
+    this.renderHelper.renderInstManager.popTemplateRenderInst();
+    this.renderHelper.prepareToRender();
+  }
+
+  public adjustCameraController(c: CameraController) {
+      c.setSceneMoveSpeedMult(0.01);
+  }
+
+  render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
+    viewerInput.camera.setClipPlanes(0.1);
+    const renderInstManager = this.renderHelper.renderInstManager;
+
+    const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
+    const mainDepthDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.DepthStencil, viewerInput, standardFullClearRenderPassDescriptor);
+
+    const builder = this.renderHelper.renderGraph.newGraphBuilder();
+
+    const mainColorTargetID = builder.createRenderTargetID(mainColorDesc, 'Main Color');
+    const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
+    builder.pushPass((pass) => {
+      pass.setDebugName('Main');
+      pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+      pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
+      pass.exec((passRenderer) => {
+        renderInstManager.drawOnPassRenderer(passRenderer);
+      });
+    });
+    pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
+    builder.resolveRenderTargetToExternalTexture(mainColorTargetID, viewerInput.onscreenTexture);
+
+    this.prepareToRender(device, viewerInput);
+    this.renderHelper.renderGraph.execute(builder);
+    renderInstManager.resetRenderInsts();
+  }
+
+  destroy(device: GfxDevice): void {
+    this.terrainRenderers.forEach(terrainRenderer => {
+      terrainRenderer.destroy(device);
+    });
+    this.doodadRenderers.forEach(modelRenderer => {
+      modelRenderer.destroy(device);
+    })
+    this.wmoRenderers.forEach(wmoRenderer => {
+      wmoRenderer.destroy(device);
+    })
+  }
+}
+
+class ContinentSceneDesc implements Viewer.SceneDesc {
+  public id: string;
+
+  constructor(public name: string, public fileId: number, public adtFileId: number) {
+    this.id = fileId.toString();
+  }
+
+  public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
+    const dataFetcher = context.dataFetcher;
+    const renderHelper = new GfxRenderHelper(device);
+    await initFileList(dataFetcher);
+    rust.init_panic_hook();
+    const wdt = new LazyWorldData(this.fileId, this.adtFileId, 10);
+    console.log('loading wdt')
+    await wdt.load(dataFetcher);
+    console.log('done')
+    return new ContinentScene(device, wdt, renderHelper);
+  }
+}
+
 const sceneDescs = [
     "Instances",
     new WdtSceneDesc('Zul-Farak', 791169),
@@ -625,6 +800,9 @@ const sceneDescs = [
     new WdtSceneDesc("Upper Blackrock Spire", 1101201),
     new WdtSceneDesc("Deadmines", 780605),
     new WdtSceneDesc("Shadowfang Keep", 790796),
+
+    "Continent",
+    new ContinentSceneDesc("Kalimdor", 782779, 785510),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };

@@ -1,5 +1,5 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4 } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4, WowMapFileDataIDs } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode } from "../gfx/platform/GfxPlatform.js";
@@ -52,12 +52,10 @@ export class ModelData {
     for (let skid of this.m2.skin_ids) {
       this.skins.push(await fetchFileByID(skid, dataFetcher, rust.WowSkin.new));
     }
-
-    this.updateAnimation(0, 0);
   }
 
-  public updateAnimation(delaTime: number, globalDeltaTime: number) {
-    this.animationManager.update(delaTime, globalDeltaTime);
+  public updateAnimation(deltaTime: number) {
+    this.animationManager.update(deltaTime);
     this.vertexColors = this.animationManager.calculated_colors!;
     this.textureWeights = this.animationManager.calculated_transparencies!;
 
@@ -65,11 +63,20 @@ export class ModelData {
     const translations = this.animationManager.calculated_texture_translations!;
     const scalings = this.animationManager.calculated_texture_scalings!;
     const transforms: mat4[] = [];
+    const pivot: vec3 = [0.5, 0.5, 0];
+    const antiPivot: vec3 = [-0.5, -0.5, 0];
     for (let i = 0; i < rotations.length; i++) {
-      const transform = mat4.create();
+      const transform = mat4.identity(mat4.create());
+
+      mat4.translate(transform, transform, pivot);
       mat4.fromQuat(transform, [rotations[i].x, rotations[i].y, rotations[i].z, rotations[i].w]);
-      mat4.translate(transform, transform, [translations[i].x, translations[i].y, translations[i].z]);
+      mat4.translate(transform, transform, antiPivot);
+
+      mat4.translate(transform, transform, pivot);
       mat4.scale(transform, transform, [scalings[i].x, scalings[i].y, scalings[i].z]);
+      mat4.translate(transform, transform, antiPivot);
+
+      mat4.translate(transform, transform, [translations[i].x, translations[i].y, translations[i].z]);
       transforms.push(transform);
     }
     this.textureTransforms = transforms;
@@ -297,8 +304,15 @@ export class ModelRenderPass {
   }
 
   // TODO eventually handle animation logic
-  private getCurrentTextureTransforms(): [mat4, mat4] {
-    return [mat4.identity(mat4.create()), mat4.identity(mat4.create())];
+  private getTextureTransform(texIndex: number): mat4 {
+    const lookupIndex = this.batch.texture_transform_combo_index + texIndex;
+    if (lookupIndex < this.model.textureTransformsLookupTable.length) {
+      const transformIndex = this.model.textureTransformsLookupTable[lookupIndex];
+      if (transformIndex < this.model.textureTransforms.length) {
+        return this.model.textureTransforms[transformIndex];
+      }
+    }
+    return mat4.identity(mat4.create())
   }
 
   private getTextureWeight(texIndex: number): number {
@@ -341,9 +355,8 @@ export class ModelRenderPass {
       this.getAlphaTest()
     );
     offset += fillVec4v(uniformBuf, offset, this.getCurrentVertexColor());
-    const [t0, t1] = this.getCurrentTextureTransforms();
-    offset += fillMatrix4x4(uniformBuf, offset, t0);
-    offset += fillMatrix4x4(uniformBuf, offset, t1);
+    offset += fillMatrix4x4(uniformBuf, offset, this.getTextureTransform(0));
+    offset += fillMatrix4x4(uniformBuf, offset, this.getTextureTransform(1));
     const textureWeight: vec4 = [
       this.getTextureWeight(0),
       this.getTextureWeight(1),
@@ -530,6 +543,62 @@ export class DoodadData {
     mat4.mul(doodadMat, doodadMat, rotMat);
     mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
     return new DoodadData(modelId, doodadMat, color);
+  }
+}
+
+export class LazyWorldData {
+  public wdt: WowWdt;
+  public adts: AdtData[] = [];
+  private loadedAdtFileIds: number[] = [];
+  public globalWmo: WmoData | null = null;
+  public globalWmoDef: WmoDefinition | null = null;
+  private adtFileIds: WowMapFileDataIDs[] = [];
+
+  constructor(public fileId: number, public startingAdtFileID: number, public adtRadius = 1) {
+  }
+
+  public async load(dataFetcher: DataFetcher) {
+    this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
+    this.adtFileIds = this.wdt.get_all_map_data();
+    console.log(this.adtFileIds);
+    const [adtX, adtY] = this.getAdtCoords(this.startingAdtFileID)!;
+    console.log(`found ${this.startingAdtFileID} at ${adtX}, ${adtY}`)
+    for (let x = adtX - this.adtRadius; x <= adtX + this.adtRadius; x++) {
+      for (let y = adtY - this.adtRadius; y <= adtY + this.adtRadius; y++) {
+        await this.loadAdt(x, y, dataFetcher);
+      }
+    }
+  }
+
+  public async loadAdt(x: number, y: number, dataFetcher: DataFetcher) {
+    console.log(`loading coords ${x}, ${y}`)
+    const fileIDs = this.adtFileIds[y * 64 + x];
+    if (fileIDs.root_adt === 0) {
+      throw new Error(`null ADTs in a non-global-WMO WDT`);
+    }
+
+    // TODO handle obj1 (LOD) adts
+    const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
+    wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
+    wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
+
+    const adt = new AdtData(wowAdt);
+    await adt.load(dataFetcher);
+    adt.setWorldFlags(this.wdt);
+
+    this.adts.push(adt);
+    this.loadedAdtFileIds.push(fileIDs.root_adt);
+  }
+
+  private getAdtCoords(fileId: number): [number, number] | undefined {
+    for (let i=0; i < this.adtFileIds.length; i++) {
+      if (this.adtFileIds[i].root_adt === fileId) {
+        const x = i % 64;
+        const y = Math.floor(i / 64);
+        return [x, y];
+      }
+    }
+    return undefined;
   }
 }
 

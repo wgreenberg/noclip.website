@@ -24,7 +24,7 @@ pub struct M2Header {
     pub version: u32,
     name: WowCharArray,
     pub flags: u32,
-    global_loops: WowArray<u32>,
+    global_sequence_durations: WowArray<u32>,
     sequences: WowArray<M2Sequence>,
     sequence_lookups: WowArray<u16>,
     bones: WowArray<M2CompBoneUnallocated>,
@@ -177,7 +177,7 @@ impl M2 {
 
     pub fn get_animation_manager(&self) -> Result<AnimationManager, String> {
         Ok(AnimationManager::new(
-            self.header.global_loops.to_vec(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
+            self.header.global_sequence_durations.to_vec(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
             self.header.sequences.to_vec(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
             self.get_texture_weights()?,
             self.get_texture_transforms()?,
@@ -294,12 +294,24 @@ mod tests {
     #[test]
     fn test() {
         //let data = std::fs::read("../data/wow/world/critter/birds/bird02.m2").unwrap();
-        let data = std::fs::read("../data/wow/world/generic/nightelf/passive doodads/magicalimplements/nemagicimplement06.m2").unwrap();
+        //let data = std::fs::read("../data/wow/world/generic/nightelf/passive doodads/magicalimplements/nemagicimplement06.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/generic/passivedoodads/particleemitters/druidwisp01.m2").unwrap();
+        let data = std::fs::read("../data/wow/world/kalimdor/barrens/passivedoodads/waterwheel/orc_waterwheel.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
         let m2 = M2::new(data).unwrap();
         let mut animation_manager = m2.get_animation_manager().unwrap();
         dbg!(&animation_manager);
-        animation_manager.update(0, 0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        animation_manager.update(20.0);
+        dbg!(animation_manager.calculated_texture_translations);
     }
 }

@@ -65,6 +65,10 @@ impl Wdt {
         }
         result
     }
+
+    pub fn get_all_map_data(&self) -> Vec<MapFileDataIDs> {
+        self.map_filedata_ids.clone()
+    }
 }
 
 #[wasm_bindgen(js_name = "WowGlobalWmoDefinition")]

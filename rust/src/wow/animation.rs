@@ -3,6 +3,60 @@ use wasm_bindgen::prelude::*;
 use crate::wow::m2::*;
 use crate::wow::common::*;
 
+use std::ops::{Mul, Add};
+
+trait Lerp {
+    fn lerp(self, other: Self, t: f32) -> Self;
+}
+
+impl Lerp for u16 {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        ((self as f32) * (1.0 - t) + (other as f32) * t) as u16
+    }
+}
+
+impl Lerp for Vec3 {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        Vec3 {
+            x: self.x * (1.0 - t) + other.x * t,
+            y: self.y * (1.0 - t) + other.y * t,
+            z: self.z * (1.0 - t) + other.z * t,
+        }
+    }
+}
+
+impl Lerp for Quat {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        Quat {
+            x: self.x * (1.0 - t) + other.x * t,
+            y: self.y * (1.0 - t) + other.y * t,
+            z: self.z * (1.0 - t) + other.z * t,
+            w: self.w * (1.0 - t) + other.w * t,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LcgRng {
+    state: u32,
+}
+
+impl LcgRng {
+    pub fn new(seed: u32) -> Self {
+        LcgRng { state: seed }
+    }
+
+    pub fn next_u16(&mut self) -> u16 {
+        self.state = self.state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        self.state %= 1 << 31;
+        self.state as u16
+    }
+
+    pub fn next_f32(&mut self) -> f32 {
+        self.next_u16() as f32 / std::u16::MAX as f32
+    }
+}
+
 #[derive(DekuRead, Debug, Clone)]
 pub struct M2CompBoneUnallocated {
     pub key_bone_id: i32,
@@ -28,6 +82,7 @@ pub struct M2CompBone {
     pub pivot: Vec3,
 }
 
+#[wasm_bindgen(js_name = "WowM2Sequence")]
 #[derive(DekuRead, Debug, Clone)]
 pub struct M2Sequence {
     pub id: u16, // lookup table id?
@@ -39,8 +94,7 @@ pub struct M2Sequence {
     pub frequency: u16, // how often this should be played (for all animations of the same type, this adds up to 0x7fff)
     pub replay_min: u32,
     pub replay_max: u32,
-    pub blend_time_in: u16,
-    pub blend_time_out: u16,
+    pub blend_time: u32,
     pub bounds_aabb: AABBox,
     pub bounds_radius: f32,
     pub variation_next: i16, // id of the next animation of this animation id, -1 if none
@@ -141,26 +195,59 @@ impl M2Color {
     }
 }
 
-#[wasm_bindgen(js_name = "WowM2AnimationState")]
+#[wasm_bindgen(js_name = "WowM2AnimationState", getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct AnimationState {
-    animation_index: usize,
-    repeat_times: usize,
-    animation_time: u32,
-    animation_record: M2Sequence,
-    main_variation_index: usize,
-    main_variation_record: M2Sequence,
+    pub animation_index: Option<usize>,
+    pub repeat_times: i32,
+    pub animation_time: f64,
+    pub animation_record: Option<M2Sequence>,
+    pub main_variation_index: usize,
+    pub main_variation_record: Option<M2Sequence>,
+}
+
+impl AnimationState {
+    fn new(first_sequence: Option<M2Sequence>) -> Self {
+        match first_sequence {
+            Some(seq) => AnimationState {
+                animation_index: Some(0),
+                repeat_times: 0,
+                animation_time: 0.0,
+                animation_record: Some(seq.clone()),
+                main_variation_index: 0,
+                main_variation_record: Some(seq),
+            },
+            None => AnimationState {
+                animation_index: None,
+                repeat_times: 0,
+                animation_time: 0.0,
+                animation_record: None,
+                main_variation_index: 0,
+                main_variation_record: None,
+            }
+        }
+    }
+
+    fn calculate_animation_repeats(&mut self, rng: &mut LcgRng) {
+        if let Some(record) = &self.animation_record {
+            let times = (record.replay_max - record.replay_min) as f32;
+            self.repeat_times = record.replay_min as i32 + (times * rng.next_f32()) as i32;
+        }
+    }
 }
 
 #[wasm_bindgen(js_name = "WowM2AnimationManager", getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct AnimationManager {
-    global_loops: Vec<u32>,
-    global_sequence_times: Vec<u32>,
+    global_sequence_durations: Vec<u32>,
+    global_sequence_times: Vec<f64>,
     sequences: Vec<M2Sequence>,
     texture_weights: Vec<M2TextureWeight>,
     texture_transforms: Vec<M2TextureTransform>,
-    animation_state: AnimationState,
+    pub current_animation: AnimationState,
+    pub next_animation: AnimationState,
+    rng: LcgRng,
+    blend_factor: f32,
     colors: Vec<M2Color>,
     bones: Vec<M2CompBone>,
 
@@ -174,31 +261,30 @@ pub struct AnimationManager {
 // rust-only
 impl AnimationManager {
     pub fn new(
-        global_loops: Vec<u32>,
+        global_sequence_durations: Vec<u32>,
         sequences: Vec<M2Sequence>,
         texture_weights: Vec<M2TextureWeight>,
         texture_transforms: Vec<M2TextureTransform>,
         colors: Vec<M2Color>,
         bones: Vec<M2CompBone>,
     ) -> Self {
-        let global_sequence_times = vec![0; global_loops.len()];
-        let animation_state = AnimationState {
-            animation_index: 0,
-            repeat_times: 0,
-            animation_time: 0,
-            animation_record: sequences[0].clone(),
-            main_variation_index: 0,
-            main_variation_record: sequences[0].clone(),
-        };
+        let global_sequence_times = vec![0.0; global_sequence_durations.len()];
+        let mut current_animation = AnimationState::new(Some(sequences[0].clone()));
+        let mut rng = LcgRng::new(1312);
+        current_animation.calculate_animation_repeats(&mut rng);
+        let next_animation = AnimationState::new(None);
         AnimationManager {
-            global_loops,
-            animation_state,
+            global_sequence_durations,
+            current_animation,
+            next_animation,
+            blend_factor: 0.0,
             sequences,
             texture_transforms,
             texture_weights,
             colors,
             bones,
             global_sequence_times,
+            rng,
 
             calculated_colors: None,
             calculated_texture_translations: None,
@@ -208,16 +294,14 @@ impl AnimationManager {
         }
     }
 
-    fn get_current_value<T>(&self, animation: &M2Track<T>, default: T) -> T
-        where T: Clone
+    fn get_current_value<T>(&self, mut curr_time: f64, mut animation_index: usize, animation: &M2Track<T>, default: T) -> T
+        where T: Clone + Lerp
         {
-        let mut curr_time = self.animation_state.animation_time;
-        let mut animation_index = self.animation_state.animation_index;
-        let mut max_time = self.animation_state.animation_record.duration;
+        let mut max_time = self.sequences[animation_index].duration;
 
-        if (animation.global_sequence >= 0) {
+        if animation.global_sequence >= 0 {
             curr_time = self.global_sequence_times[animation.global_sequence as usize];
-            max_time = self.global_loops[animation.global_sequence as usize];
+            max_time = self.global_sequence_durations[animation.global_sequence as usize];
         }
 
         if animation.timestamps.len() <= animation_index {
@@ -238,7 +322,7 @@ impl AnimationManager {
         // find the index of the lowest timestamp >= curr_time (or the highest timestamp less than it)
         let time_index: i32;
         if max_time != 0 {
-            if let Some(index) = times.iter().position(|time| *time >= curr_time) {
+            if let Some(index) = times.iter().position(|time| *time as f64 >= curr_time) {
                 time_index = index as i32;
             } else {
                 time_index = match times.len() {
@@ -261,51 +345,157 @@ impl AnimationManager {
             if animation.interpolation_type == 0 {
                 return value1.clone();
             } else if animation.interpolation_type == 1 {
-                // TODO lerp from value1 to value2
-                return value1.clone();
+                let t = (curr_time - time1 as f64) / (time2 as f64 - time1 as f64);
+                return value1.clone().lerp(value2.clone(), t as f32);
             }
         } else {
             return values[0].clone();
         }
         default
     }
+
+    fn get_current_value_with_blend<T>(&self, animation: &M2Track<T>, default: T) -> T
+        where T: Clone + Lerp {
+        let result = self.get_current_value(
+            self.current_animation.animation_time,
+            self.current_animation.animation_index.unwrap(),
+            animation,
+            default.clone()
+        );
+        
+        if self.blend_factor < 0.999 {
+            if let Some(next_index) = self.next_animation.animation_index {
+                let next_result = self.get_current_value(
+                    self.next_animation.animation_time,
+                    next_index,
+                    animation,
+                    default.clone()
+                );
+
+                return result.lerp(next_result, self.blend_factor);
+            }
+        }
+
+        result
+    }
 }
 
 #[wasm_bindgen(js_class = "WowM2AnimationManager")]
 impl AnimationManager {
-    pub fn update(&mut self, delta_time: u32, globalDeltaTime: u32) {
-        //self.animation_state.animation_time += delta_time;
+    pub fn update(&mut self, delta_time: f64) {
+        self.current_animation.animation_time += delta_time;
 
-        // TODO: global sequences?
+        for i in 0..self.global_sequence_times.len() {
+            self.global_sequence_times[i] += delta_time;
+            if self.global_sequence_durations[i] > 0 {
+                self.global_sequence_times[i] %= self.global_sequence_durations[i] as f64;
+            }
+        }
+
+        let current_record = self.current_animation.animation_record.as_ref().unwrap();
+
+        // Pick next animation if there is one, and no next animation was picked before
+        let mut sub_anim_record: Option<&M2Sequence> = None;
+        if self.next_animation.animation_index.is_none()
+            && self.current_animation.main_variation_record.as_ref().unwrap().variation_next > -1
+            && self.current_animation.repeat_times <= 0 {
+
+            let probability = (self.rng.next_f32() * 0x7fff as f32) as u16;
+            let mut calc_prob = 0;
+
+            let mut next_index = self.current_animation.main_variation_index;
+            let mut next_record = &self.sequences[next_index];
+            calc_prob += next_record.frequency;
+            while calc_prob < probability && next_record.variation_next > -1 {
+                next_index = next_record.variation_next as usize;
+                next_record = &self.sequences[next_index];
+
+                if self.current_animation.animation_index != Some(next_index) {
+                    calc_prob += next_record.frequency;
+                }
+            }
+            sub_anim_record = Some(next_record);
+
+            self.next_animation.animation_index = Some(next_index);
+            self.next_animation.animation_record = Some(self.sequences[next_index].clone());
+            self.next_animation.animation_time = 0.0;
+            self.next_animation.main_variation_index = self.current_animation.main_variation_index;
+            self.next_animation.main_variation_record = self.current_animation.main_variation_record.clone();
+            self.next_animation.calculate_animation_repeats(&mut self.rng);
+        } else if self.current_animation.repeat_times > 0 {
+            self.next_animation = self.current_animation.clone();
+            self.next_animation.repeat_times -= 1;
+        }
+
+        let current_animation_time_left = current_record.duration as f64 - self.current_animation.animation_time;
+        let mut sub_anim_blend_time = 0.0;
+
+        if let Some(next_index) = self.next_animation.animation_index {
+            sub_anim_record = Some(&self.sequences[next_index]);
+            sub_anim_blend_time = self.sequences[next_index].blend_time as f64;
+        }
+
+        if sub_anim_blend_time > 0.0 && current_animation_time_left < sub_anim_blend_time {
+            self.next_animation.animation_time = (sub_anim_blend_time - current_animation_time_left) % sub_anim_record.unwrap().duration as f64;
+            self.blend_factor = (current_animation_time_left / sub_anim_blend_time) as f32;
+        } else {
+            self.blend_factor = 1.0;
+        }
+
+        if self.current_animation.animation_time >= current_record.duration as f64 {
+            self.current_animation.repeat_times -= 1;
+
+            if let Some(index) = self.next_animation.animation_index {
+                let mut next_index = index;
+                while ((self.sequences[next_index].flags & 0x20) == 0) && ((self.sequences[next_index].flags & 0x40) > 0) {
+                    next_index = self.sequences[next_index].alias_next as usize;
+                    if next_index >= self.sequences.len() {
+                        break;
+                    }
+                }
+                self.next_animation.animation_index = Some(next_index);
+                self.next_animation.animation_record = Some(self.sequences[next_index].clone());
+
+                self.current_animation = self.next_animation.clone();
+
+                 self.next_animation.animation_index = None;
+                 self.next_animation.animation_record = None;
+                 self.blend_factor = 1.0;
+            } else if current_record.duration > 0 {
+                self.current_animation.animation_time %= current_record.duration as f64;
+            }
+        }
 
         let mut colors = Vec::new();
         let default_color = Vec3::new(1.0);
         let default_alpha = 0x7fff;
         for color in &self.colors {
             let mut rgba = Vec4::new(0.0);
-            let rgb = self.get_current_value(&color.color, default_color);
+            let rgb = self.get_current_value_with_blend(&color.color, default_color);
             rgba.x = rgb.x;
             rgba.y = rgb.y;
             rgba.z = rgb.z;
-            rgba.w = self.get_current_value(&color.alpha, default_alpha) as f32 / 0x7fff as f32;
+            rgba.w = self.get_current_value_with_blend(&color.alpha, default_alpha) as f32 / 0x7fff as f32;
             colors.push(rgba);
         }
         self.calculated_colors = Some(colors);
 
         let mut transparencies = Vec::new();
         for weight in &self.texture_weights {
-            transparencies.push(self.get_current_value(&weight.weights, default_alpha) as f32 / 0x7fff as f32);
+            transparencies.push(self.get_current_value_with_blend(&weight.weights, default_alpha) as f32 / 0x7fff as f32);
         }
         self.calculated_transparencies = Some(transparencies);
 
         let mut translations = Vec::new();
+        let default_translation = Vec3::new(0.0);
         let mut rotations = Vec::new();
+        let default_rotation = Quat { x: 1.0, y: 0.0, z: 0.0, w: 0.0 };
         let mut scalings = Vec::new();
-        for _ in &self.texture_transforms {
-            // TODO actually calculate these
-            translations.push(Vec3::new(0.0));
-            rotations.push(Quat { x: 0.0, y: 0.0, z: 0.0, w: 0.0 });
-            scalings.push(Vec3::new(1.0));
+        let default_scaling = Vec3::new(1.0);
+        for transform in &self.texture_transforms {
+            translations.push(self.get_current_value_with_blend(&transform.translation, default_translation));
+            rotations.push(self.get_current_value_with_blend(&transform.rotation, default_rotation));
+            scalings.push(self.get_current_value_with_blend(&transform.scaling, default_scaling));
         }
         self.calculated_texture_scalings = Some(scalings);
         self.calculated_texture_translations = Some(translations);
