@@ -41,8 +41,12 @@ export class ModelData {
     this.animationManager = this.m2.get_animation_manager();
     for (let txid of this.m2.texture_ids) {
       if (txid === 0) continue;
-      this.blpIds.push(txid);
-      this.blps.push(await fetchFileByID(txid, dataFetcher, rust.WowBlp.new));
+      try {
+        this.blps.push(await fetchFileByID(txid, dataFetcher, rust.WowBlp.new));
+        this.blpIds.push(txid);
+      } catch (e) {
+        console.error(`failed to load BLP: ${e}`)
+      }
     }
 
     this.materials = this.m2.get_materials().map(mat => {
@@ -150,8 +154,12 @@ export class WmoData {
       this.materials.push(tex);
       for (let texId of [tex.texture_1, tex.texture_2, tex.texture_3]) {
         if (texId !== 0 && !this.blps.has(texId)) {
-          let blp = await fetchFileByID(texId, dataFetcher, rust.WowBlp.new);
-          this.blps.set(texId, blp);
+          try {
+            let blp = await fetchFileByID(texId, dataFetcher, rust.WowBlp.new);
+            this.blps.set(texId, blp);
+          } catch (e) {
+            console.error(`failed to fetch blp: ${e}`);
+          }
         }
       }
     }
@@ -454,8 +462,12 @@ export class AdtData {
   public async load(dataFetcher: DataFetcher) {
       const blpIds = this.innerAdt.get_texture_file_ids();
       for (let blpId of blpIds) {
-        const blp = await fetchFileByID(blpId, dataFetcher, rust.WowBlp.new);
-        this.blps.set(blpId, blp);
+        try {
+          const blp = await fetchFileByID(blpId, dataFetcher, rust.WowBlp.new);
+          this.blps.set(blpId, blp);
+        } catch (e) {
+          console.error(`failed to load blp: ${e}`);
+        }
       }
 
       const modelIds = this.innerAdt.get_model_file_ids();
@@ -554,15 +566,14 @@ export class LazyWorldData {
   public globalWmoDef: WmoDefinition | null = null;
   private adtFileIds: WowMapFileDataIDs[] = [];
 
-  constructor(public fileId: number, public startingAdtFileID: number, public adtRadius = 1) {
+  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 1) {
   }
 
   public async load(dataFetcher: DataFetcher) {
     this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
     this.adtFileIds = this.wdt.get_all_map_data();
     console.log(this.adtFileIds);
-    const [adtX, adtY] = this.getAdtCoords(this.startingAdtFileID)!;
-    console.log(`found ${this.startingAdtFileID} at ${adtX}, ${adtY}`)
+    const [adtX, adtY] = this.startAdtCoords;
     for (let x = adtX - this.adtRadius; x <= adtX + this.adtRadius; x++) {
       for (let y = adtY - this.adtRadius; y <= adtY + this.adtRadius; y++) {
         await this.loadAdt(x, y, dataFetcher);
@@ -574,7 +585,8 @@ export class LazyWorldData {
     console.log(`loading coords ${x}, ${y}`)
     const fileIDs = this.adtFileIds[y * 64 + x];
     if (fileIDs.root_adt === 0) {
-      throw new Error(`null ADTs in a non-global-WMO WDT`);
+      console.error(`null ADTs in a non-global-WMO WDT`);
+      return;
     }
 
     // TODO handle obj1 (LOD) adts
@@ -590,7 +602,7 @@ export class LazyWorldData {
     this.loadedAdtFileIds.push(fileIDs.root_adt);
   }
 
-  private getAdtCoords(fileId: number): [number, number] | undefined {
+  public getAdtCoords(fileId: number): [number, number] | undefined {
     for (let i=0; i < this.adtFileIds.length; i++) {
       if (this.adtFileIds[i].root_adt === fileId) {
         const x = i % 64;

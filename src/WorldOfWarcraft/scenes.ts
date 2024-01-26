@@ -766,8 +766,8 @@ class ContinentScene implements Viewer.SceneGfx {
 class ContinentSceneDesc implements Viewer.SceneDesc {
   public id: string;
 
-  constructor(public name: string, public fileId: number, public adtFileId: number) {
-    this.id = fileId.toString();
+  constructor(public name: string, public fileId: number, public startX: number, public startY: number) {
+    this.id = `${name}-${fileId}-${startX}-${startY}`;
   }
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
@@ -775,7 +775,7 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const wdt = new LazyWorldData(this.fileId, this.adtFileId, 10);
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1);
     console.log('loading wdt')
     await wdt.load(dataFetcher);
     console.log('done')
@@ -801,8 +801,13 @@ const sceneDescs = [
     new WdtSceneDesc("Deadmines", 780605),
     new WdtSceneDesc("Shadowfang Keep", 790796),
 
-    "Continent",
-    new ContinentSceneDesc("Kalimdor", 782779, 785510),
+    "Kalimdor",
+    new ContinentSceneDesc("??", 782779, 35, 23),
+    
+    "Eastern Kingdoms",
+    new ContinentSceneDesc("Undercity", 775971, 31, 28),
+    new ContinentSceneDesc("Stormwind", 775971, 31, 48),
+    new ContinentSceneDesc("Ironforge", 775971, 33, 40),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
