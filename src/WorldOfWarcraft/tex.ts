@@ -183,7 +183,7 @@ export class TextureCache {
       device.uploadTextureData(texture, 0, [texData]);
       const mapping = new TextureMapping();
       mapping.gfxTexture = texture;
-      mapping.gfxSampler = this.getSampler({ wrap: true });
+      mapping.gfxSampler = this.getSampler({ wrap: false });
       return mapping;
     }
 
