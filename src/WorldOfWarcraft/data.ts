@@ -208,7 +208,7 @@ export class ModelRenderPass {
     let settings = {
       cullMode: this.materialFlags.two_sided ? GfxCullMode.None : GfxCullMode.Back,
       depthWrite: this.materialFlags.depth_write,
-      //depthCompare: this.materialFlags.depth_tested ? reverseDepthForCompareMode(GfxCompareMode.LessEqual) : GfxCompareMode.Always,
+      depthCompare: this.materialFlags.depth_tested ? reverseDepthForCompareMode(GfxCompareMode.LessEqual) : GfxCompareMode.Always,
     };
     // TODO setSortKeyDepth based on distance to transparent object
     switch (this.blendMode) {
@@ -221,11 +221,52 @@ export class ModelRenderPass {
         renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
         break;
       }
-      case rust.WowM2BlendingMode.NoAlphaAdd:
-      case rust.WowM2BlendingMode.Add:
-      case rust.WowM2BlendingMode.Mod:
-      case rust.WowM2BlendingMode.Mod2x:
-      case rust.WowM2BlendingMode.BlendAdd:
+      case rust.WowM2BlendingMode.NoAlphaAdd: {
+        setAttachmentStateSimple(settings, {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.One,
+          blendDstFactor: GfxBlendFactor.One,
+        });
+        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        break;
+      }
+      case rust.WowM2BlendingMode.Add: {
+        setAttachmentStateSimple(settings, {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.SrcAlpha,
+          blendDstFactor: GfxBlendFactor.One,
+        });
+        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        break;
+      }
+      case rust.WowM2BlendingMode.Mod: {
+        setAttachmentStateSimple(settings, {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.Dst,
+          blendDstFactor: GfxBlendFactor.Zero,
+        });
+        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        break;
+      }
+      case rust.WowM2BlendingMode.Mod2x: {
+        setAttachmentStateSimple(settings, {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.Dst,
+          blendDstFactor: GfxBlendFactor.Src,
+        });
+        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        break;
+      }
+      case rust.WowM2BlendingMode.BlendAdd: {
+
+        setAttachmentStateSimple(settings, {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.One,
+          blendDstFactor: GfxBlendFactor.SrcAlpha,
+        });
+        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        break;
+      }
       case rust.WowM2BlendingMode.Opaque:
       case rust.WowM2BlendingMode.AlphaKey:
         break;
