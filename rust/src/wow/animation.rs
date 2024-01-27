@@ -308,7 +308,7 @@ impl AnimationManager {
             animation_index = 0;
         }
 
-        if animation.timestamps.len() == 0 || animation.timestamps.len() <= animation_index {
+        if animation.timestamps.len() == 0 {
             return default;
         }
 
@@ -322,19 +322,23 @@ impl AnimationManager {
         // find the index of the lowest timestamp >= curr_time (or the highest timestamp less than it)
         let time_index: i32;
         if max_time != 0 {
-            if let Some(index) = times.iter().position(|time| *time as f64 >= curr_time) {
-                time_index = index as i32;
+            if times.len() > 1 {
+                let last_index = times.len() - 1;
+                if curr_time > times[last_index] as f64 {
+                    time_index = last_index as i32;
+                } else {
+                    time_index = times.iter().position(|time| *time as f64 >= curr_time).unwrap() as i32;
+                }
+            } else if times.len() == 1 {
+                time_index = 0;
             } else {
-                time_index = match times.len() {
-                    0 => -1,
-                    len => len as i32 - 1,
-                };
+                time_index = -1;
             }
         } else {
             time_index = 0;
         }
 
-        if time_index == times.len() as i32 - 1 {
+        if time_index as usize == times.len() - 1 {
             return values[time_index as usize].clone();
         } else if time_index >= 0 {
             let value1 = &values[time_index as usize];
@@ -347,11 +351,12 @@ impl AnimationManager {
             } else if animation.interpolation_type == 1 {
                 let t = (curr_time - time1 as f64) / (time2 as f64 - time1 as f64);
                 return value1.clone().lerp(value2.clone(), t as f32);
+            } else {
+                unreachable!("unknown interpolation type!")
             }
         } else {
             return values[0].clone();
         }
-        default
     }
 
     fn get_current_value_with_blend<T>(&self, animation: &M2Track<T>, default: T) -> T
@@ -394,7 +399,8 @@ impl AnimationManager {
 
         let current_record = self.current_animation.animation_record.as_ref().unwrap();
 
-        // Pick next animation if there is one, and no next animation was picked before
+        // If we don't have a next animation yet, and this animation isn't set
+        // to repeat again, choose the next one
         let mut sub_anim_record: Option<&M2Sequence> = None;
         if self.next_animation.animation_index.is_none()
             && self.current_animation.main_variation_record.as_ref().unwrap().variation_next > -1
@@ -417,7 +423,7 @@ impl AnimationManager {
             sub_anim_record = Some(next_record);
 
             self.next_animation.animation_index = Some(next_index);
-            self.next_animation.animation_record = Some(self.sequences[next_index].clone());
+            self.next_animation.animation_record = Some(next_record.clone());
             self.next_animation.animation_time = 0.0;
             self.next_animation.main_variation_index = self.current_animation.main_variation_index;
             self.next_animation.main_variation_record = self.current_animation.main_variation_record.clone();
@@ -430,11 +436,13 @@ impl AnimationManager {
         let current_animation_time_left = current_record.duration as f64 - self.current_animation.animation_time;
         let mut sub_anim_blend_time = 0.0;
 
+        // if we have a next animation stored, get its blend time
         if let Some(next_index) = self.next_animation.animation_index {
             sub_anim_record = Some(&self.sequences[next_index]);
             sub_anim_blend_time = self.sequences[next_index].blend_time as f64;
         }
 
+        // if it's time to start blending into the next animation, setup an appropriate blend factor
         if sub_anim_blend_time > 0.0 && current_animation_time_left < sub_anim_blend_time {
             self.next_animation.animation_time = (sub_anim_blend_time - current_animation_time_left) % sub_anim_record.unwrap().duration as f64;
             self.blend_factor = (current_animation_time_left / sub_anim_blend_time) as f32;
@@ -442,11 +450,14 @@ impl AnimationManager {
             self.blend_factor = 1.0;
         }
 
+        // if the current animation is done and we have a next animation, swap
+        // them. otherwise, loop the current one
         if self.current_animation.animation_time >= current_record.duration as f64 {
             self.current_animation.repeat_times -= 1;
 
             if let Some(index) = self.next_animation.animation_index {
                 let mut next_index = index;
+                // if the next animation is an alias, look it up
                 while ((self.sequences[next_index].flags & 0x20) == 0) && ((self.sequences[next_index].flags & 0x40) > 0) {
                     next_index = self.sequences[next_index].alias_next as usize;
                     if next_index >= self.sequences.len() {
@@ -458,9 +469,9 @@ impl AnimationManager {
 
                 self.current_animation = self.next_animation.clone();
 
-                 self.next_animation.animation_index = None;
-                 self.next_animation.animation_record = None;
-                 self.blend_factor = 1.0;
+                self.next_animation.animation_index = None;
+                self.next_animation.animation_record = None;
+                self.blend_factor = 1.0;
             } else if current_record.duration > 0 {
                 self.current_animation.animation_time %= current_record.duration as f64;
             }

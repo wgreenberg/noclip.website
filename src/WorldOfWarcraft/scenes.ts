@@ -556,7 +556,7 @@ class WorldScene implements Viewer.SceneGfx {
   }
 
   public adjustCameraController(c: CameraController) {
-      c.setSceneMoveSpeedMult(0.01);
+      c.setSceneMoveSpeedMult(0.51);
   }
 
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
