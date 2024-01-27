@@ -461,6 +461,7 @@ export class AdtData {
   
   public async load(dataFetcher: DataFetcher) {
       const blpIds = this.innerAdt.get_texture_file_ids();
+      console.log(`    loading adt blps...`);
       for (let blpId of blpIds) {
         try {
           const blp = await fetchFileByID(blpId, dataFetcher, rust.WowBlp.new);
@@ -470,6 +471,7 @@ export class AdtData {
         }
       }
 
+      console.log(`    loading adt models...`);
       const modelIds = this.innerAdt.get_model_file_ids();
       for (let modelId of modelIds) {
         const model = new ModelData(modelId);
@@ -477,6 +479,7 @@ export class AdtData {
         this.models.set(modelId, model);
       }
 
+      console.log(`    loading adt wmos...`);
       const mapObjectDefs = this.innerAdt.map_object_defs;
       for (let wmoDef of mapObjectDefs) {
         this.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef));
@@ -631,16 +634,24 @@ export class WorldData {
       await this.globalWmo.load(dataFetcher);
       this.globalWmoDef = WmoDefinition.fromGlobalDefinition(globalWmo);
     } else {
-      for (let fileIDs of this.wdt.get_loaded_map_data()) {
+      const adtFileIDs = this.wdt.get_loaded_map_data();
+      let i = 0;
+      for (let fileIDs of adtFileIDs) {
         if (fileIDs.root_adt === 0) {
           throw new Error(`null ADTs in a non-global-WMO WDT`);
         }
+        console.log(`loading adt ${i++}/${adtFileIDs.length}`)
         // TODO handle obj1 (LOD) adts
+        console.log(`  loading root...`)
         const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
+        console.log(`  loading obj...`)
         wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
+        console.log(`  loading tex...`)
         wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
+        console.log(`  creating adt...`)
         const adt = new AdtData(wowAdt);
+        console.log(`  loading adt...`)
         await adt.load(dataFetcher);
         adt.setWorldFlags(this.wdt);
 

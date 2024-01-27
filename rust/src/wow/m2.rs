@@ -301,7 +301,7 @@ mod tests {
         let m2 = M2::new(data).unwrap();
         let mut animation_manager = m2.get_animation_manager().unwrap();
         dbg!(&animation_manager);
-        animation_manager.update(20.0);
+        animation_manager.update(6660.0);
         animation_manager.update(20.0);
         animation_manager.update(20.0);
         animation_manager.update(20.0);

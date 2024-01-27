@@ -319,7 +319,7 @@ impl AnimationManager {
         let times = &animation.timestamps[animation_index];
         let values = &animation.values[animation_index];
 
-        // find the index of the lowest timestamp >= curr_time (or the highest timestamp less than it)
+        // find the highest timestamp still less than curr_time
         let time_index: i32;
         if max_time != 0 {
             if times.len() > 1 {
@@ -327,7 +327,14 @@ impl AnimationManager {
                 if curr_time > times[last_index] as f64 {
                     time_index = last_index as i32;
                 } else {
-                    time_index = times.iter().position(|time| *time as f64 >= curr_time).unwrap() as i32;
+                    let next_timestamp_idx = times.iter().position(|time| {
+                        *time as f64 >= curr_time
+                    }).unwrap() as i32;
+                    if next_timestamp_idx != 0 {
+                        time_index = next_timestamp_idx - 1;
+                    } else {
+                        time_index = next_timestamp_idx;
+                    }
                 }
             } else if times.len() == 1 {
                 time_index = 0;
