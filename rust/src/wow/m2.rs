@@ -1,5 +1,6 @@
 use deku::prelude::*;
 use deku::ctx::ByteSize;
+use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
 use crate::wow::common::ChunkedData;
 use crate::wow::animation::*;
@@ -191,7 +192,7 @@ impl M2 {
         12 + 4 + 4 + 12 + 2 * 8
     }
 
-    pub fn get_vertex_data(&self) -> Result<Vec<u8>, String> {
+    pub unsafe fn get_vertex_data(&self) -> Result<Vec<u8>, String> {
         let vertex_data_start = self.header.vertices.offset as usize;
         let vertex_data_size = self.header.vertices.count as usize * M2::get_vertex_stride();
         let vertex_data_end = vertex_data_start + vertex_data_size;

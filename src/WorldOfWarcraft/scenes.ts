@@ -17,7 +17,7 @@ import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData } from './data.js';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache } from './data.js';
 import { getMatrixTranslation } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
@@ -73,7 +73,7 @@ class ModelRenderer {
   private inputLayout: GfxInputLayout;
   public visible: boolean = true;
 
-  constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache) {
+  constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache, private wowCache: WowCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
       { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
@@ -124,7 +124,7 @@ class ModelRenderer {
         renderPass.setMegaStateFlags(renderInst);
         renderInst.drawIndexesInstanced(renderPass.submesh.index_count, numInstances, renderPass.submesh.index_start);
         const mappings = [renderPass.tex0, renderPass.tex1, renderPass.tex2, renderPass.tex3]
-          .map(tex => tex === null ? null : this.textureCache.getTextureMapping(tex[0], tex[1]));
+          .map(tex => tex === null ? null : this.textureCache.getTextureMapping(tex, this.wowCache.blps.get(tex)!));
         renderInst.setAllowSkippingIfPipelineNotReady(false);
         renderInst.setSamplerBindingsFromTextureMappings(mappings);
         renderPass.setModelParams(renderInst);
@@ -145,7 +145,7 @@ class DoodadRenderer {
   public modelIdsToDoodads: Map<number, DoodadData[]>;
   public modelIdsToModelRenderers: Map<number, ModelRenderer>;
 
-  constructor(device: GfxDevice, private textureCache: TextureCache, doodads: DoodadData[], models: Map<number, ModelData>, renderHelper: GfxRenderHelper) {
+  constructor(device: GfxDevice, private textureCache: TextureCache, doodads: DoodadData[], renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     this.modelIdsToDoodads = new Map();
     this.modelIdsToModelRenderers = new Map();
     for (let doodadData of doodads) {
@@ -158,11 +158,11 @@ class DoodadRenderer {
     }
 
     for (let modelId of this.modelIdsToDoodads.keys()) {
-      const modelData = models.get(modelId);
+      const modelData = wowCache.models.get(modelId);
       if (!modelData) {
         throw new Error(`couldn't find model with id ${modelId}`)
       }
-      this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper, textureCache));
+      this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper, textureCache, wowCache));
     }
   }
 
@@ -218,7 +218,7 @@ class WmoStructureRenderer {
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
   private batches: WmoBatchData[][] = [];
 
-  constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper) {
+  constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: WmoProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
       { location: WmoProgram.a_Normal,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
@@ -232,7 +232,8 @@ class WmoStructureRenderer {
     const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
     this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
 
-    for (let group of wmo.groups) {
+    for (let groupId of wmo.groupIds) {
+      const group = wowCache.wmoGroups.get(groupId)!;
       this.vertexBuffers.push(group.getVertexBuffers(device));
       this.indexBuffers.push(group.getIndexBuffer(device));
       this.batches.push(group.getBatches());
@@ -246,7 +247,7 @@ class WmoStructureRenderer {
       if (blpId === 0) {
         mappings.push(this.textureCache.getAllWhiteTextureMapping());
       } else {
-        const blp = this.wmo.blps.get(blpId);
+        const blp = this.wowCache.blps.get(blpId)!;
         if (!blp) {
           throw new Error(`couldn't find WMO BLP with id ${material.texture_1}`);
         }
@@ -287,7 +288,7 @@ class WmoRenderer {
   public wmoIdToWmoDefs: Map<number, WmoDefinition[]>;
   public wmoIdToVisible: Map<number, boolean>;
 
-  constructor(device: GfxDevice, wmoDefs: WmoDefinition[], wmos: WmoData[], textureCache: TextureCache, renderHelper: GfxRenderHelper) {
+  constructor(device: GfxDevice, wmoDefs: WmoDefinition[], wmoIds: number[], textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     this.wmoProgram = renderHelper.renderCache.createProgram(new WmoProgram());
     this.modelProgram = renderHelper.renderCache.createProgram(new ModelProgram());
     this.wmoIdToStructureRenderer = new Map();
@@ -303,10 +304,11 @@ class WmoRenderer {
       }
     }
 
-    for (let wmo of wmos) {
-      this.wmoIdToStructureRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, textureCache, renderHelper));
+    for (let wmoId of this.wmoIdToWmoDefs.keys()) {
+      const wmo = wowCache.wmos.get(wmoId)!;
+      this.wmoIdToStructureRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, textureCache, renderHelper, wowCache));
       const doodads = wmo.wmo.doodad_defs.map(def => DoodadData.fromWmoDoodad(def, wmo));
-      this.wmoIdToDoodadRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, wmo.models, renderHelper));
+      this.wmoIdToDoodadRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, renderHelper, wowCache));
     }
   }
 
@@ -384,7 +386,7 @@ class AdtTerrainRenderer {
   public worldSpaceAABB: AABB;
   public visible: boolean = true;
 
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache, private wowCache: WowCache) {
     const adtVboInfo = rust.WowAdt.get_vbo_info();
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: TerrainProgram.a_ChunkIndex, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_R },
@@ -428,7 +430,7 @@ class AdtTerrainRenderer {
       null, null, null, null
     ];
     chunk.texture_layers.forEach((textureFileId, i) => {
-      const blp = this.adt.blps.get(textureFileId);
+      const blp = this.wowCache.blps.get(textureFileId);
       if (!blp) {
         throw new Error(`couldn't find matching blp for fileID ${textureFileId}`);
       }
@@ -467,7 +469,7 @@ class WorldScene implements Viewer.SceneGfx {
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
 
-  constructor(device: GfxDevice, public world: WorldData, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper) {
+  constructor(device: GfxDevice, public world: WorldData, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     const textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
@@ -475,21 +477,23 @@ class WorldScene implements Viewer.SceneGfx {
     if (this.world.globalWmo) {
       this.wmoRenderers.push(new WmoRenderer(device,
         [this.world.globalWmoDef!],
-        [this.world.globalWmo],
+        [this.world.globalWmo.fileId],
         textureCache,
-        this.renderHelper
+        this.renderHelper,
+        wowCache
       ));
     } else {
       for (let adt of this.world.adts) {
-        this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache));
+        this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache, wowCache));
         const adtDoodads = adt.innerAdt.doodads.map(DoodadData.fromAdtDoodad);
-        this.doodadRenderers.push(new DoodadRenderer(device, textureCache, adtDoodads, adt.models, renderHelper));
+        this.doodadRenderers.push(new DoodadRenderer(device, textureCache, adtDoodads, renderHelper, wowCache));
         this.wmoRenderers.push(new WmoRenderer(
           device,
           adt.wmoDefs,
-          Array.from(adt.wmos.values()),
+          adt.wmoIds,
           textureCache,
-          this.renderHelper
+          this.renderHelper,
+          wowCache
         ));
       }
     }
@@ -608,17 +612,19 @@ class WdtSceneDesc implements Viewer.SceneDesc {
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
+    const cache = new WowCache(dataFetcher);
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
     const wdt = new WorldData(this.fileId);
-    console.log('loading wdt')
-    await wdt.load(dataFetcher);
-    console.log('done')
+    console.time('loading wdt');
+    await wdt.load(dataFetcher, cache);
+    console.timeEnd('loading wdt');
     const holder = new DebugTexHolder();
     let entries: DebugTex[] = [];
     for (let adt of wdt.adts) {
-      for (let [blpId, blp] of adt.blps) {
+      for (let blpId of adt.blpIds) {
+        const blp = cache.blps.get(blpId)!;
         const texPath = getFilePath(blpId);
         entries.push({
           name: texPath,
@@ -629,7 +635,7 @@ class WdtSceneDesc implements Viewer.SceneDesc {
       }
     }
     holder.addTextures(device, entries);
-    return new WorldScene(device, wdt, holder, renderHelper);
+    return new WorldScene(device, wdt, holder, renderHelper, cache);
   }
 }
 
@@ -640,21 +646,22 @@ class ContinentScene implements Viewer.SceneGfx {
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
 
-  constructor(device: GfxDevice, public world: LazyWorldData, public renderHelper: GfxRenderHelper) {
+  constructor(device: GfxDevice, public world: LazyWorldData, public renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     const textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
 
     for (let adt of this.world.adts) {
-      this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache));
+      this.terrainRenderers.push(new AdtTerrainRenderer(device, this.renderHelper, adt, textureCache, wowCache));
       const adtDoodads = adt.innerAdt.doodads.map(DoodadData.fromAdtDoodad);
-      this.doodadRenderers.push(new DoodadRenderer(device, textureCache, adtDoodads, adt.models, renderHelper));
+      this.doodadRenderers.push(new DoodadRenderer(device, textureCache, adtDoodads, renderHelper, wowCache));
       this.wmoRenderers.push(new WmoRenderer(
         device,
         adt.wmoDefs,
-        Array.from(adt.wmos.values()),
+        adt.wmoIds,
         textureCache,
-        this.renderHelper
+        this.renderHelper,
+        wowCache,
       ));
     }
   }
@@ -720,7 +727,7 @@ class ContinentScene implements Viewer.SceneGfx {
   }
 
   public adjustCameraController(c: CameraController) {
-      c.setSceneMoveSpeedMult(0.01);
+    c.setSceneMoveSpeedMult(0.01);
   }
 
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
@@ -772,14 +779,15 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
+    const cache = new WowCache(dataFetcher);
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
     const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1);
-    console.log('loading wdt')
-    await wdt.load(dataFetcher);
-    console.log('done')
-    return new ContinentScene(device, wdt, renderHelper);
+    console.time('loading wdt')
+    await wdt.load(dataFetcher, cache);
+    console.timeEnd('loading wdt')
+    return new ContinentScene(device, wdt, renderHelper, cache);
   }
 }
 

@@ -15,11 +15,54 @@ import { AttachmentStateSimple, setAttachmentStateSimple } from "../gfx/helpers/
 import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.js";
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 
+abstract class Loadable {
+  public abstract load(dataFetcher: DataFetcher, cache: WowCache): Promise<void>
+}
+
+export class WowCache {
+  public models: Map<number, ModelData> = new Map();
+  public wmos: Map<number, WmoData> = new Map();
+  public wmoGroups: Map<number, WmoGroupData> = new Map();
+  public blps: Map<number, WowBlp> = new Map();
+
+  constructor(public dataFetcher: DataFetcher) {
+  }
+
+  private async getOrLoad<T extends Loadable>(fileId: number, type: (new (fileId: number) => T), map: Map<number, T>): Promise<T> {
+    let value = map.get(fileId);
+    if (!value) {
+      value = new type(fileId);
+      await value.load(this.dataFetcher, this);
+      map.set(fileId, value);
+    }
+    return value;
+  }
+
+  public async loadModel(fileId: number): Promise<ModelData> {
+    return this.getOrLoad(fileId, ModelData, this.models);
+  }
+
+  public async loadWmo(fileId: number): Promise<WmoData> {
+    return this.getOrLoad(fileId, WmoData, this.wmos);
+  }
+
+  public async loadWmoGroup(fileId: number): Promise<WmoGroupData> {
+    return this.getOrLoad(fileId, WmoGroupData, this.wmoGroups);
+  }
+
+  public async loadBlp(fileId: number): Promise<WowBlp> {
+    let blp = this.blps.get(fileId);
+    if (!blp) {
+      blp = await fetchFileByID(fileId, this.dataFetcher, rust.WowBlp.new);
+      this.blps.set(fileId, blp);
+    }
+    return blp;
+  }
+}
 
 export class ModelData {
   public m2: WowM2;
   public skins: WowSkin[] = [];
-  public blps: WowBlp[] = [];
   public blpIds: number[] = [];
   public vertexColors: WowVec4[] = [];
   public textureWeights: Float32Array;
@@ -33,7 +76,7 @@ export class ModelData {
   constructor(public fileId: number) {
   }
 
-  public async load(dataFetcher: DataFetcher): Promise<undefined> {
+  public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
     this.textureLookupTable = this.m2.get_texture_lookup_table();
     this.textureTransformsLookupTable = this.m2.get_texture_transforms_lookup_table();
@@ -42,7 +85,7 @@ export class ModelData {
     for (let txid of this.m2.texture_ids) {
       if (txid === 0) continue;
       try {
-        this.blps.push(await fetchFileByID(txid, dataFetcher, rust.WowBlp.new));
+        await cache.loadBlp(txid);
         this.blpIds.push(txid);
       } catch (e) {
         console.error(`failed to load BLP: ${e}`)
@@ -129,54 +172,41 @@ export class WmoGroupData {
     return{ byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.group.indices.buffer) }
   }
 
-  public async load(dataFetcher: DataFetcher): Promise<undefined> {
+  public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     this.group = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmoGroup.new);
   }
 }
 
 export class WmoData {
   public wmo: WowWmo;
-  public groups: WmoGroupData[] = [];
-  public blps: Map<number, WowBlp>;
-  public models: Map<number, ModelData>;
+  public groupIds: number[] = [];
+  public blpIds: number[] = [];
   public materials: WowWmoMaterial[] = [];
   public modelIds: Uint32Array;
 
   constructor(public fileId: number) {
-    this.blps = new Map();
-    this.models = new Map();
   }
 
-  public async load(dataFetcher: DataFetcher): Promise<undefined> {
+  public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<void> {
     this.wmo = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmo.new);
 
     for (let tex of this.wmo.textures) {
       this.materials.push(tex);
       for (let texId of [tex.texture_1, tex.texture_2, tex.texture_3]) {
-        if (texId !== 0 && !this.blps.has(texId)) {
-          try {
-            let blp = await fetchFileByID(texId, dataFetcher, rust.WowBlp.new);
-            this.blps.set(texId, blp);
-          } catch (e) {
-            console.error(`failed to fetch blp: ${e}`);
-          }
-        }
+        if (texId !== 0)
+          await cache.loadBlp(texId)
       }
     }
 
     this.modelIds = this.wmo.doodad_file_ids;
     for (let modelId of this.modelIds) {
-      if (modelId !== 0 && !this.models.has(modelId)) {
-        const modelData = new ModelData(modelId);
-        await modelData.load(dataFetcher);
-        this.models.set(modelId, modelData);
-      }
+      if (modelId !== 0)
+        await cache.loadModel(modelId)
     }
 
     for (let gfid of this.wmo.group_file_ids) {
-      const group = new WmoGroupData(gfid);
-      await group.load(dataFetcher);
-      this.groups.push(group);
+      await cache.loadWmoGroup(gfid);
+      this.groupIds.push(gfid);
     }
   }
 }
@@ -201,10 +231,10 @@ export class ModelRenderPass {
   public blendMode: WowM2BlendingMode;
   public materialFlags: WowM2MaterialFlags;
   public submesh: WowSkinSubmesh;
-  public tex0: [number, WowBlp];
-  public tex1: [number, WowBlp] | null;
-  public tex2: [number, WowBlp] | null;
-  public tex3: [number, WowBlp] | null;
+  public tex0: number;
+  public tex1: number | null;
+  public tex2: number | null;
+  public tex3: number | null;
   public normalMat: mat4;
 
   constructor(public batch: WowModelBatch, public skin: WowSkin, public model: ModelData) {
@@ -295,10 +325,10 @@ export class ModelRenderPass {
     return result;
   }
 
-  private getBlpId(n: number): [number, WowBlp] | null {
+  private getBlpId(n: number): number | null {
     if (n < this.batch.texture_count) {
       const i = this.model.textureLookupTable[this.batch.texture_combo_index + n];
-      return [this.model.blpIds[i], this.model.blps[i]];
+      return this.model.blpIds[i];
     }
     return null;
   }
@@ -446,48 +476,28 @@ export class WmoDefinition {
 }
 
 export class AdtData {
-  public blps: Map<number, WowBlp>;
-  public models: Map<number, ModelData>;
-  public wmos: Map<number, WmoData>;
+  public blpIds: number[] = [];
+  public modelIds: number[] = [];
+  public wmoIds: number[] = [];
   public wmoDefs: WmoDefinition[] = [];
   public hasBigAlpha: boolean;
   public hasHeightTexturing: boolean;
 
   constructor(public innerAdt: WowAdt) {
-    this.blps = new Map();
-    this.models = new Map();
-    this.wmos = new Map();
   }
   
-  public async load(dataFetcher: DataFetcher) {
-      const blpIds = this.innerAdt.get_texture_file_ids();
-      console.log(`    loading adt blps...`);
-      for (let blpId of blpIds) {
-        try {
-          const blp = await fetchFileByID(blpId, dataFetcher, rust.WowBlp.new);
-          this.blps.set(blpId, blp);
-        } catch (e) {
-          console.error(`failed to load blp: ${e}`);
-        }
+  public async load(dataFetcher: DataFetcher, cache: WowCache) {
+      for (let blpId of this.innerAdt.get_texture_file_ids()) {
+        await cache.loadBlp(blpId);
       }
 
-      console.log(`    loading adt models...`);
-      const modelIds = this.innerAdt.get_model_file_ids();
-      for (let modelId of modelIds) {
-        const model = new ModelData(modelId);
-        await model.load(dataFetcher);
-        this.models.set(modelId, model);
+      for (let modelId of this.innerAdt.get_model_file_ids()) {
+        await cache.loadModel(modelId);
       }
 
-      console.log(`    loading adt wmos...`);
-      const mapObjectDefs = this.innerAdt.map_object_defs;
-      for (let wmoDef of mapObjectDefs) {
+      for (let wmoDef of this.innerAdt.map_object_defs) {
         this.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef));
-        if (!this.wmos.has(wmoDef.name_id)) {
-          const wmoData = new WmoData(wmoDef.name_id);
-          await wmoData.load(dataFetcher);
-          this.wmos.set(wmoDef.name_id, wmoData);
-        }
+        await cache.loadWmo(wmoDef.name_id);
       }
   }
 
@@ -572,19 +582,18 @@ export class LazyWorldData {
   constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 1) {
   }
 
-  public async load(dataFetcher: DataFetcher) {
+  public async load(dataFetcher: DataFetcher, cache: WowCache) {
     this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
     this.adtFileIds = this.wdt.get_all_map_data();
-    console.log(this.adtFileIds);
     const [adtX, adtY] = this.startAdtCoords;
     for (let x = adtX - this.adtRadius; x <= adtX + this.adtRadius; x++) {
       for (let y = adtY - this.adtRadius; y <= adtY + this.adtRadius; y++) {
-        await this.loadAdt(x, y, dataFetcher);
+        await this.loadAdt(x, y, dataFetcher, cache);
       }
     }
   }
 
-  public async loadAdt(x: number, y: number, dataFetcher: DataFetcher) {
+  public async loadAdt(x: number, y: number, dataFetcher: DataFetcher, cache: WowCache) {
     console.log(`loading coords ${x}, ${y}`)
     const fileIDs = this.adtFileIds[y * 64 + x];
     if (fileIDs.root_adt === 0) {
@@ -598,7 +607,7 @@ export class LazyWorldData {
     wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
     const adt = new AdtData(wowAdt);
-    await adt.load(dataFetcher);
+    await adt.load(dataFetcher, cache);
     adt.setWorldFlags(this.wdt);
 
     this.adts.push(adt);
@@ -622,37 +631,31 @@ export class WorldData {
   public adts: AdtData[] = [];
   public globalWmo: WmoData | null = null;
   public globalWmoDef: WmoDefinition | null = null;
+  public cache: any;
 
   constructor(public fileId: number) {
   }
 
-  public async load(dataFetcher: DataFetcher) {
+  public async load(dataFetcher: DataFetcher, cache: WowCache) {
     this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
     if (this.wdt.wdt_uses_global_map_obj()) {
       const globalWmo = this.wdt.global_wmo!;
       this.globalWmo = new WmoData(globalWmo.name_id);
-      await this.globalWmo.load(dataFetcher);
+      await this.globalWmo.load(dataFetcher, cache);
       this.globalWmoDef = WmoDefinition.fromGlobalDefinition(globalWmo);
     } else {
       const adtFileIDs = this.wdt.get_loaded_map_data();
-      let i = 0;
       for (let fileIDs of adtFileIDs) {
         if (fileIDs.root_adt === 0) {
           throw new Error(`null ADTs in a non-global-WMO WDT`);
         }
-        console.log(`loading adt ${i++}/${adtFileIDs.length}`)
         // TODO handle obj1 (LOD) adts
-        console.log(`  loading root...`)
         const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-        console.log(`  loading obj...`)
         wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
-        console.log(`  loading tex...`)
         wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
-        console.log(`  creating adt...`)
         const adt = new AdtData(wowAdt);
-        console.log(`  loading adt...`)
-        await adt.load(dataFetcher);
+        await adt.load(dataFetcher, cache);
         adt.setWorldFlags(this.wdt);
 
         this.adts.push(adt);

@@ -1,6 +1,6 @@
 use deku::prelude::*;
 use deku::ctx::ByteSize;
-use js_sys::Uint8Array;
+use js_sys::{Float32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 use super::common::{Chunk, ChunkedData, Vec3, AABBox};
@@ -211,6 +211,21 @@ pub struct AdtRenderResult {
     pub index_buffer: Vec<u16>,
     pub chunks: Vec<ChunkDescriptor>,
     pub extents: AABBox,
+}
+
+#[wasm_bindgen(js_class = "WowAdtRenderResult")]
+impl AdtRenderResult {
+    pub fn get_num_vertices(&self) -> usize {
+        self.vertex_buffer.len()
+    }
+
+    pub fn get_num_indices(&self) -> usize {
+        self.index_buffer.len()
+    }
+
+    pub fn set_vertex_data(&self, buf: &Float32Array) {
+        buf.copy_from(&self.vertex_buffer[..]);
+    }
 }
 
 #[wasm_bindgen(js_name = "WowAdtChunkDescriptor", getter_with_clone)]
