@@ -3,9 +3,10 @@ import { rust } from "../rustlib.js";
 import { GfxBindingLayoutDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { DeviceProgram } from "../Program.js";
 
-class BaseProgram extends DeviceProgram {
-  public static numUniformBuffers = 1;
+export class BaseProgram extends DeviceProgram {
+  public static numUniformBuffers = 2;
   public static ub_SceneParams = 0;
+  public static ub_GlobalLightParams = 1;
 
   public static numSamplers = 0;
 
@@ -31,6 +32,29 @@ layout(std140) uniform ub_SceneParams {
     Mat4x4 u_ModelView;
 };
 
+layout(std140) uniform ub_GlobalLightParams {
+  vec3 directColor;
+  vec3 ambientColor;
+  vec3 skyTopColor;
+  vec3 skyMiddleColor;
+  vec3 skyBand1Color;
+  vec3 skyBand2Color;
+  vec3 skyFogColor;
+  vec3 sunColor;
+  vec3 cloudSunColor;
+  vec3 cloudEmissiveColor;
+  vec3 cloudLayer1AmbientColor;
+  vec3 cloudLayer2AmbientColor;
+  vec3 oceanCloseColor;
+  vec3 oceanFarColor;
+  vec3 riverCloseColor;
+  vec3 riverFarColor;
+  vec3 shadowOpacity;
+  vec4 fogParams; // fogEnd, fogScaler
+  vec4 waterAlphas; // waterShallow, waterDeep, oceanShallow, oceanDeep
+  vec4 glow; // glow, highlightSky, _, _
+};
+
 ${BaseProgram.calcLight}
   `;
 }
@@ -41,7 +65,7 @@ export class WmoProgram extends BaseProgram {
   public static a_Color = 2;
   public static a_TexCoord = 3;
 
-  public static ub_ModelParams = 1;
+  public static ub_ModelParams = 2;
 
   public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
     { numUniformBuffers: super.numUniformBuffers + 1, numSamplers: super.numSamplers + 4 },
@@ -178,8 +202,8 @@ export class ModelProgram extends BaseProgram {
   public static a_TexCoord0 = 2;
   public static a_TexCoord1 = 3;
 
-  public static ub_DoodadParams = 1;
-  public static ub_MaterialParams = 2;
+  public static ub_DoodadParams = 2;
+  public static ub_MaterialParams = 3;
 
   public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
       { numUniformBuffers: super.numUniformBuffers + 2, numSamplers: super.numSamplers + 4 },

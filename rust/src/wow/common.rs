@@ -14,13 +14,15 @@ impl Chunk {
         self.parse_inner(data, ByteSize(self.size as usize))
     }
 
-    pub fn parse<T>(&self, data:&[u8]) -> Result<T, String>
-        where for<'a> T: DekuRead<'a, ()> {
+    pub fn parse<T>(&self, data: &[u8]) -> Result<T, String>
+        where for<'a> T: DekuRead<'a, ()>
+    {
         self.parse_inner(data, ())
     }
 
     pub fn parse_array<T>(&self, data: &[u8], size_per_data: usize) -> Result<Vec<T>, String>
-        where for<'a> T: DekuRead<'a, ()> {
+        where for<'a> T: DekuRead<'a, ()>
+    {
         if self.size as usize % size_per_data != 0 {
             return Err(format!(
                 "chunk size {} not evenly divisible by element size {}",
@@ -29,15 +31,21 @@ impl Chunk {
             ));
         }
         let num_elements = self.size as usize / size_per_data;
+        let bitvec = BitVec::from_slice(&data[..]);
         let mut result = Vec::with_capacity(num_elements);
-        for i in 0..num_elements {
-            result.push(self.parse(&data[i * size_per_data..])?);
+        let mut rest = bitvec.as_bitslice();
+        for _ in 0..num_elements {
+            let (new_rest, element) = T::read(rest, ())
+                .map_err(|e| format!("{:?}", e))?;
+            result.push(element);
+            rest = new_rest;
         }
         Ok(result)
     }
 
     fn parse_inner<T, V>(&self, data:&[u8], ctx: V) -> Result<T, String>
-        where for<'a> T: DekuRead<'a, V> {
+        where for<'a> T: DekuRead<'a, V>
+    {
         let bitvec = BitVec::from_slice(&data[..]);
         let (_, element) = T::read(bitvec.as_bitslice(), ctx)
             .map_err(|e| format!("{:?}", e))?;
@@ -108,7 +116,7 @@ pub struct Quat16 {
 }
 
 #[wasm_bindgen(js_name = "WowVec3")]
-#[derive(DekuRead, Debug, Clone, Copy)]
+#[derive(DekuRead, Debug, Clone, Copy, PartialEq)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,

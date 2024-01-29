@@ -1,5 +1,5 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4, WowMapFileDataIDs } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowLightingData } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode } from "../gfx/platform/GfxPlatform.js";
@@ -9,11 +9,78 @@ import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
 import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace } from "./scenes.js";
 import { AABB } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
-import { ModelProgram } from "./program.js";
+import { BaseProgram, ModelProgram } from "./program.js";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
 import { AttachmentStateSimple, setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
 import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.js";
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
+
+export class LightDatabase {
+  private db: WowLightDatabase;
+
+  constructor(public mapId: number) {
+  }
+
+  public async load(dataFetcher: DataFetcher) {
+    let lightDbData = await fetchDataByFileID(1375579, dataFetcher);
+    let lightDataDbData = await fetchDataByFileID(1375580, dataFetcher);
+    let lightParamsDbData = await fetchDataByFileID(1334669, dataFetcher);
+    this.db = rust.WowLightDatabase.new(lightDbData, lightDataDbData, lightParamsDbData);
+  }
+
+  public setGlobalLightingData(renderInst: GfxRenderInst, coords: vec3, time: number) {
+    const lightingData = this.db.get_lighting_data(this.mapId, coords[0], coords[1], coords[2], time);
+    const mainLightingData = lightingData.inner_light.light_data[0];
+    const mainLightingParams = lightingData.inner_light.light_params[0];
+    const numVec3s = 16;
+    const numVec4s = 3;
+    let offset = renderInst.allocateUniformBuffer(BaseProgram.ub_GlobalLightParams, numVec3s * 12 + numVec4s * 16);
+    const uniformBuf = renderInst.mapUniformBufferF32(ModelProgram.ub_MaterialParams);
+    offset += fillColor(uniformBuf, offset, mainLightingData.direct_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.ambient_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.sky_top_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.sky_middle_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.sky_band1_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.sky_band2_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.sky_fog_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.sun_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_sun_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_emissive_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_layer1_ambient_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_layer2_ambient_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.ocean_close_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.ocean_far_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.river_close_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.river_far_color);
+    offset += fillColor(uniformBuf, offset, mainLightingData.shadow_opacity);
+    offset += fillVec4(uniformBuf, offset,
+      mainLightingData.fog_end,
+      mainLightingData.fog_scaler,
+      0,
+      0
+    );
+    offset += fillVec4(uniformBuf, offset,
+      mainLightingParams.water_shallow_alpha,
+      mainLightingParams.water_deep_alpha,
+      mainLightingParams.ocean_shallow_alpha,
+      mainLightingParams.ocean_deep_alpha,
+    );
+    offset += fillVec4(uniformBuf, offset,
+      mainLightingParams.glow,
+      mainLightingParams.highlight_sky ? 1 : 0,
+      0,
+      0
+    );
+  }
+}
+
+function fillColor(buf: Float32Array, offset: number, color: number): number {
+  buf[offset + 0] = (color & 0xff) / 255;
+  buf[offset + 1] = ((color >> 8) & 0xff) / 255;
+  buf[offset + 2] = ((color >> 16) & 0xff) / 255;
+  offset += 3;
+  return offset;
+}
 
 abstract class Loadable {
   public abstract load(dataFetcher: DataFetcher, cache: WowCache): Promise<void>
@@ -640,8 +707,7 @@ export class WorldData {
     this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
     if (this.wdt.wdt_uses_global_map_obj()) {
       const globalWmo = this.wdt.global_wmo!;
-      this.globalWmo = new WmoData(globalWmo.name_id);
-      await this.globalWmo.load(dataFetcher, cache);
+      this.globalWmo = await cache.loadWmo(globalWmo.name_id);
       this.globalWmoDef = WmoDefinition.fromGlobalDefinition(globalWmo);
     } else {
       const adtFileIDs = this.wdt.get_loaded_map_data();

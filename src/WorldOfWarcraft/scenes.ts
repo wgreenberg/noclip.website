@@ -17,7 +17,7 @@ import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache } from './data.js';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase } from './data.js';
 import { getMatrixTranslation } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
@@ -288,7 +288,7 @@ class WmoRenderer {
   public wmoIdToWmoDefs: Map<number, WmoDefinition[]>;
   public wmoIdToVisible: Map<number, boolean>;
 
-  constructor(device: GfxDevice, wmoDefs: WmoDefinition[], wmoIds: number[], textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
+  constructor(device: GfxDevice, wmoDefs: WmoDefinition[], textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     this.wmoProgram = renderHelper.renderCache.createProgram(new WmoProgram());
     this.modelProgram = renderHelper.renderCache.createProgram(new ModelProgram());
     this.wmoIdToStructureRenderer = new Map();
@@ -469,7 +469,7 @@ class WorldScene implements Viewer.SceneGfx {
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
 
-  constructor(device: GfxDevice, public world: WorldData, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper, private wowCache: WowCache) {
+  constructor(device: GfxDevice, public world: WorldData, public textureHolder: DebugTexHolder, public renderHelper: GfxRenderHelper, private wowCache: WowCache, private lightDb: LightDatabase) {
     const textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
@@ -477,7 +477,6 @@ class WorldScene implements Viewer.SceneGfx {
     if (this.world.globalWmo) {
       this.wmoRenderers.push(new WmoRenderer(device,
         [this.world.globalWmoDef!],
-        [this.world.globalWmo.fileId],
         textureCache,
         this.renderHelper,
         wowCache
@@ -490,7 +489,6 @@ class WorldScene implements Viewer.SceneGfx {
         this.wmoRenderers.push(new WmoRenderer(
           device,
           adt.wmoDefs,
-          adt.wmoIds,
           textureCache,
           this.renderHelper,
           wowCache
@@ -528,6 +526,8 @@ class WorldScene implements Viewer.SceneGfx {
     template.setBindingLayouts(TerrainProgram.bindingLayouts);
     template.setGfxProgram(this.terrainProgram)
     template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
+
+    const lightData = this.lightDb.setGlobalLightingData(template, [0, 0, 0], 0);
 
     let offs = template.allocateUniformBuffer(ModelProgram.ub_SceneParams, 32);
     const mapped = template.mapUniformBufferF32(ModelProgram.ub_SceneParams);
@@ -606,7 +606,7 @@ class WorldScene implements Viewer.SceneGfx {
 class WdtSceneDesc implements Viewer.SceneDesc {
   public id: string;
 
-  constructor(public name: string, public fileId: number) {
+  constructor(public name: string, public fileId: number, public lightdbMapId: number) {
     this.id = fileId.toString();
   }
 
@@ -620,6 +620,8 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     console.time('loading wdt');
     await wdt.load(dataFetcher, cache);
     console.timeEnd('loading wdt');
+    const lightDb = new LightDatabase(this.lightdbMapId);
+    await lightDb.load(dataFetcher);
     const holder = new DebugTexHolder();
     let entries: DebugTex[] = [];
     for (let adt of wdt.adts) {
@@ -635,7 +637,7 @@ class WdtSceneDesc implements Viewer.SceneDesc {
       }
     }
     holder.addTextures(device, entries);
-    return new WorldScene(device, wdt, holder, renderHelper, cache);
+    return new WorldScene(device, wdt, holder, renderHelper, cache, lightDb);
   }
 }
 
@@ -646,7 +648,7 @@ class ContinentScene implements Viewer.SceneGfx {
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
 
-  constructor(device: GfxDevice, public world: LazyWorldData, public renderHelper: GfxRenderHelper, private wowCache: WowCache) {
+  constructor(device: GfxDevice, public world: LazyWorldData, public renderHelper: GfxRenderHelper, private wowCache: WowCache, private lightDb: LightDatabase) {
     const textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
@@ -658,7 +660,6 @@ class ContinentScene implements Viewer.SceneGfx {
       this.wmoRenderers.push(new WmoRenderer(
         device,
         adt.wmoDefs,
-        adt.wmoIds,
         textureCache,
         this.renderHelper,
         wowCache,
@@ -695,6 +696,8 @@ class ContinentScene implements Viewer.SceneGfx {
     template.setBindingLayouts(TerrainProgram.bindingLayouts);
     template.setGfxProgram(this.terrainProgram)
     template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
+
+    const lightData = this.lightDb.setGlobalLightingData(template, [0, 0, 0], 0);
 
     let offs = template.allocateUniformBuffer(ModelProgram.ub_SceneParams, 32);
     const mapped = template.mapUniformBufferF32(ModelProgram.ub_SceneParams);
@@ -773,7 +776,7 @@ class ContinentScene implements Viewer.SceneGfx {
 class ContinentSceneDesc implements Viewer.SceneDesc {
   public id: string;
 
-  constructor(public name: string, public fileId: number, public startX: number, public startY: number) {
+  constructor(public name: string, public fileId: number, public startX: number, public startY: number, public lightdbMapId: number) {
     this.id = `${name}-${fileId}-${startX}-${startY}`;
   }
 
@@ -787,35 +790,37 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     console.time('loading wdt')
     await wdt.load(dataFetcher, cache);
     console.timeEnd('loading wdt')
-    return new ContinentScene(device, wdt, renderHelper, cache);
+    const lightDb = new LightDatabase(this.lightdbMapId);
+    await lightDb.load(dataFetcher);
+    return new ContinentScene(device, wdt, renderHelper, cache, lightDb);
   }
 }
 
 const sceneDescs = [
     "Instances",
-    new WdtSceneDesc('Zul-Farak', 791169),
-    new WdtSceneDesc('Blackrock Depths', 780172),
-    new WdtSceneDesc('Alterac Valley', 790112),
-    new WdtSceneDesc('pvp 3', 790291),
-    new WdtSceneDesc('pvp 4', 790377),
-    new WdtSceneDesc('pvp 5', 790469),
-    new WdtSceneDesc('Scholomance', 790713),
-    new WdtSceneDesc("Strat", 827115),
-    new WdtSceneDesc("Caverns of Time", 829736),
-    new WdtSceneDesc("Ahn'qiraj", 775637),
-    new WdtSceneDesc("Deeprun Tram", 780788),
-    new WdtSceneDesc("Blackrock Depths", 780172),
-    new WdtSceneDesc("Upper Blackrock Spire", 1101201),
-    new WdtSceneDesc("Deadmines", 780605),
-    new WdtSceneDesc("Shadowfang Keep", 790796),
+    new WdtSceneDesc('Zul-Farak', 791169, 209),
+    new WdtSceneDesc('Blackrock Depths', 780172, 230),
+    new WdtSceneDesc('Alterac Valley', 790112, 30),
+    new WdtSceneDesc('Warsong Gulch', 790291, 489),
+    new WdtSceneDesc('Arathi Basin', 790377, 529),
+    new WdtSceneDesc('pvp 5', 790469, 0),
+    new WdtSceneDesc('Scholomance', 790713, 289),
+    new WdtSceneDesc("Stratholme", 827115, 329),
+    new WdtSceneDesc("Naxxramas", 827115, 533),
+    new WdtSceneDesc("Caverns of Time", 829736, 269),
+    new WdtSceneDesc("Ruins of Ahn'qiraj", 775637, 509),
+    new WdtSceneDesc("Deeprun Tram", 780788, 369),
+    new WdtSceneDesc("Blackrock Spire", 1101201, 229),
+    new WdtSceneDesc("Deadmines", 780605, 36),
+    new WdtSceneDesc("Shadowfang Keep", 790796, 33),
 
     "Kalimdor",
-    new ContinentSceneDesc("??", 782779, 35, 23),
+    new ContinentSceneDesc("??", 782779, 35, 23, 1),
     
     "Eastern Kingdoms",
-    new ContinentSceneDesc("Undercity", 775971, 31, 28),
-    new ContinentSceneDesc("Stormwind", 775971, 31, 48),
-    new ContinentSceneDesc("Ironforge", 775971, 33, 40),
+    new ContinentSceneDesc("Undercity", 775971, 31, 28, 0),
+    new ContinentSceneDesc("Stormwind", 775971, 31, 48, 0),
+    new ContinentSceneDesc("Ironforge", 775971, 33, 40, 0),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
