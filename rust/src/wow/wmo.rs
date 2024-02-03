@@ -88,8 +88,12 @@ pub struct WmoGroup {
     pub material_info: Vec<MaterialInfo>,
     pub indices: Vec<u8>,
     pub vertices: Vec<u8>,
+    pub num_vertices: usize,
     pub normals: Vec<u8>,
     pub uvs: Vec<u8>,
+    pub num_uv_bufs: usize,
+    pub colors: Vec<u8>,
+    pub num_color_bufs: usize,
     pub batches: Vec<MaterialBatch>,
     pub doodad_refs: Vec<u16>,
 }
@@ -106,7 +110,11 @@ impl WmoGroup {
         let mut indices: Option<Vec<u8>> = None;
         let mut vertices: Option<Vec<u8>> = None;
         let mut normals: Option<Vec<u8>> = None;
-        let mut uvs: Option<Vec<u8>> = None;
+        let mut uvs: Vec<u8> = Vec::new();
+        let mut num_uv_bufs = 0;
+        let mut colors: Vec<u8> = Vec::new();
+        let mut num_vertices = 0;
+        let mut num_color_bufs = 0;
         let mut batches: Option<Vec<MaterialBatch>> = None;
         let mut doodad_refs: Option<Vec<u16>> = None;
         let mut chunked_data = ChunkedData::new(&data[0x58..]);
@@ -114,27 +122,112 @@ impl WmoGroup {
             match &chunk.magic {
                 b"YPOM" => mopy = Some(chunk.parse_array(chunk_data, 2)?),
                 b"IVOM" => indices = Some(chunk_data.to_vec()),
-                b"TVOM" => vertices = Some(chunk_data.to_vec()),
+                b"TVOM" => {
+                    num_vertices = chunk_data.len();
+                    vertices = Some(chunk_data.to_vec());
+                },
                 b"RNOM" => normals = Some(chunk_data.to_vec()),
-                b"VTOM" => uvs = Some(chunk_data.to_vec()),
+                b"VTOM" => {
+                    num_uv_bufs += 1;
+                    uvs.extend(chunk_data.to_vec());
+                },
+                b"VCOM" => {
+                    num_color_bufs += 1;
+                    colors.extend(chunk_data.to_vec());
+                },
                 b"ABOM" => batches = Some(chunk.parse_array(chunk_data, 24)?),
                 b"RDOM" => doodad_refs = Some(chunk.parse_array(chunk_data, 2)?),
                 _ => println!("skipping {}", chunk.magic_str()),
             }
         }
 
+        assert!(num_uv_bufs > 0);
+
         Ok(WmoGroup {
             header,
             material_info: mopy.ok_or("WMO group didn't have MOPY chunk")?,
             indices: indices.ok_or("WMO group didn't have indices")?,
             vertices: vertices.ok_or("WMO group didn't have vertices")?,
+            num_vertices,
             normals: normals.ok_or("WMO group didn't have normals")?,
-            uvs: uvs.ok_or("WMO group didn't have uvs")?,
+            uvs,
+            num_uv_bufs,
+            colors,
+            num_color_bufs,
             batches: batches.unwrap_or(vec![]),
             doodad_refs: doodad_refs.unwrap_or(vec![]),
         })
     }
 }
+
+#[wasm_bindgen(js_name = "WowWmoMaterialPixelShader")]
+#[derive(Copy, Clone, Debug)]
+pub enum PixelShader {
+    Diffuse = 0,
+    Specular = 1,
+    Metal = 2,
+    Env = 3,
+    Opaque = 4,
+    EnvMetal = 5,
+    TwoLayerDiffuse = 6, //MapObjComposite
+    TwoLayerEnvMetal = 7,
+    TwoLayerTerrain = 8,
+    DiffuseEmissive = 9,
+    MaskedEnvMetal = 10,
+    EnvMetalEmissive = 11,
+    TwoLayerDiffuseOpaque = 12,
+    TwoLayerDiffuseEmissive = 13,
+    AdditiveMaskedEnvMetal = 14,
+    TwoLayerDiffuseMod2x = 15,
+    TwoLayerDiffuseMod2xNA = 16,
+    TwoLayerDiffuseAlpha = 17,
+    Lod = 18,
+    Parallax = 19,
+    UnkShader = 20,
+    None = 21,
+}
+
+#[wasm_bindgen(js_name = "WowWmoMaterialVertexShader")]
+#[derive(Copy, Clone, Debug)]
+pub enum VertexShader {
+    DiffuseT1 = 0,
+    DiffuseT1Refl = 1,
+    DiffuseT1EnvT2 = 2,
+    SpecularT1 = 3,
+    DiffuseComp = 4,
+    DiffuseCompRefl = 5,
+    DiffuseCompTerrain = 6,
+    DiffuseCompAlpha = 7,
+    Parallax = 8,
+    None = 9,
+}
+
+static STATIC_SHADERS: [(VertexShader, PixelShader); 24] = [
+    (VertexShader::DiffuseT1, PixelShader::Diffuse),
+    (VertexShader::SpecularT1, PixelShader::Specular),
+    (VertexShader::SpecularT1, PixelShader::Metal),
+    (VertexShader::DiffuseT1Refl, PixelShader::Env),
+    (VertexShader::DiffuseT1, PixelShader::Opaque),
+    (VertexShader::DiffuseT1Refl, PixelShader::EnvMetal),
+    (VertexShader::DiffuseComp, PixelShader::TwoLayerDiffuse),
+    (VertexShader::DiffuseT1, PixelShader::TwoLayerEnvMetal),
+    (VertexShader::DiffuseCompTerrain, PixelShader::TwoLayerTerrain),
+    (VertexShader::DiffuseComp, PixelShader::DiffuseEmissive),
+    (VertexShader::None, PixelShader::None),
+    (VertexShader::DiffuseT1EnvT2, PixelShader::MaskedEnvMetal),
+    (VertexShader::DiffuseT1EnvT2, PixelShader::EnvMetalEmissive),
+    (VertexShader::DiffuseComp, PixelShader::TwoLayerDiffuseOpaque),
+    (VertexShader::None, PixelShader::None),
+    (VertexShader::DiffuseComp, PixelShader::TwoLayerDiffuseEmissive),
+    (VertexShader::DiffuseT1, PixelShader::Diffuse),
+    (VertexShader::DiffuseT1EnvT2, PixelShader::AdditiveMaskedEnvMetal),
+    (VertexShader::DiffuseCompAlpha, PixelShader::TwoLayerDiffuseMod2x),
+    (VertexShader::DiffuseComp, PixelShader::TwoLayerDiffuseMod2xNA),
+    (VertexShader::DiffuseCompAlpha, PixelShader::TwoLayerDiffuseAlpha),
+    (VertexShader::DiffuseT1, PixelShader::Lod),
+    (VertexShader::Parallax, PixelShader::Parallax),
+    (VertexShader::DiffuseT1, PixelShader::UnkShader),
+];
 
 #[wasm_bindgen(js_name = "WowWmoMaterialBatch")]
 #[derive(DekuRead, Debug, Clone)]
@@ -232,6 +325,17 @@ pub struct WmoMaterial {
     pub color_2: Argb,
     pub flags_2: u32,
     runtime_data: [u32; 4],
+}
+
+#[wasm_bindgen(js_class = "WowWmoMaterial")]
+impl WmoMaterial {
+    pub fn get_vertex_shader(&self) -> VertexShader {
+        STATIC_SHADERS[self.shader_index as usize].0
+    }
+
+    pub fn get_pixel_shader(&self) -> PixelShader {
+        STATIC_SHADERS[self.shader_index as usize].1
+    }
 }
 
 #[cfg(test)]

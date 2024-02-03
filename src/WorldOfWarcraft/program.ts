@@ -2,6 +2,7 @@ import { WowM2BlendingMode, WowPixelShader } from "../../rust/pkg/index.js";
 import { rust } from "../rustlib.js";
 import { GfxBindingLayoutDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { DeviceProgram } from "../Program.js";
+import { SkyboxColor } from './skybox.js';
 
 export class BaseProgram extends DeviceProgram {
   public static numUniformBuffers = 2;
@@ -59,16 +60,67 @@ ${BaseProgram.calcLight}
   `;
 }
 
+export class SkyboxProgram extends BaseProgram {
+  public static a_Position = 0;
+  public static a_ColorIndex = 1;
+
+  public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
+    { numUniformBuffers: super.numUniformBuffers, numSamplers: super.numSamplers },
+  ];
+
+  public override both = `
+${BaseProgram.commonDeclarations}
+
+varying vec4 v_Color;
+
+#ifdef VERT
+layout(location = ${SkyboxProgram.a_Position}) attribute vec3 a_Position;
+layout(location = ${SkyboxProgram.a_ColorIndex}) attribute vec3 a_ColorIndex;
+
+void mainVS() {
+    int colorIndex = int(a_ColorIndex);
+    if (colorIndex == ${SkyboxColor.Top}) {
+      v_Color.xyz = skyTopColor;
+    } else if (colorIndex == ${SkyboxColor.Middle}) {
+      v_Color.xyz = skyMiddleColor;
+    } else if (colorIndex == ${SkyboxColor.Band1}) {
+      v_Color.xyz = skyBand1Color;
+    } else if (colorIndex == ${SkyboxColor.Band2}) {
+      v_Color.xyz = skyBand2Color;
+    } else if (colorIndex == ${SkyboxColor.Smog}) {
+      v_Color.xyz = skyFogColor;
+    } else if (colorIndex == ${SkyboxColor.Fog}) {
+      v_Color.xyz = skyFogColor;
+    } else {
+      v_Color.xyz = vec3(1.0, 0.0, 1.0);
+    }
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, 33.333 * vec4(a_Position, 0.0)));
+}
+#endif
+
+#ifdef FRAG
+void mainPS() {
+    gl_FragColor = v_Color;
+}
+#endif
+`;
+}
+
 export class WmoProgram extends BaseProgram {
   public static a_Position = 0;
   public static a_Normal = 1;
-  public static a_Color = 2;
-  public static a_TexCoord = 3;
+  public static a_Color0 = 2;
+  public static a_Color1 = 3;
+  public static a_TexCoord0 = 4;
+  public static a_TexCoord1 = 5;
+  public static a_TexCoord2 = 6;
+  public static a_TexCoord3 = 7;
 
   public static ub_ModelParams = 2;
+  public static ub_BatchParams = 3;
 
   public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
-    { numUniformBuffers: super.numUniformBuffers + 1, numSamplers: super.numSamplers + 4 },
+    { numUniformBuffers: super.numUniformBuffers + 2, numSamplers: super.numSamplers + 4 },
   ];
 
   public override both = `
@@ -76,6 +128,10 @@ ${BaseProgram.commonDeclarations}
 
 layout(std140) uniform ub_ModelParams {
     Mat4x4 u_Transform;
+};
+
+layout(std140) uniform ub_BatchParams {
+    vec4 shaderParams;
 };
 
 layout(binding = 0) uniform sampler2D u_Texture0;
@@ -89,13 +145,17 @@ varying vec4 v_Color;
 #ifdef VERT
 layout(location = ${WmoProgram.a_Position}) attribute vec3 a_Position;
 layout(location = ${WmoProgram.a_Normal}) attribute vec3 a_Normal;
-layout(location = ${WmoProgram.a_Color}) attribute vec4 a_Color;
-layout(location = ${WmoProgram.a_TexCoord}) attribute vec2 a_TexCoord;
+layout(location = ${WmoProgram.a_Color0}) attribute vec4 a_Color0;
+layout(location = ${WmoProgram.a_Color1}) attribute vec4 a_Color1;
+layout(location = ${WmoProgram.a_TexCoord0}) attribute vec2 a_TexCoord0;
+layout(location = ${WmoProgram.a_TexCoord1}) attribute vec2 a_TexCoord1;
+layout(location = ${WmoProgram.a_TexCoord2}) attribute vec2 a_TexCoord2;
+layout(location = ${WmoProgram.a_TexCoord3}) attribute vec2 a_TexCoord3;
 
 void mainVS() {
     gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform, vec4(a_Position, 1.0))));
-    v_UV = a_TexCoord;
-    v_Color = a_Color;
+    v_UV = a_TexCoord0;
+    v_Color = a_Color0;
 }
 #endif
 

@@ -3,39 +3,6 @@ use wasm_bindgen::prelude::*;
 use crate::wow::m2::*;
 use crate::wow::common::*;
 
-use std::ops::{Mul, Add};
-
-trait Lerp {
-    fn lerp(self, other: Self, t: f32) -> Self;
-}
-
-impl Lerp for u16 {
-    fn lerp(self, other: Self, t: f32) -> Self {
-        ((self as f32) * (1.0 - t) + (other as f32) * t) as u16
-    }
-}
-
-impl Lerp for Vec3 {
-    fn lerp(self, other: Self, t: f32) -> Self {
-        Vec3 {
-            x: self.x * (1.0 - t) + other.x * t,
-            y: self.y * (1.0 - t) + other.y * t,
-            z: self.z * (1.0 - t) + other.z * t,
-        }
-    }
-}
-
-impl Lerp for Quat {
-    fn lerp(self, other: Self, t: f32) -> Self {
-        Quat {
-            x: self.x * (1.0 - t) + other.x * t,
-            y: self.y * (1.0 - t) + other.y * t,
-            z: self.z * (1.0 - t) + other.z * t,
-            w: self.w * (1.0 - t) + other.w * t,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct LcgRng {
     state: u32,

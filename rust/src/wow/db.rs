@@ -263,9 +263,8 @@ pub struct LightParamsRecord {
 }
 
 #[derive(DekuRead, Debug, Clone)]
-#[wasm_bindgen(js_name = "WowLightDataRecord")]
 #[deku(ctx = "db2: Wdc4Db2File")]
-pub struct LightDataRecord {
+struct LightDataRecord {
     #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 0)")]
     pub light_param_id: u32,
     #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 1)")]
@@ -312,6 +311,37 @@ pub struct LightDataRecord {
     pub fog_scaler: f32,
 }
 
+#[wasm_bindgen(js_name = "WowLightResult")]
+#[derive(Debug, Clone, Default)]
+pub struct LightResult {
+    pub glow: f32,
+    pub water_shallow_alpha: f32,
+    pub water_deep_alpha: f32,
+    pub ocean_shallow_alpha: f32,
+    pub ocean_deep_alpha: f32,
+    pub highlight_sky: bool,
+    pub direct_color: Vec3,
+    pub ambient_color: Vec3,
+    pub sky_top_color: Vec3,
+    pub sky_middle_color: Vec3,
+    pub sky_band1_color: Vec3,
+    pub sky_band2_color: Vec3,
+    pub sky_smog_color: Vec3,
+    pub sky_fog_color: Vec3,
+    pub sun_color: Vec3,
+    pub cloud_sun_color: Vec3,
+    pub cloud_emissive_color: Vec3,
+    pub cloud_layer1_ambient_color: Vec3,
+    pub cloud_layer2_ambient_color: Vec3,
+    pub ocean_close_color: Vec3,
+    pub ocean_far_color: Vec3,
+    pub river_close_color: Vec3,
+    pub river_far_color: Vec3,
+    pub shadow_opacity: Vec3,
+    pub fog_end: f32,
+    pub fog_scaler: f32,
+}
+
 #[derive(DekuRead, Debug, Clone)]
 #[wasm_bindgen(js_name = "WowLightRecord")]
 #[deku(ctx = "_: Wdc4Db2File")]
@@ -331,14 +361,11 @@ enum DistanceResult {
 }
 
 impl LightRecord {
-    pub fn distance(&self, other: &Vec3) -> DistanceResult {
-        let x = 17066.66 - self.coords.x / 36.0;
-        let y = 17066.66 - self.coords.y / 36.0;
-        let z = self.coords.z / 36.0;
+    fn distance(&self, other: &Vec3) -> DistanceResult {
         let distance = (
-            (x - other.x).powi(2) +
-            (y - other.y).powi(2) +
-            (z - other.z).powi(2)
+            (self.coords.x - other.x).powi(2) +
+            (self.coords.y - other.y).powi(2) +
+            (self.coords.z - other.z).powi(2)
         ).sqrt();
         if distance < self.falloff_start {
             DistanceResult::Inner(distance)
@@ -350,19 +377,102 @@ impl LightRecord {
     }
 }
 
-#[wasm_bindgen(js_name = "WowLightDescriptor", getter_with_clone)]
-#[derive(Debug, Clone)]
-pub struct LightDescriptor {
-    pub light: LightRecord,
-    pub light_data: Vec<LightDataRecord>,
-    pub light_params: Vec<LightParamsRecord>,
+fn u32_to_color(color: u32) -> Vec3 {
+    Vec3 {
+        x: ((color >> 0) & 0xff) as f32 / 255.0,
+        y: ((color >> 8) & 0xff) as f32 / 255.0,
+        z: ((color >> 16) & 0xff) as f32 / 255.0,
+    }
 }
 
-#[wasm_bindgen(js_name = "WowLightingData", getter_with_clone)]
-#[derive(Debug, Clone)]
-pub struct LightingData {
-    pub inner_light: LightDescriptor,
-    pub outer_lights: Vec<LightDescriptor>,
+impl LightResult {
+    fn new(data: &LightDataRecord, params: &LightParamsRecord) -> Self {
+        LightResult {
+            glow: params.glow,
+            water_shallow_alpha: params.water_shallow_alpha,
+            water_deep_alpha: params.water_deep_alpha,
+            ocean_shallow_alpha: params.ocean_shallow_alpha,
+            ocean_deep_alpha: params.ocean_deep_alpha,
+            highlight_sky: params.highlight_sky,
+            direct_color: u32_to_color(data.direct_color),
+            ambient_color: u32_to_color(data.ambient_color),
+            sky_top_color: u32_to_color(data.sky_top_color),
+            sky_middle_color: u32_to_color(data.sky_middle_color),
+            sky_band1_color: u32_to_color(data.sky_band1_color),
+            sky_band2_color: u32_to_color(data.sky_band2_color),
+            sky_smog_color: u32_to_color(data.sky_smog_color),
+            sky_fog_color: u32_to_color(data.sky_fog_color),
+            sun_color: u32_to_color(data.sun_color),
+            cloud_sun_color: u32_to_color(data.cloud_sun_color),
+            cloud_emissive_color: u32_to_color(data.cloud_emissive_color),
+            cloud_layer1_ambient_color: u32_to_color(data.cloud_layer1_ambient_color),
+            cloud_layer2_ambient_color: u32_to_color(data.cloud_layer2_ambient_color),
+            ocean_close_color: u32_to_color(data.ocean_close_color),
+            ocean_far_color: u32_to_color(data.ocean_far_color),
+            river_close_color: u32_to_color(data.river_close_color),
+            river_far_color: u32_to_color(data.river_far_color),
+            shadow_opacity: u32_to_color(data.shadow_opacity),
+            fog_end: data.fog_end,
+            fog_scaler: data.fog_scaler,
+        }
+    }
+    fn add_scaled(&mut self, other: &LightResult, t: f32) {
+        self.glow += other.glow * t;
+        self.ambient_color += other.ambient_color * t;
+        self.direct_color += other.direct_color * t;
+        self.ambient_color += other.ambient_color * t;
+        self.sky_top_color += other.sky_top_color * t;
+        self.sky_middle_color += other.sky_middle_color * t;
+        self.sky_band1_color += other.sky_band1_color * t;
+        self.sky_band2_color += other.sky_band2_color * t;
+        self.sky_smog_color += other.sky_smog_color * t;
+        self.sky_fog_color += other.sky_fog_color * t;
+        self.sun_color += other.sun_color * t;
+        self.cloud_sun_color += other.cloud_sun_color * t;
+        self.cloud_emissive_color += other.cloud_emissive_color * t;
+        self.cloud_layer1_ambient_color += other.cloud_layer1_ambient_color * t;
+        self.cloud_layer2_ambient_color += other.cloud_layer2_ambient_color * t;
+        self.ocean_close_color += other.ocean_close_color * t;
+        self.ocean_far_color += other.ocean_far_color * t;
+        self.river_close_color += other.river_close_color * t;
+        self.river_far_color += other.river_far_color * t;
+        self.shadow_opacity += other.shadow_opacity * t;
+    }
+}
+
+impl Lerp for LightResult {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        LightResult {
+            // should these lerp as well?
+            water_shallow_alpha: self.water_shallow_alpha,
+            water_deep_alpha: self.water_deep_alpha,
+            ocean_shallow_alpha: self.ocean_shallow_alpha,
+            ocean_deep_alpha: self.ocean_deep_alpha,
+            highlight_sky: self.highlight_sky,
+
+            glow: self.glow.lerp(other.glow, t),
+            direct_color: self.direct_color.lerp(other.direct_color, t),
+            ambient_color: self.ambient_color.lerp(other.ambient_color, t),
+            sky_top_color: self.sky_top_color.lerp(other.sky_top_color, t),
+            sky_middle_color: self.sky_middle_color.lerp(other.sky_middle_color, t),
+            sky_band1_color: self.sky_band1_color.lerp(other.sky_band1_color, t),
+            sky_band2_color: self.sky_band2_color.lerp(other.sky_band2_color, t),
+            sky_smog_color: self.sky_smog_color.lerp(other.sky_smog_color, t),
+            sky_fog_color: self.sky_fog_color.lerp(other.sky_fog_color, t),
+            sun_color: self.sun_color.lerp(other.sun_color, t),
+            cloud_sun_color: self.cloud_sun_color.lerp(other.cloud_sun_color, t),
+            cloud_emissive_color: self.cloud_emissive_color.lerp(other.cloud_emissive_color, t),
+            cloud_layer1_ambient_color: self.cloud_layer1_ambient_color.lerp(other.cloud_layer1_ambient_color, t),
+            cloud_layer2_ambient_color: self.cloud_layer2_ambient_color.lerp(other.cloud_layer2_ambient_color, t),
+            ocean_close_color: self.ocean_close_color.lerp(other.ocean_close_color, t),
+            ocean_far_color: self.ocean_far_color.lerp(other.ocean_far_color, t),
+            river_close_color: self.river_close_color.lerp(other.river_close_color, t),
+            river_far_color: self.river_far_color.lerp(other.river_far_color, t),
+            shadow_opacity: self.shadow_opacity.lerp(other.shadow_opacity, t),
+            fog_end: self.fog_end.lerp(other.fog_end, t),
+            fog_scaler: self.fog_scaler.lerp(other.fog_scaler, t),
+        }
+    }
 }
 
 #[wasm_bindgen(js_name = "WowLightDatabase")]
@@ -385,62 +495,100 @@ impl LightDatabase {
         })
     }
 
-    fn get_default_light(&self, map_id: u16, time: u32) -> LightDescriptor {
+    fn get_default_light(&self, map_id: u16, time: u32) -> LightResult {
         let origin = Vec3::new(0.0);
         let default_light = self.lights.records.iter()
             .find(|light| light.map_id == map_id && light.coords == origin)
             .unwrap_or(self.lights.get_record(1).unwrap());
-        self.get_light_descriptor(default_light, time)
+        self.get_light_result(default_light, time)
     }
 
-    fn get_light_descriptor(&self, light: &LightRecord, time: u32) -> LightDescriptor {
-        let mut light_data = Vec::new();
-        let mut light_params = Vec::new();
-        for id in light.light_param_ids {
-            if id == 0 {
+    fn get_light_result(&self, light: &LightRecord, time: u32) -> LightResult {
+        let id = light.light_param_ids[0];
+        assert!(id != 0);
+
+        let light_param = self.light_params.get_record(id as u32).unwrap();
+
+        // based on the given time, find the current and next LightDataRecord
+        let mut current_light_data: Option<&LightDataRecord> = None;
+        let mut next_light_data: Option<&LightDataRecord> = None;
+        for light_data in &self.light_data.records {
+            if light_data.light_param_id != id as u32 {
                 continue;
             }
-            let light_param = self.light_params.get_record(id as u32).unwrap();
-            // TODO: choose the most appropriate light_data for the given time
-            let light_datum = self.light_data.records.iter()
-                .find(|data| data.light_param_id == id as u32).unwrap();
-            light_data.push(light_datum.clone());
-            light_params.push(light_param.clone());
+            if light_data.time <= time {
+                if let Some(current) = current_light_data {
+                    if light_data.time > current.time {
+                        current_light_data = Some(light_data);
+                    }
+                } else {
+                    current_light_data = Some(light_data);
+                }
+            } else {
+                if let Some(next) = next_light_data {
+                    if light_data.time < next.time {
+                        next_light_data = Some(light_data);
+                    }
+                } else {
+                    next_light_data = Some(light_data);
+                }
+            }
         }
-        LightDescriptor {
-            light: light.clone(),
-            light_data,
-            light_params,
+
+        let current_light_data = current_light_data.unwrap();
+        let mut final_result = LightResult::new(current_light_data, light_param);
+        if current_light_data.time != std::u32::MAX {
+            if let Some(next) = next_light_data {
+                let next_full = LightResult::new(next, light_param);
+                let t = 1.0 - (next.time - time) as f32 / (next.time - current_light_data.time) as f32;
+                final_result = final_result.lerp(next_full.clone(), t);
+            }
         }
+
+        final_result
     }
 
-    pub fn get_lighting_data(&self, map_id: u16, x: f32, y: f32, z: f32, time: u32) -> LightingData {
-        let mut maybe_inner_light: Option<LightDescriptor> = None;
-        let mut outer_lights: Vec<LightDescriptor> = Vec::new();
+    pub fn get_lighting_data(&self, map_id: u16, x: f32, y: f32, z: f32, time: u32) -> LightResult {
+        let mut outer_lights: Vec<(LightResult, f32)> = Vec::new();
         let coord = Vec3 { x, y, z };
 
         for light in &self.lights.records {
             if light.map_id == map_id {
                 match light.distance(&coord) {
-                    DistanceResult::Inner(_) => {
-                        assert!(maybe_inner_light.is_none());
-                        maybe_inner_light = Some(self.get_light_descriptor(light, time));
+                    DistanceResult::Inner(_) => return self.get_light_result(light, time),
+                    DistanceResult::Outer(distance) => {
+                        let alpha = 1.0 - (distance - light.falloff_start) / (light.falloff_end - light.falloff_start);
+                        outer_lights.push((self.get_light_result(light, time), alpha))
                     },
-                    DistanceResult::Outer(_) => outer_lights.push(self.get_light_descriptor(light, time)),
                     DistanceResult::None => {},
                 }
             }
         }
 
-        let inner_light = match maybe_inner_light {
-            Some(light) => light,
-            None => self.get_default_light(map_id, time),
-        };
-
-        LightingData {
-            inner_light,
-            outer_lights,
+        if outer_lights.len() == 0 {
+            return self.get_default_light(map_id, time);
         }
+
+        outer_lights.sort_unstable_by(|(_, alpha_a), (_, alpha_b)| {
+            alpha_a.partial_cmp(alpha_b).unwrap()
+        });
+
+        //let mut result = self.get_default_light(map_id, time);
+        let mut result = LightResult::default();
+        let mut total_alpha = 0.0;
+        for (outer_result, mut alpha) in &outer_lights {
+            if total_alpha >= 1.0 {
+                break;
+            }
+
+            if total_alpha + alpha > 1.0 {
+                alpha = 1.0 - total_alpha;
+            }
+            result.add_scaled(outer_result, alpha);
+            total_alpha += alpha;
+        }
+
+        result
     }
 }
 
@@ -486,6 +634,10 @@ mod test {
         let d2 = std::fs::read("../data/wow/dbfilesclient/lightparams.db2").unwrap();
         let d3 = std::fs::read("../data/wow/dbfilesclient/lightdata.db2").unwrap();
         let db = LightDatabase::new(&d1, &d3, &d2).unwrap();
-        dbg!(db.get_lighting_data(209, 0.0, 0.0, 0.0, 0));
+        let result = db.get_lighting_data(209, 0.0, 0.0, 0.0, 0);
+        for color in [result.sky_top_color, result.sky_middle_color, result.sky_band1_color, result.sky_band2_color, result.sky_fog_color] {
+            let color = color * 255.0;
+            println!("{}, {}, {}", color.x, color.y, color.z);
+        }
     }
 }

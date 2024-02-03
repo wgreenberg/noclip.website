@@ -1,19 +1,20 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowLightingData } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
-import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode } from "../gfx/platform/GfxPlatform.js";
+import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
 import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace } from "./scenes.js";
 import { AABB } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
-import { BaseProgram, ModelProgram } from "./program.js";
+import { BaseProgram, ModelProgram, WmoProgram } from "./program.js";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
 import { AttachmentStateSimple, setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
 import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.js";
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
+import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 
 export class LightDatabase {
   private db: WowLightDatabase;
@@ -30,56 +31,53 @@ export class LightDatabase {
 
   public setGlobalLightingData(renderInst: GfxRenderInst, coords: vec3, time: number) {
     const lightingData = this.db.get_lighting_data(this.mapId, coords[0], coords[1], coords[2], time);
-    const mainLightingData = lightingData.inner_light.light_data[0];
-    const mainLightingParams = lightingData.inner_light.light_params[0];
     const numVec3s = 16;
     const numVec4s = 3;
     let offset = renderInst.allocateUniformBuffer(BaseProgram.ub_GlobalLightParams, numVec3s * 12 + numVec4s * 16);
     const uniformBuf = renderInst.mapUniformBufferF32(ModelProgram.ub_MaterialParams);
-    offset += fillColor(uniformBuf, offset, mainLightingData.direct_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.ambient_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.sky_top_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.sky_middle_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.sky_band1_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.sky_band2_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.sky_fog_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.sun_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_sun_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_emissive_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_layer1_ambient_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.cloud_layer2_ambient_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.ocean_close_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.ocean_far_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.river_close_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.river_far_color);
-    offset += fillColor(uniformBuf, offset, mainLightingData.shadow_opacity);
+    offset += fillColor(uniformBuf, offset, lightingData.direct_color);
+    offset += fillColor(uniformBuf, offset, lightingData.ambient_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_top_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_middle_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_band1_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_band2_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_fog_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sun_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_sun_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_emissive_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_layer1_ambient_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_layer2_ambient_color);
+    offset += fillColor(uniformBuf, offset, lightingData.ocean_close_color);
+    offset += fillColor(uniformBuf, offset, lightingData.ocean_far_color);
+    offset += fillColor(uniformBuf, offset, lightingData.river_close_color);
+    offset += fillColor(uniformBuf, offset, lightingData.river_far_color);
+    offset += fillColor(uniformBuf, offset, lightingData.shadow_opacity);
     offset += fillVec4(uniformBuf, offset,
-      mainLightingData.fog_end,
-      mainLightingData.fog_scaler,
+      lightingData.fog_end,
+      lightingData.fog_scaler,
       0,
       0
     );
     offset += fillVec4(uniformBuf, offset,
-      mainLightingParams.water_shallow_alpha,
-      mainLightingParams.water_deep_alpha,
-      mainLightingParams.ocean_shallow_alpha,
-      mainLightingParams.ocean_deep_alpha,
+      lightingData.water_shallow_alpha,
+      lightingData.water_deep_alpha,
+      lightingData.ocean_shallow_alpha,
+      lightingData.ocean_deep_alpha,
     );
     offset += fillVec4(uniformBuf, offset,
-      mainLightingParams.glow,
-      mainLightingParams.highlight_sky ? 1 : 0,
+      lightingData.glow,
+      lightingData.highlight_sky ? 1 : 0,
       0,
       0
     );
   }
 }
 
-function fillColor(buf: Float32Array, offset: number, color: number): number {
-  buf[offset + 0] = (color & 0xff) / 255;
-  buf[offset + 1] = ((color >> 8) & 0xff) / 255;
-  buf[offset + 2] = ((color >> 16) & 0xff) / 255;
-  offset += 3;
-  return offset;
+function fillColor(buf: Float32Array, offset: number, color: WowVec3): number {
+  buf[offset + 0] = color.x;
+  buf[offset + 1] = color.y;
+  buf[offset + 2] = color.z;
+  return 3;
 }
 
 abstract class Loadable {
@@ -169,7 +167,7 @@ export class ModelData {
   }
 
   public updateAnimation(deltaTime: number) {
-    this.animationManager.update(deltaTime);
+    this.animationManager.update(deltaTime / 10);
     this.vertexColors = this.animationManager.calculated_colors!;
     this.textureWeights = this.animationManager.calculated_transparencies!;
 
@@ -201,8 +199,11 @@ export class WmoBatchData {
   public indexStart: number;
   public indexCount: number;
   public materialId: number;
+  public material: WowWmoMaterial;
+  public vertexShader: WowWmoMaterialVertexShader;
+  public pixelShader: WowWmoMaterialPixelShader;
 
-  constructor(batch: WowWmoMaterialBatch) {
+  constructor(batch: WowWmoMaterialBatch, materials: WowWmoMaterial[]) {
     this.indexStart = batch.start_index;
     this.indexCount = batch.index_count;
     if (batch.use_material_id_large > 0) {
@@ -210,6 +211,20 @@ export class WmoBatchData {
     } else {
       this.materialId = batch.material_id;
     }
+    this.material = materials[this.materialId];
+    this.vertexShader = this.material.get_vertex_shader();
+    this.pixelShader = this.material.get_pixel_shader();
+  }
+
+  public setBatchParams(renderInst: GfxRenderInst) {
+    let offset = renderInst.allocateUniformBuffer(WmoProgram.ub_BatchParams, 4 * 4);
+    const uniformBuf = renderInst.mapUniformBufferF32(WmoProgram.ub_BatchParams);
+    offset += fillVec4(uniformBuf, offset,
+      this.vertexShader,
+      this.pixelShader,
+      0,
+      0
+    );
   }
 }
 
@@ -219,10 +234,10 @@ export class WmoGroupData {
   constructor(public fileId: number) {
   }
 
-  public getBatches(): WmoBatchData[] {
+  public getBatches(materials: WowWmoMaterial[]): WmoBatchData[] {
     const batches: WmoBatchData[] = [];
     for (let batch of this.group.batches) {
-      batches.push(new WmoBatchData(batch))
+      batches.push(new WmoBatchData(batch, materials))
     }
     return batches;
   }
@@ -232,11 +247,47 @@ export class WmoGroupData {
       { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.vertices.buffer) },
       { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.normals.buffer) },
       { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.uvs.buffer) },
+      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.colors.buffer) },
     ];
   }
 
+  public getInputLayout(renderCache: GfxRenderCache): GfxInputLayout {
+    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+      { location: WmoProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+      { location: WmoProgram.a_Normal,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+    ];
+    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex, },
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex, },
+      { byteStride: 8, frequency: GfxVertexBufferFrequency.PerVertex, },
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex, },
+    ];
+    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+    for (let i=0; i<this.group.num_uv_bufs; i++) {
+      vertexAttributeDescriptors.push({
+        location: WmoProgram.a_TexCoord0 + i,
+        bufferIndex: 2,
+        bufferByteOffset: 0 + i * this.group.num_vertices,
+        format: GfxFormat.F32_RG,
+      });
+    }
+    for (let i=0; i<this.group.num_color_bufs; i++) {
+      vertexAttributeDescriptors.push({
+        location: WmoProgram.a_Color0 + i,
+        bufferIndex: 3,
+        bufferByteOffset: 0 + i * this.group.num_vertices,
+        format: GfxFormat.F32_RGBA,
+      });
+    }
+    return renderCache.createInputLayout({
+      vertexAttributeDescriptors,
+      vertexBufferDescriptors,
+      indexBufferFormat,
+    });
+  }
+
   public getIndexBuffer(device: GfxDevice): GfxIndexBufferDescriptor {
-    return{ byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.group.indices.buffer) }
+    return { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.group.indices.buffer) }
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {

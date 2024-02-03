@@ -1,5 +1,6 @@
 use deku::{prelude::*, bitvec::BitVec, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
+use std::ops::{Mul, AddAssign};
 
 #[derive(DekuRead, Debug)]
 pub struct Chunk {
@@ -116,7 +117,7 @@ pub struct Quat16 {
 }
 
 #[wasm_bindgen(js_name = "WowVec3")]
-#[derive(DekuRead, Debug, Clone, Copy, PartialEq)]
+#[derive(DekuRead, Debug, Default, Clone, Copy, PartialEq)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,
@@ -206,4 +207,61 @@ impl<T> WowArray<T> where for<'a> T: DekuRead<'a> {
 struct Mver {
     ver1: u32,
     ver2: u32,
+}
+
+pub trait Lerp {
+    fn lerp(self, other: Self, t: f32) -> Self;
+}
+
+impl Lerp for f32 {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        self * (1.0 - t) + other * t
+    }
+}
+
+impl Lerp for u16 {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        ((self as f32) * (1.0 - t) + (other as f32) * t) as u16
+    }
+}
+
+impl Lerp for Vec3 {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        Vec3 {
+            x: self.x * (1.0 - t) + other.x * t,
+            y: self.y * (1.0 - t) + other.y * t,
+            z: self.z * (1.0 - t) + other.z * t,
+        }
+    }
+}
+
+impl AddAssign<Vec3> for Vec3 {
+    fn add_assign(&mut self, other: Vec3) {
+        self.x += other.x;
+        self.y += other.y;
+        self.z += other.z;
+    }
+}
+
+impl Mul<f32> for Vec3 {
+    type Output = Vec3;
+
+    fn mul(self, rhs: f32) -> Self::Output {
+        Vec3 {
+            x: self.x * rhs,
+            y: self.y * rhs,
+            z: self.z * rhs,
+        }
+    }
+}
+
+impl Lerp for Quat {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        Quat {
+            x: self.x * (1.0 - t) + other.x * t,
+            y: self.y * (1.0 - t) + other.y * t,
+            z: self.z * (1.0 - t) + other.z * t,
+            w: self.w * (1.0 - t) + other.w * t,
+        }
+    }
 }
