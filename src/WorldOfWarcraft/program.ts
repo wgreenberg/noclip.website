@@ -1,27 +1,83 @@
-import { WowM2BlendingMode, WowPixelShader } from "../../rust/pkg/index.js";
+import { WowLightResult, WowM2BlendingMode, WowPixelShader, WowVec3 } from "../../rust/pkg/index.js";
 import { rust } from "../rustlib.js";
 import { GfxBindingLayoutDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { DeviceProgram } from "../Program.js";
 import { SkyboxColor } from './skybox.js';
+import { mat4, vec4 } from "gl-matrix";
+import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
+import { GfxRenderInst } from "../gfx/render/GfxRenderInstManager.js";
 
 export class BaseProgram extends DeviceProgram {
-  public static numUniformBuffers = 2;
+  public static numUniformBuffers = 1;
   public static ub_SceneParams = 0;
-  public static ub_GlobalLightParams = 1;
 
   public static numSamplers = 0;
 
-  public static calcLight = `
+  public static utils = `
 vec3 calcLight(
   vec3 diffuseColor,
-  vec3 vNormal,
+  vec3 normal,
+  vec4 interiorAmbientColor,
+  vec4 interiorDirectColor,
+  float interiorExteriorBlend,
+  bool applyInteriorLight,
+  bool applyExteriorLight,
   vec3 accumLight,
   vec3 precomputedLight,
   vec3 specular,
   vec3 emissive) {
-    vec3 linearDiffuseTerm = (diffuseColor * diffuseColor) * accumLight;
+    vec3 lDiffuse = vec3(0.0);
+    vec3 localDiffuse = accumLight;
+    vec3 currentColor = vec3(0.0);
+    vec3 normalizedN = normalize(normal);
 
-    return sqrt(linearDiffuseTerm) + specular + emissive;
+    if (applyExteriorLight) {
+        float nDotL = clamp(dot(normalizedN, -exteriorDirectColorDir.xyz), 0.0, 1.0);
+        float nDotUp = dot(normalizedN, vec3(0.0, 1.0, 0.0));
+        vec3 adjAmbient = exteriorAmbientColor.rgb + precomputedLight;
+        if (nDotUp >= 0.0) {
+          currentColor = mix(precomputedLight, adjAmbient, vec3(nDotUp));
+        } else {
+          currentColor = precomputedLight;
+        }
+        vec3 skyColor = (currentColor * 1.10000002);
+        vec3 groundColor = (currentColor * 0.699999988);
+        lDiffuse = exteriorDirectColor.xyz * nDotL;
+        currentColor = mix(groundColor, skyColor, vec3((0.5 + (0.5 * nDotL))));
+    }
+    if (applyInteriorLight) {
+        float nDotL = clamp(dot(normalizedN, -interiorSunDir.xyz), 0.0, 1.0);
+        vec3 lDiffuseInterior = interiorDirectColor.xyz * nDotL;
+        vec3 interiorAmbient = interiorAmbientColor.xyz + precomputedLight;
+
+        if (applyExteriorLight) {
+            lDiffuse = mix(lDiffuseInterior, lDiffuse, interiorExteriorBlend);
+            currentColor = mix(interiorAmbient, currentColor, interiorExteriorBlend);
+        } else {
+            lDiffuse = lDiffuseInterior;
+            currentColor = interiorAmbient;
+        }
+    }
+
+    vec3 gammaDiffTerm = diffuseColor * (currentColor + lDiffuse);
+    vec3 linearDiffTerm = (diffuseColor * diffuseColor) * localDiffuse;
+
+    //Specular term
+    vec3 specTerm = specular;
+    //Emission term
+    vec3 emTerm = emissive;
+
+    return sqrt(gammaDiffTerm*gammaDiffTerm + linearDiffTerm) + specTerm + emTerm;
+}
+
+vec2 posToTexCoord(const vec3 vertexPosInView, const vec3 normal){
+    //Blizz seems to have vertex in view space as vector from "vertex to eye", while in this implementation, it's
+    //vector from "eye to vertex". So the minus here is not needed
+    vec3 viewVecNormalized = normalize(vertexPosInView.xyz);
+    vec3 reflection = reflect(viewVecNormalized, normalize(normal));
+    vec3 temp_657 = vec3(reflection.x, reflection.y, (reflection.z + 1.0));
+
+    return ((normalize(temp_657).xy * 0.5) + vec2(0.5));
 }
   `;
 
@@ -31,33 +87,94 @@ precision mediump float;
 layout(std140) uniform ub_SceneParams {
     Mat4x4 u_Projection;
     Mat4x4 u_ModelView;
+
+    // lighting
+    vec4 interiorSunDir;
+    vec4 exteriorDirectColorDir;
+    vec4 exteriorDirectColor;
+    vec4 exteriorAmbientColor;
+    vec4 skyTopColor;
+    vec4 skyMiddleColor;
+    vec4 skyBand1Color;
+    vec4 skyBand2Color;
+    vec4 skyFogColor;
+    vec4 skySmogColor;
+    vec4 sunColor;
+    vec4 cloudSunColor;
+    vec4 cloudEmissiveColor;
+    vec4 cloudLayer1AmbientColor;
+    vec4 cloudLayer2AmbientColor;
+    vec4 oceanCloseColor;
+    vec4 oceanFarColor;
+    vec4 riverCloseColor;
+    vec4 riverFarColor;
+    vec4 shadowOpacity;
+    vec4 fogParams; // fogEnd, fogScaler
+    vec4 waterAlphas; // waterShallow, waterDeep, oceanShallow, oceanDeep
+    vec4 glow; // glow, highlightSky, _, _
 };
 
-layout(std140) uniform ub_GlobalLightParams {
-  vec3 directColor;
-  vec3 ambientColor;
-  vec3 skyTopColor;
-  vec3 skyMiddleColor;
-  vec3 skyBand1Color;
-  vec3 skyBand2Color;
-  vec3 skyFogColor;
-  vec3 sunColor;
-  vec3 cloudSunColor;
-  vec3 cloudEmissiveColor;
-  vec3 cloudLayer1AmbientColor;
-  vec3 cloudLayer2AmbientColor;
-  vec3 oceanCloseColor;
-  vec3 oceanFarColor;
-  vec3 riverCloseColor;
-  vec3 riverFarColor;
-  vec3 shadowOpacity;
-  vec4 fogParams; // fogEnd, fogScaler
-  vec4 waterAlphas; // waterShallow, waterDeep, oceanShallow, oceanDeep
-  vec4 glow; // glow, highlightSky, _, _
-};
-
-${BaseProgram.calcLight}
+${BaseProgram.utils}
   `;
+
+  public static layoutUniformBufs(renderInst: GfxRenderInst, projectionMatrix: mat4, modelView: mat4, interiorSunDir: vec4, exteriorDirectColorDir: vec4, lightingData: WowLightResult) {
+    const numMat4s = 2;
+    const numVec4s = 23;
+    const totalSize = numMat4s * 16 + numVec4s * 4;
+    let offset = renderInst.allocateUniformBuffer(BaseProgram.ub_SceneParams, totalSize);
+    const uniformBuf = renderInst.mapUniformBufferF32(BaseProgram.ub_SceneParams);
+
+    offset += fillMatrix4x4(uniformBuf, offset, projectionMatrix);
+    offset += fillMatrix4x4(uniformBuf, offset, modelView);
+
+    // lighting
+    offset += fillVec4v(uniformBuf, offset, interiorSunDir);
+    offset += fillVec4v(uniformBuf, offset, exteriorDirectColorDir);
+    offset += fillColor(uniformBuf, offset, lightingData.direct_color);
+    offset += fillColor(uniformBuf, offset, lightingData.ambient_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_top_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_middle_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_band1_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_band2_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_fog_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sky_smog_color);
+    offset += fillColor(uniformBuf, offset, lightingData.sun_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_sun_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_emissive_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_layer1_ambient_color);
+    offset += fillColor(uniformBuf, offset, lightingData.cloud_layer2_ambient_color);
+    offset += fillColor(uniformBuf, offset, lightingData.ocean_close_color);
+    offset += fillColor(uniformBuf, offset, lightingData.ocean_far_color);
+    offset += fillColor(uniformBuf, offset, lightingData.river_close_color);
+    offset += fillColor(uniformBuf, offset, lightingData.river_far_color);
+    offset += fillColor(uniformBuf, offset, lightingData.shadow_opacity);
+    offset += fillVec4(uniformBuf, offset,
+      lightingData.fog_end,
+      lightingData.fog_scaler,
+      0,
+      0
+    );
+    offset += fillVec4(uniformBuf, offset,
+      lightingData.water_shallow_alpha,
+      lightingData.water_deep_alpha,
+      lightingData.ocean_shallow_alpha,
+      lightingData.ocean_deep_alpha,
+    );
+    offset += fillVec4(uniformBuf, offset,
+      lightingData.glow,
+      lightingData.highlight_sky ? 1 : 0,
+      0,
+      0
+    );
+  }
+}
+
+function fillColor(buf: Float32Array, offset: number, color: WowVec3): number {
+  buf[offset + 0] = color.x;
+  buf[offset + 1] = color.y;
+  buf[offset + 2] = color.z;
+  buf[offset + 3] = 1.0;
+  return 4;
 }
 
 export class SkyboxProgram extends BaseProgram {
@@ -75,24 +192,23 @@ varying vec4 v_Color;
 
 #ifdef VERT
 layout(location = ${SkyboxProgram.a_Position}) attribute vec3 a_Position;
-layout(location = ${SkyboxProgram.a_ColorIndex}) attribute vec3 a_ColorIndex;
+layout(location = ${SkyboxProgram.a_ColorIndex}) attribute float a_ColorIndex;
 
 void mainVS() {
     int colorIndex = int(a_ColorIndex);
+    v_Color = vec4(1.0);
     if (colorIndex == ${SkyboxColor.Top}) {
-      v_Color.xyz = skyTopColor;
+      v_Color = skyTopColor;
     } else if (colorIndex == ${SkyboxColor.Middle}) {
-      v_Color.xyz = skyMiddleColor;
+      v_Color = skyMiddleColor;
     } else if (colorIndex == ${SkyboxColor.Band1}) {
-      v_Color.xyz = skyBand1Color;
+      v_Color = skyBand1Color;
     } else if (colorIndex == ${SkyboxColor.Band2}) {
-      v_Color.xyz = skyBand2Color;
+      v_Color = skyBand2Color;
     } else if (colorIndex == ${SkyboxColor.Smog}) {
-      v_Color.xyz = skyFogColor;
+      v_Color = skySmogColor;
     } else if (colorIndex == ${SkyboxColor.Fog}) {
-      v_Color.xyz = skyFogColor;
-    } else {
-      v_Color.xyz = vec3(1.0, 0.0, 1.0);
+      v_Color = skyFogColor;
     }
     gl_Position = Mul(u_Projection, Mul(u_ModelView, 33.333 * vec4(a_Position, 0.0)));
 }
@@ -116,8 +232,8 @@ export class WmoProgram extends BaseProgram {
   public static a_TexCoord2 = 6;
   public static a_TexCoord3 = 7;
 
-  public static ub_ModelParams = 2;
-  public static ub_BatchParams = 3;
+  public static ub_ModelParams = 1;
+  public static ub_BatchParams = 2;
 
   public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
     { numUniformBuffers: super.numUniformBuffers + 2, numSamplers: super.numSamplers + 4 },
@@ -128,10 +244,14 @@ ${BaseProgram.commonDeclarations}
 
 layout(std140) uniform ub_ModelParams {
     Mat4x4 u_Transform;
+    Mat4x4 u_NormalTransform;
 };
 
 layout(std140) uniform ub_BatchParams {
-    vec4 shaderParams;
+    vec4 shaderParams; // vertexShader, pixelShader, _, _
+    vec4 materialParams; // blendMode, applyInteriorLight, applyExteriorLight, _
+    vec4 interiorAmbientColor; // rgb, _
+    vec4 interiorDirectColor; // rgb, _
 };
 
 layout(binding = 0) uniform sampler2D u_Texture0;
@@ -139,8 +259,14 @@ layout(binding = 1) uniform sampler2D u_Texture1;
 layout(binding = 2) uniform sampler2D u_Texture2;
 layout(binding = 3) uniform sampler2D u_Texture3;
 
-varying vec2 v_UV;
-varying vec4 v_Color;
+varying vec2 v_UV0;
+varying vec2 v_UV1;
+varying vec2 v_UV2;
+varying vec2 v_UV3;
+varying vec4 v_Color0;
+varying vec4 v_Color1;
+varying vec3 v_Normal;
+varying vec4 v_Position;
 
 #ifdef VERT
 layout(location = ${WmoProgram.a_Position}) attribute vec3 a_Position;
@@ -153,20 +279,246 @@ layout(location = ${WmoProgram.a_TexCoord2}) attribute vec2 a_TexCoord2;
 layout(location = ${WmoProgram.a_TexCoord3}) attribute vec2 a_TexCoord3;
 
 void mainVS() {
+    vec4 worldPoint = Mul(u_Transform, vec4(a_Position, 1.0));
+    vec4 cameraPoint = Mul(u_ModelView, worldPoint);
+    v_Position = vec4(cameraPoint.xyz, 0.0);
+    v_Normal = normalize(Mul(u_NormalTransform, vec4(a_Normal, 0.0))).xyz;
+
     gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform, vec4(a_Position, 1.0))));
-    v_UV = a_TexCoord0;
-    v_Color = a_Color0;
+    v_Color0 = a_Color0.bgra / 255.0;
+    v_Color1 = a_Color1.rgba / 255.0;
+
+    int vertexShader = int(shaderParams.x);
+    if (vertexShader == ${rust.WowWmoMaterialVertexShader.None}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = a_TexCoord1;
+       v_UV2 = a_TexCoord2;
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.DiffuseT1}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = a_TexCoord1; //not used
+       v_UV2 = a_TexCoord2; //not used
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.DiffuseT1Refl}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = reflect(normalize(gl_Position.xyz), v_Normal).xy;
+       v_UV2 = a_TexCoord2; //not used
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.DiffuseT1EnvT2}) {
+       v_UV0= a_TexCoord0;
+       v_UV1 = posToTexCoord(v_Position.xyz, v_Normal);;
+       v_UV2 = a_TexCoord2;
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.SpecularT1}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = a_TexCoord1; //not used
+       v_UV2 = a_TexCoord2; //not used
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.DiffuseComp}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = a_TexCoord1; //not used
+       v_UV2 = a_TexCoord2; //not used
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.DiffuseCompRefl}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = a_TexCoord1;
+       v_UV2 = reflect(normalize(gl_Position.xyz), v_Normal).xy;
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.DiffuseCompTerrain}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = v_Position.xy * -0.239999995;
+       v_UV2 = a_TexCoord2; //not used
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.DiffuseCompAlpha}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = v_Position.xy * -0.239999995;
+       v_UV2 = a_TexCoord2; //not used
+   } else if (vertexShader == ${rust.WowWmoMaterialVertexShader.Parallax}) {
+       v_UV0 = a_TexCoord0;
+       v_UV1 = a_TexCoord1;
+       v_UV2 = a_TexCoord2;
+   }
 }
 #endif
 
 #ifdef FRAG
-void mainPS() {
-    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV);
-    bool enableAlpha = false; // TODO: bring in params, which will let us know whether to discard or not
-    if (enableAlpha && tex.a < 0.5) {
-      discard;
+
+vec3 Slerp(vec3 p0, vec3 p1, float t)
+{
+    float dotp = dot(normalize(p0), normalize(p1));
+    if ((dotp > 0.9999) || (dotp<-0.9999))
+    {
+        if (t<=0.5)
+        return p0;
+        return p1;
     }
-    gl_FragColor = tex;
+    float theta = acos(dotp);
+    vec3 P = ((p0*sin((1.0-t)*theta) + p1*sin(t*theta)) / sin(theta));
+
+    return P;
+}
+
+vec3 calcSpec(float texAlpha) {
+    vec3 normal = normalize(v_Normal);
+    bool enableInteriorLight = int(materialParams.y) > 0;
+    bool enableExteriorLight = int(materialParams.z) > 0;
+    vec3 sunDir = vec3(0.0);
+    vec3 sunColor = vec3(0.0);
+
+    if (enableExteriorLight) {
+      sunDir = -exteriorDirectColorDir.xyz;
+      sunColor = exteriorDirectColor.rgb;
+    }
+
+    if (enableInteriorLight) {
+      sunDir = -interiorSunDir.xyz;
+      sunColor = interiorDirectColor.rgb;
+
+      if (enableExteriorLight) {
+        sunDir = Slerp(sunDir, -exteriorDirectColor.rgb, v_Color0.a);
+        sunColor = mix(sunColor, exteriorDirectColor.xyz, v_Color0.a);
+      }
+    }
+
+    vec3 t849 = normalize((sunDir + normalize(-(v_Position.xyz))));
+    float dirAtten_956 = clamp(dot(normal, sunDir), 0.0, 1.0);
+    float spec = (1.25 * pow(clamp(dot(normal, t849), 0.0, 1.0), 8.0));
+    vec3 specTerm = ((((vec3(mix(pow((1.0 - clamp(dot(sunDir, t849), 0.0, 1.0)), 5.0), 1.0, texAlpha)) * spec) * sunColor) * dirAtten_956));
+    float distFade = 1.0;
+    specTerm = (specTerm * distFade);
+    return specTerm;
+}
+
+void mainPS() {
+    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_UV0);
+    vec4 tex2 = texture(SAMPLER_2D(u_Texture1), v_UV1);
+    vec4 tex3 = texture(SAMPLER_2D(u_Texture2), v_UV2);
+
+    int blendMode = int(materialParams.x);
+    if (blendMode > 1) {
+      if (tex.a < 0.501960814) {
+        discard;
+      }
+    }
+
+    vec4 finalColor = vec4(0.0, 0.0, 0.0, 1.0);
+    vec3 matDiffuse = vec3(0.0);
+    vec3 spec = vec3(0.0);
+    vec3 emissive = vec3(0.0);
+    float finalOpacity = 0.0;
+    float distFade = 1.0;
+
+    int pixelShader = int(shaderParams.y);
+    if (pixelShader == ${rust.WowWmoMaterialPixelShader.None}) {
+        matDiffuse = tex.rgb * tex2.rgb;
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.Diffuse}) {
+        matDiffuse = tex.rgb;
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.Specular}) {
+        matDiffuse = tex.rgb;
+        spec = calcSpec(tex.a);
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.Metal}) {
+        matDiffuse = tex.rgb ;
+        spec = calcSpec(((tex * 4.0) * tex.a).x);
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.Env}) {
+        matDiffuse = tex.rgb ;
+        emissive = tex2.rgb * tex.a * distFade;
+        finalOpacity = 1.0;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.Opaque}) {
+        matDiffuse = tex.rgb ;
+        finalOpacity = 1.0;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.EnvMetal}) {
+        matDiffuse = tex.rgb ;
+        emissive = (((tex.rgb * tex.a) * tex2.rgb) * distFade);
+        finalOpacity = 1.0;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerDiffuse}) {
+        vec3 layer1 = tex.rgb;
+        vec3 layer2 = mix(layer1, tex2.rgb, tex2.a);
+        matDiffuse = mix(layer2, layer1, v_Color1.a);
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerEnvMetal}) {
+        vec4 colorMix = mix(tex, tex2, 1.0 - v_Color1.a);
+        matDiffuse = colorMix.rgb ;
+        emissive = (colorMix.rgb * colorMix.a) * tex3.rgb * distFade;
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerTerrain}) {
+        vec3 layer1 = tex.rgb;
+        vec3 layer2 = tex2.rgb;
+        matDiffuse = mix(layer2, layer1, v_Color1.a);
+        spec = calcSpec(tex2.a * (1.0 - v_Color1.a));
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.DiffuseEmissive}) {
+        matDiffuse = tex.rgb ;
+        emissive = tex2.rgb * tex2.a * v_Color1.a;
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.MaskedEnvMetal}) {
+        float mixFactor = clamp((tex3.a * v_Color1.a), 0.0, 1.0);
+        matDiffuse =
+            mix(mix(((tex.rgb * tex2.rgb) * 2.0), tex3.rgb, mixFactor), tex.rgb, tex.a);
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.EnvMetalEmissive}) {
+        matDiffuse = tex.rgb ;
+        emissive =
+            (
+                ((tex.rgb * tex.a) * tex2.rgb) +
+                ((tex3.rgb * tex3.a) * v_Color1.a)
+            );
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerDiffuseOpaque}) {
+        matDiffuse = mix(tex2.rgb, tex.rgb, v_Color1.a);
+        finalOpacity = 1.0;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerDiffuseEmissive}) {
+        vec3 t1diffuse = (tex2.rgb * (1.0 - tex2.a));
+        matDiffuse = mix(t1diffuse, tex.rgb, v_Color1.a);
+        emissive = (tex2.rgb * tex2.a) * (1.0 - v_Color1.a);
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.AdditiveMaskedEnvMetal}) {
+        matDiffuse = mix(
+            (tex.rgb * tex2.rgb * 2.0) + (tex3.rgb * clamp(tex3.a * v_Color1.a, 0.0, 1.0)),
+            tex.rgb,
+            vec3(tex.a)
+        );
+        finalOpacity = 1.0;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerDiffuseMod2x}) {
+        vec3 layer1 = tex.rgb;
+        vec3 layer2 = mix(layer1, tex2.rgb, vec3(tex2.a));
+        vec3 layer3 = mix(layer2, layer1, vec3(v_Color1.a));
+        matDiffuse = layer3 * tex3.rgb * 2.0;
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerDiffuseMod2xNA}) {
+        vec3 layer1 = ((tex.rgb * tex2.rgb) * 2.0);
+        matDiffuse = mix(tex.rgb, layer1, vec3(v_Color1.a)) ;
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.TwoLayerDiffuseAlpha}) {
+        vec3 layer1 = tex.rgb;
+        vec3 layer2 = mix(layer1, tex2.rgb, vec3(tex2.a));
+        vec3 layer3 = mix(layer2, layer1, vec3(tex3.a));
+        matDiffuse = ((layer3 * tex3.rgb) * 2.0);
+        finalOpacity = tex.a;
+    } else if (pixelShader == ${rust.WowWmoMaterialPixelShader.Lod}) {
+        matDiffuse = tex.rgb;
+        finalOpacity = tex.a;
+    } else {
+      // unsupported shader
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
+      return;
+    }
+
+    bool applyInteriorLight = int(materialParams.y) > 0;
+    bool applyExteriorLight = int(materialParams.z) > 0;
+    finalColor = vec4(
+        calcLight(
+            matDiffuse,
+            v_Normal,
+            interiorAmbientColor,
+            interiorDirectColor,
+            v_Color0.a,
+            applyInteriorLight,
+            applyExteriorLight,
+            vec3(0.0) /*accumLight*/,
+            v_Color0.rgb,
+            spec,
+            emissive
+        ),
+        finalOpacity
+    );
+
+    gl_FragColor = finalColor;
 }
 #endif
 `;
@@ -219,6 +571,7 @@ void mainVS() {
     v_ChunkCoords = vec2(iX, iY);
     v_Color = a_Color;
     v_Lighting = a_Lighting;
+    v_Normal = a_Normal;
     gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
 }
 #endif
@@ -236,17 +589,20 @@ void mainPS() {
     vec4 tex2 = texture(SAMPLER_2D(u_Texture2), v_ChunkCoords);
     vec4 tex3 = texture(SAMPLER_3D(u_Texture3), v_ChunkCoords);
     vec4 tex = mixTex(mixTex(mixTex(tex0, tex1, alphaBlend.g), tex2, alphaBlend.b), tex3, alphaBlend.a);
-    vec4 diffuse = tex * 2.0 * v_Color;
-    vec4 finalColor = vec4(0.0);
-    finalColor.rgb = calcLight(
+    vec4 diffuse = tex * v_Color;
+    vec4 finalColor = vec4(calcLight(
       diffuse.rgb,
       v_Normal,
+      vec4(0.0), // ambient color
+      vec4(0.0), // direct color
+      0.0, // interiorExteriorBlend
+      false, // apply interior light
+      true, // apply exterior light
       v_Lighting.rgb, // accumLight
       vec3(0.0), // precomputedLight
       vec3(0.0), // specular
       vec3(0.0) // emissive
-    );
-    finalColor.a = 1.0;
+    ), 1.0);
 
     gl_FragColor = finalColor;
 }
@@ -262,8 +618,8 @@ export class ModelProgram extends BaseProgram {
   public static a_TexCoord0 = 2;
   public static a_TexCoord1 = 3;
 
-  public static ub_DoodadParams = 2;
-  public static ub_MaterialParams = 3;
+  public static ub_DoodadParams = 1;
+  public static ub_MaterialParams = 2;
 
   public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
       { numUniformBuffers: super.numUniformBuffers + 2, numSamplers: super.numSamplers + 4 },
@@ -324,16 +680,6 @@ layout(location = ${ModelProgram.a_Position}) attribute vec3 a_Position;
 layout(location = ${ModelProgram.a_Normal}) attribute vec3 a_Normal;
 layout(location = ${ModelProgram.a_TexCoord0}) attribute vec2 a_TexCoord0;
 layout(location = ${ModelProgram.a_TexCoord1}) attribute vec2 a_TexCoord1;
-
-vec2 posToTexCoord(const vec3 vertexPosInView, const vec3 normal){
-    //Blizz seems to have vertex in view space as vector from "vertex to eye", while in this implementation, it's
-    //vector from "eye to vertex". So the minus here is not needed
-    vec3 viewVecNormalized = normalize(vertexPosInView.xyz);
-    vec3 reflection = reflect(viewVecNormalized, normalize(normal));
-    vec3 temp_657 = vec3(reflection.x, reflection.y, (reflection.z + 1.0));
-
-    return ((normalize(temp_657).xy * 0.5) + vec2(0.5));
-}
 
 float edgeScan(vec3 position, vec3 normal){
     float dotProductClamped = clamp(dot(-normalize(position),normal), 0.0, 1.0);

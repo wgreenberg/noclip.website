@@ -379,9 +379,9 @@ impl LightRecord {
 
 fn u32_to_color(color: u32) -> Vec3 {
     Vec3 {
-        x: ((color >> 0) & 0xff) as f32 / 255.0,
+        z: ((color >> 0) & 0xff) as f32 / 255.0,
         y: ((color >> 8) & 0xff) as f32 / 255.0,
-        z: ((color >> 16) & 0xff) as f32 / 255.0,
+        x: ((color >> 16) & 0xff) as f32 / 255.0,
     }
 }
 
@@ -634,10 +634,13 @@ mod test {
         let d2 = std::fs::read("../data/wow/dbfilesclient/lightparams.db2").unwrap();
         let d3 = std::fs::read("../data/wow/dbfilesclient/lightdata.db2").unwrap();
         let db = LightDatabase::new(&d1, &d3, &d2).unwrap();
-        let result = db.get_lighting_data(209, 0.0, 0.0, 0.0, 0);
-        for color in [result.sky_top_color, result.sky_middle_color, result.sky_band1_color, result.sky_band2_color, result.sky_fog_color] {
+        let result = db.get_lighting_data(0, -7829.5380859375, -1157.3988037109375, 218.613525390625, 2000);
+        for color in [result.sky_top_color, result.sky_middle_color, result.sky_band1_color, result.sky_band2_color, result.sky_smog_color, result.sky_fog_color] {
             let color = color * 255.0;
-            println!("{}, {}, {}", color.x, color.y, color.z);
+            let r = color.x.floor() as u32;
+            let g = color.y.floor() as u32;
+            let b = color.z.floor() as u32;
+            println!("#{:0>6x}", (r << 16) + (g << 8) + b);
         }
     }
 }

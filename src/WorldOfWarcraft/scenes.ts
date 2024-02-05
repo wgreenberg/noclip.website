@@ -11,13 +11,13 @@ import { GfxRenderInst, GfxRenderInstManager } from '../gfx/render/GfxRenderInst
 import { makeStaticDataBuffer } from '../gfx/helpers/BufferHelpers.js';
 import { makeBackbufferDescSimple, standardFullClearRenderPassDescriptor, pushAntialiasingPostProcessPass } from '../gfx/helpers/RenderGraphHelpers.js';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
-import { fillMatrix4x4 } from '../gfx/helpers/UniformBufferHelpers.js';
+import { fillMatrix4x4, fillVec4, fillVec4v } from '../gfx/helpers/UniformBufferHelpers.js';
 import { DataFetcher, NamedArrayBufferSlice } from '../DataFetcher.js';
 import { nArray } from '../util.js';
 import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
-import { mat4, vec3 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase } from './data.js';
+import { mat4, vec3, vec4 } from 'gl-matrix';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase, WmoGroupData } from './data.js';
 import { getMatrixTranslation } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
@@ -75,6 +75,8 @@ class View {
     public clipFromWorldMatrix = mat4.create();
     // aka projectionMatrix
     public clipFromViewMatrix = mat4.create();
+    public interiorSunDirection: vec4 = [-0.30822, -0.30822, -0.89999998, 0];
+    public exteriorDirectColorDirection: vec4 = [-0.30822, -0.30822, -0.89999998, 0];
     public cameraPos = vec3.create();
     public time: number;
 
@@ -87,7 +89,7 @@ class View {
     public setupFromViewerInput(viewerInput: Viewer.ViewerRenderInput): void {
         mat4.mul(this.viewFromWorldMatrix, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
         mat4.copy(this.clipFromViewMatrix, viewerInput.camera.projectionMatrix);
-        this.time = viewerInput.time;
+        this.time = (viewerInput.time * 0.001) % 2880;
         this.finishSetup();
     }
 }
@@ -242,7 +244,8 @@ class WmoStructureRenderer {
   private inputLayouts: GfxInputLayout[] = [];
   private vertexBuffers: GfxVertexBufferDescriptor[][] = [];
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
-  private batches: WmoBatchData[][] = [];
+  private groups: WmoGroupData[] = [];
+  public batches: WmoBatchData[][] = [];
 
   constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
 
@@ -252,6 +255,7 @@ class WmoStructureRenderer {
       this.vertexBuffers.push(group.getVertexBuffers(device));
       this.indexBuffers.push(group.getIndexBuffer(device));
       this.batches.push(group.getBatches(this.wmo.materials));
+      this.groups.push(group);
     }
   }
 
@@ -265,19 +269,43 @@ class WmoStructureRenderer {
         if (!blp) {
           throw new Error(`couldn't find WMO BLP with id ${batch.material.texture_1}`);
         }
-        mappings.push(this.textureCache.getTextureMapping(batch.material.texture_1, blp));
+        const wrap = !(batch.materialFlags.clamp_s || batch.materialFlags.clamp_t);
+        mappings.push(this.textureCache.getTextureMapping(batch.material.texture_1, blp, undefined, undefined, {
+          wrap: wrap,
+        }));
       }
     }
     return mappings;
   }
 
-  public prepareToRenderWmoStructure(renderInstManager: GfxRenderInstManager) {
+  public prepareToRenderWmoStructure(renderInstManager: GfxRenderInstManager, doodadSetId: number) {
     const template = renderInstManager.pushTemplateRenderInst();
     for (let i=0; i<this.vertexBuffers.length; i++) {
+      const group = this.groups[i];
+      const ambientColor = group.getAmbientColor(this.wmo, doodadSetId);
+      const applyInteriorLight = group.flags.interior && !group.flags.exterior_lit;
+      const applyExteriorLight = true;
       template.setVertexInput(this.inputLayouts[i], this.vertexBuffers[i], this.indexBuffers[i]);
       for (let batch of this.batches[i]) {
+        if (!batch.visible) continue;
         const renderInst = renderInstManager.newRenderInst();
-        batch.setBatchParams(renderInst);
+        let offset = renderInst.allocateUniformBuffer(WmoProgram.ub_BatchParams, 4 * 4);
+        const uniformBuf = renderInst.mapUniformBufferF32(WmoProgram.ub_BatchParams);
+        offset += fillVec4(uniformBuf, offset,
+          batch.vertexShader,
+          batch.pixelShader,
+          0,
+          0
+        );
+        offset += fillVec4(uniformBuf, offset,
+          batch.material.blend_mode,
+          applyInteriorLight ? 1 : 0,
+          applyExteriorLight ? 1 : 0,
+          0
+        );
+        offset += fillVec4v(uniformBuf, offset, ambientColor);
+        offset += fillVec4v(uniformBuf, offset, [0, 0, 0, 0]);
+        batch.setMegaStateFlags(renderInst);
         const textureMappings = this.getBatchTextureMapping(batch);
         renderInst.setSamplerBindingsFromTextureMappings(textureMappings);
         renderInst.drawIndexes(batch.indexCount, batch.indexStart);
@@ -346,9 +374,7 @@ class WmoRenderer {
     }
   }
 
-  public prepareToRenderWmoRenderer(renderInstManager: GfxRenderInstManager) {
-    const cam = mat4.create();
-    mat4.mul(cam, window.main.viewer.camera.clipFromWorldMatrix, noclipSpaceFromAdtSpace);
+  public prepareToRenderWmoRenderer(renderInstManager: GfxRenderInstManager, viewMat: mat4) {
     const template = renderInstManager.pushTemplateRenderInst();
     template.setGfxProgram(this.wmoProgram);
     template.setBindingLayouts(WmoProgram.bindingLayouts);
@@ -356,10 +382,14 @@ class WmoRenderer {
       let renderer = this.wmoIdToStructureRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
         if (!def.visible) continue;
-        let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, 16);
-        const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
+        let offs = template.allocateUniformBuffer(WmoProgram.ub_ModelParams, 2 * 16);
+        const mapped = template.mapUniformBufferF32(WmoProgram.ub_ModelParams);
         offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
-        renderer.prepareToRenderWmoStructure(renderInstManager);
+        const normalMat = mat4.mul(mat4.create(), noclipSpaceFromAdtSpace, def.modelMatrix);
+        mat4.invert(normalMat, normalMat);
+        mat4.transpose(normalMat, normalMat);
+        offs += fillMatrix4x4(mapped, offs, normalMat);
+        renderer.prepareToRenderWmoStructure(renderInstManager, def.doodadSet);
         break;
       }
     }
@@ -587,20 +617,36 @@ class WdtScene implements Viewer.SceneGfx {
     interactiveVizSliderSelect(modelRenderers);
   }
 
+  public debugWmoStructureBatches() {
+    let batches: WmoBatchData[] = [];
+    for (let d of this.wmoRenderers) {
+      for (let s of d.wmoIdToStructureRenderer.values()) {
+        for (let b of s.batches) {
+          batches = batches.concat(b);
+        }
+      }
+    }
+    interactiveVizSliderSelect(batches);
+  }
+
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
     const template = this.renderHelper.pushTemplateRenderInst();
     template.setBindingLayouts(TerrainProgram.bindingLayouts);
     template.setGfxProgram(this.terrainProgram)
 
     this.mainView.setupFromViewerInput(viewerInput);
-    this.lightDb.setGlobalLightingData(template, this.mainView.cameraPos, this.time);
 
-    let offs = template.allocateUniformBuffer(BaseProgram.ub_SceneParams, 32);
-    const mapped = template.mapUniformBufferF32(BaseProgram.ub_SceneParams);
-    offs += fillMatrix4x4(mapped, offs, viewerInput.camera.projectionMatrix);
     const viewMat = mat4.create();
     mat4.mul(viewMat, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
-    offs += fillMatrix4x4(mapped, offs, viewMat);
+    const lightingData = this.lightDb.setGlobalLightingData(this.mainView.cameraPos, this.time);
+    BaseProgram.layoutUniformBufs(
+      template,
+      viewerInput.camera.projectionMatrix,
+      viewMat,
+      this.mainView.interiorSunDirection,
+      this.mainView.exteriorDirectColorDirection,
+      lightingData
+    );
 
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
 
@@ -621,7 +667,7 @@ class WdtScene implements Viewer.SceneGfx {
       if (!this.world.globalWmo)
         wmoRenderer.setCulling(viewerInput)
       wmoRenderer.update(viewerInput);
-      wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager);
+      wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager, viewMat);
     });
 
     this.renderHelper.renderInstManager.popTemplateRenderInst();
