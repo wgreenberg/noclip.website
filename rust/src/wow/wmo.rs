@@ -579,7 +579,7 @@ mod tests {
         let wmoData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03.wmo").unwrap();
         let groupData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03_000.wmo").unwrap();
         let wmo = Wmo::new(wmoData).unwrap();
+        dbg!(wmo.group_infos);
         let mut group = WmoGroup::new(groupData).unwrap();
-        group.fix_color_vertex_alpha(&wmo.header);
     }
 }

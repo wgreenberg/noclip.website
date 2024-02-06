@@ -4,7 +4,7 @@ import { rust } from '../rustlib.js';
 import { WowM2, WowSkin, WowBlp, WowPixelFormat, WowWdt, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowSkinSubmesh, WowModelBatch, WowAdtWmoDefinition } from '../../rust/pkg/index.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
 import { DeviceProgram } from '../Program.js';
-import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage, GfxInputLayoutDescriptor } from '../gfx/platform/GfxPlatform.js';
+import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage, GfxInputLayoutDescriptor, GfxClipSpaceNearZ } from '../gfx/platform/GfxPlatform.js';
 import { GfxFormat } from '../gfx/platform/GfxPlatformFormat.js';
 import { GfxBuffer, GfxInputLayout, GfxProgram } from '../gfx/platform/GfxPlatformImpl.js';
 import { GfxRenderInst, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
@@ -14,7 +14,7 @@ import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
 import { fillMatrix4x4, fillVec4, fillVec4v } from '../gfx/helpers/UniformBufferHelpers.js';
 import { DataFetcher, NamedArrayBufferSlice } from '../DataFetcher.js';
 import { nArray } from '../util.js';
-import { DebugTex, DebugTexHolder, TextureCache } from './tex.js';
+import { DebugTex, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3, vec4 } from 'gl-matrix';
 import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase, WmoGroupData } from './data.js';
@@ -24,13 +24,15 @@ import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Ca
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
 import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D, interactiveVizSliderSelect } from '../DebugJunk.js';
-import { AABB } from '../Geometry.js';
+import { Frustum, AABB } from '../Geometry.js';
 import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram, SkyboxProgram, BaseProgram } from './program.js';
 import { ViewerRenderInput } from '../viewer.js';
 import { skyboxIndices, skyboxVertices } from './skybox.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
+
+const DEBUG_DRAW_BOUNDING_BOXES = false;
 
 export const noclipSpaceFromAdtSpace = mat4.fromValues(
   0, 0, -1, 0,
@@ -53,7 +55,9 @@ export const noclipSpaceFromPlacementSpace = mat4.fromValues(
   0, 0, 0, 1,
 )
 
-const MAX_WMO_RENDER_DIST = 1000;
+const MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
+const MAX_INTERIOR_WMO_RENDER_DIST = 100;
+const MAX_DOODAD_RENDER_DIST = 1000;
 const MAX_ADT_RENDER_DIST = 10000;
 
 export const adtSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
@@ -77,20 +81,30 @@ class View {
     public clipFromViewMatrix = mat4.create();
     public interiorSunDirection: vec4 = [-0.30822, -0.30822, -0.89999998, 0];
     public exteriorDirectColorDirection: vec4 = [-0.30822, -0.30822, -0.89999998, 0];
+    public clipSpaceNearZ: GfxClipSpaceNearZ;
     public cameraPos = vec3.create();
+    public frustum: Frustum = new Frustum();
     public time: number;
 
     public finishSetup(): void {
         mat4.invert(this.worldFromViewMatrix, this.viewFromWorldMatrix);
         mat4.mul(this.clipFromWorldMatrix, this.clipFromViewMatrix, this.viewFromWorldMatrix);
         getMatrixTranslation(this.cameraPos, this.worldFromViewMatrix);
+        this.frustum.updateClipFrustum(this.clipFromWorldMatrix, this.clipSpaceNearZ);
+    }
+
+    public cameraDistanceToWorldSpaceAABB(aabb: AABB): number {
+      let center: vec3 = [0, 0, 0]
+      aabb.centerPoint(center);
+      return vec3.distance(this.cameraPos, center);
     }
 
     public setupFromViewerInput(viewerInput: Viewer.ViewerRenderInput): void {
-        mat4.mul(this.viewFromWorldMatrix, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
-        mat4.copy(this.clipFromViewMatrix, viewerInput.camera.projectionMatrix);
-        this.time = (viewerInput.time * 0.001) % 2880;
-        this.finishSetup();
+      this.clipSpaceNearZ = viewerInput.camera.clipSpaceNearZ;
+      mat4.mul(this.viewFromWorldMatrix, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
+      mat4.copy(this.clipFromViewMatrix, viewerInput.camera.projectionMatrix);
+      this.time = (viewerInput.time * 0.001) % 2880;
+      this.finishSetup();
     }
 }
 
@@ -173,7 +187,7 @@ class DoodadRenderer {
   public modelIdsToDoodads: Map<number, DoodadData[]>;
   public modelIdsToModelRenderers: Map<number, ModelRenderer>;
 
-  constructor(device: GfxDevice, private textureCache: TextureCache, doodads: DoodadData[], renderHelper: GfxRenderHelper, private wowCache: WowCache) {
+  constructor(device: GfxDevice, textureCache: TextureCache, doodads: DoodadData[], renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     this.modelIdsToDoodads = new Map();
     this.modelIdsToModelRenderers = new Map();
     for (let doodadData of doodads) {
@@ -185,12 +199,32 @@ class DoodadRenderer {
       }
     }
 
-    for (let modelId of this.modelIdsToDoodads.keys()) {
+    for (let [modelId, doodads] of this.modelIdsToDoodads.entries()) {
       const modelData = wowCache.models.get(modelId);
       if (!modelData) {
         throw new Error(`couldn't find model with id ${modelId}`)
       }
+      for (let doodad of doodads) {
+        doodad.setBoundingBoxFromModel(modelData);
+      }
       this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper, textureCache, wowCache));
+    }
+  }
+
+  public setCulling(view: View, def?: WmoDefinition) {
+    for (let doodads of this.modelIdsToDoodads.values()) {
+      for (let doodad of doodads) {
+        let worldAABB = doodad.worldAABB;
+        if (def) {
+          worldAABB = new AABB();
+          worldAABB.transform(doodad.worldAABB, def.modelMatrix);
+        }
+        if (DEBUG_DRAW_BOUNDING_BOXES) {
+          drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, worldAABB);
+        }
+        const closeEnough = view.cameraDistanceToWorldSpaceAABB(worldAABB) < MAX_DOODAD_RENDER_DIST;
+        doodad.visible = closeEnough && view.frustum.contains(worldAABB);
+      }
     }
   }
 
@@ -245,17 +279,35 @@ class WmoStructureRenderer {
   private vertexBuffers: GfxVertexBufferDescriptor[][] = [];
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
   private groups: WmoGroupData[] = [];
+  private groupAmbientColors: Map<number, vec4>[] = []; // for each group, a map of doodadSetId to ambient color
+  private groupModelAABBs: AABB[] = [];
   public batches: WmoBatchData[][] = [];
+  public visible = true;
 
-  constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
-
-    for (let groupId of wmo.groupIds) {
+  constructor(device: GfxDevice, private wmo: WmoData, private wmoDefs: WmoDefinition[], private textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
+    const groupInfos = wmo.wmo.group_infos;
+    for (let i in wmo.groupIds) {
+      const groupId = wmo.groupIds[i];
       const group = wowCache.wmoGroups.get(groupId)!;
       this.inputLayouts.push(group.getInputLayout(renderHelper.renderCache));
       this.vertexBuffers.push(group.getVertexBuffers(device));
       this.indexBuffers.push(group.getIndexBuffer(device));
       this.batches.push(group.getBatches(this.wmo.materials));
+      const aabb = groupInfos[i].bounding_box;
+      this.groupModelAABBs.push(new AABB(
+        aabb.min.x,
+        aabb.min.y,
+        aabb.min.z,
+        aabb.max.x,
+        aabb.max.y,
+        aabb.max.z,
+      ));
       this.groups.push(group);
+      const ambientColors = new Map();
+      for (let wmoDef of wmoDefs) {
+        ambientColors.set(wmoDef.doodadSet, group.getAmbientColor(this.wmo, wmoDef.doodadSet));
+      }
+      this.groupAmbientColors.push(ambientColors);
     }
   }
 
@@ -278,11 +330,35 @@ class WmoStructureRenderer {
     return mappings;
   }
 
-  public prepareToRenderWmoStructure(renderInstManager: GfxRenderInstManager, doodadSetId: number) {
+  public setCulling(view: View, def: WmoDefinition) {
+    for (let i=0; i<this.groups.length; i++) {
+      const worldAABB = new AABB();
+      worldAABB.transform(this.groupModelAABBs[i], def.modelMatrix);
+      if (DEBUG_DRAW_BOUNDING_BOXES) {
+        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, worldAABB);
+      }
+      let distance = view.cameraDistanceToWorldSpaceAABB(worldAABB);
+      const group = this.groups[i];
+      if (group.flags.exterior) {
+        const closeEnough = distance < MAX_EXTERIOR_WMO_RENDER_DIST;
+        const visible = closeEnough && view.frustum.contains(worldAABB);
+        def.groupIdToVisibility.set(group.fileId, { visible });
+      } else {
+        // TODO: portal culling
+        const closeEnough = distance < MAX_INTERIOR_WMO_RENDER_DIST;
+        const visible = closeEnough && view.frustum.contains(worldAABB);
+        def.groupIdToVisibility.set(group.fileId, { visible });
+      }
+    }
+  }
+
+  public prepareToRenderWmoStructure(renderInstManager: GfxRenderInstManager, def: WmoDefinition) {
+    if (!this.visible) return;
     const template = renderInstManager.pushTemplateRenderInst();
     for (let i=0; i<this.vertexBuffers.length; i++) {
       const group = this.groups[i];
-      const ambientColor = group.getAmbientColor(this.wmo, doodadSetId);
+      if (!def.isWmoGroupVisible(group.fileId)) continue;
+      const ambientColor = this.groupAmbientColors[i].get(def.doodadSet)!;
       const applyInteriorLight = group.flags.interior && !group.flags.exterior_lit;
       const applyExteriorLight = true;
       template.setVertexInput(this.inputLayouts[i], this.vertexBuffers[i], this.indexBuffers[i]);
@@ -347,9 +423,9 @@ class WmoRenderer {
       }
     }
 
-    for (let wmoId of this.wmoIdToWmoDefs.keys()) {
+    for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
       const wmo = wowCache.wmos.get(wmoId)!;
-      this.wmoIdToStructureRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, textureCache, renderHelper, wowCache));
+      this.wmoIdToStructureRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, wmoDefs, textureCache, renderHelper, wowCache));
       const doodads = wmo.wmo.doodad_defs.map(def => DoodadData.fromWmoDoodad(def, wmo));
       this.wmoIdToDoodadRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, renderHelper, wowCache));
     }
@@ -361,26 +437,25 @@ class WmoRenderer {
     }
   }
 
-  public setCulling(viewerInput: Viewer.ViewerRenderInput) {
-    const cameraPosition: vec3 = [0, 0, 0];
-    getMatrixTranslation(cameraPosition, viewerInput.camera.worldMatrix);
-    for (let wmoDefs of this.wmoIdToWmoDefs.values()) {
+  public setCulling(view: View) {
+    for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
       for (let def of wmoDefs) {
-        let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, def.worldSpaceAABB);
-        const isCloseEnough = distance < MAX_WMO_RENDER_DIST;
-        def.visible = viewerInput.camera.frustum.contains(def.worldSpaceAABB) && isCloseEnough;
-        def.doodadsVisible = def.worldSpaceAABB.containsPoint(cameraPosition);
+        this.wmoIdToStructureRenderer.get(wmoId)!.setCulling(view, def);
+        this.wmoIdToDoodadRenderer.get(wmoId)!.setCulling(view, def);
       }
     }
   }
 
-  public prepareToRenderWmoRenderer(renderInstManager: GfxRenderInstManager, viewMat: mat4) {
+  public prepareToRenderWmoRenderer(renderInstManager: GfxRenderInstManager, view: View) {
     const template = renderInstManager.pushTemplateRenderInst();
     template.setGfxProgram(this.wmoProgram);
     template.setBindingLayouts(WmoProgram.bindingLayouts);
     for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
       let renderer = this.wmoIdToStructureRenderer.get(wmoId)!;
       for (let def of wmoDefs) {
+        if (DEBUG_DRAW_BOUNDING_BOXES) {
+          drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, def.worldSpaceAABB);
+        }
         if (!def.visible) continue;
         let offs = template.allocateUniformBuffer(WmoProgram.ub_ModelParams, 2 * 16);
         const mapped = template.mapUniformBufferF32(WmoProgram.ub_ModelParams);
@@ -389,8 +464,7 @@ class WmoRenderer {
         mat4.invert(normalMat, normalMat);
         mat4.transpose(normalMat, normalMat);
         offs += fillMatrix4x4(mapped, offs, normalMat);
-        renderer.prepareToRenderWmoStructure(renderInstManager, def.doodadSet);
-        break;
+        renderer.prepareToRenderWmoStructure(renderInstManager, def);
       }
     }
 
@@ -430,6 +504,7 @@ class AdtTerrainRenderer {
   public alphaTextureMappings: (TextureMapping | null)[] = [];
   public chunkVisible: VisibleGuy[] = [];
   public worldSpaceAABB: AABB;
+  public noclipSpaceAABB: AABB;
   public visible: boolean = true;
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache, private wowCache: WowCache) {
@@ -448,6 +523,9 @@ class AdtTerrainRenderer {
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
     [this.vertexBuffer, this.indexBuffer, this.adtChunks, this.worldSpaceAABB] = this.adt.getBufsAndChunks(device);
+    this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
+    this.noclipSpaceAABB = new AABB();
+    this.noclipSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
     for (let chunk of this.adtChunks) {
       const alphaTex = chunk.alpha_texture;
       this.chunkVisible.push({
@@ -465,10 +543,10 @@ class AdtTerrainRenderer {
     }
   }
 
-  public setCulling(viewerInput: Viewer.ViewerRenderInput) {
-    let distance = computeViewSpaceDepthFromWorldSpaceAABB(viewerInput.camera.viewMatrix, this.worldSpaceAABB);
+  public setCulling(view: View) {
+    let distance = view.cameraDistanceToWorldSpaceAABB(this.worldSpaceAABB);
     const isCloseEnough = distance < MAX_ADT_RENDER_DIST;
-    this.visible = viewerInput.camera.frustum.contains(this.worldSpaceAABB) && isCloseEnough;
+    this.visible = view.frustum.contains(this.worldSpaceAABB) && isCloseEnough;
   }
 
   private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
@@ -548,6 +626,12 @@ class SkyboxRenderer {
   }
 }
 
+enum CullingState {
+  Running,
+  Paused,
+  OneShot,
+}
+
 class WdtScene implements Viewer.SceneGfx {
   private terrainRenderers: AdtTerrainRenderer[] = [];
   private doodadRenderers: DoodadRenderer[] = [];
@@ -555,9 +639,10 @@ class WdtScene implements Viewer.SceneGfx {
   private skyboxRenderer: SkyboxRenderer;
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
-  private mainView = new View();
+  public mainView = new View();
   private textureCache: TextureCache;
-  public time: number = 2000;
+  public cullingState = CullingState.Running;
+  public time: number = 1400;
 
   constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private wowCache: WowCache, private lightDb: LightDatabase) {
     this.textureCache = new TextureCache(this.renderHelper.renderCache);
@@ -593,6 +678,28 @@ class WdtScene implements Viewer.SceneGfx {
     ));
   }
 
+  private shouldCull(): boolean {
+    return this.cullingState !== CullingState.Paused;
+  }
+
+  private updateCullingState() {
+    if (this.cullingState === CullingState.OneShot) {
+      this.cullingState = CullingState.Paused;
+    }
+  }
+
+  public resumeCulling() {
+    this.cullingState = CullingState.Running;
+  }
+
+  public pauseCulling() {
+    this.cullingState = CullingState.Paused;
+  }
+
+  public cullOneShot() {
+    this.cullingState = CullingState.OneShot;
+  }
+
   public update(viewer: ViewerRenderInput) {
     for (let doodadRenderer of this.doodadRenderers) {
       doodadRenderer.update(viewer);
@@ -617,6 +724,18 @@ class WdtScene implements Viewer.SceneGfx {
     interactiveVizSliderSelect(modelRenderers);
   }
 
+  public debugWmos() {
+    let defs: WmoDefinition[] = [];
+    for (let d of this.wmoRenderers) {
+      for (let ds of d.wmoIdToWmoDefs.values()) {
+        for (let def of ds) {
+          defs.push(def);
+        }
+      }
+    }
+    interactiveVizSliderSelect(defs);
+  }
+
   public debugWmoStructureBatches() {
     let batches: WmoBatchData[] = [];
     for (let d of this.wmoRenderers) {
@@ -638,40 +757,43 @@ class WdtScene implements Viewer.SceneGfx {
 
     const viewMat = mat4.create();
     mat4.mul(viewMat, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
-    const lightingData = this.lightDb.setGlobalLightingData(this.mainView.cameraPos, this.time);
     BaseProgram.layoutUniformBufs(
       template,
       viewerInput.camera.projectionMatrix,
       viewMat,
       this.mainView.interiorSunDirection,
       this.mainView.exteriorDirectColorDirection,
-      lightingData
+      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.time)
     );
 
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
 
     template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
     this.terrainRenderers.forEach(terrainRenderer => {
-      terrainRenderer.setCulling(viewerInput);
+      if (this.shouldCull())
+        terrainRenderer.setCulling(this.mainView);
       terrainRenderer.prepareToRenderAdtTerrain(this.renderHelper.renderInstManager);
     });
 
     template.setBindingLayouts(ModelProgram.bindingLayouts);
     template.setGfxProgram(this.modelProgram);
     this.doodadRenderers.forEach(doodadRenderer => {
+      if (this.shouldCull())
+        doodadRenderer.setCulling(this.mainView);
       doodadRenderer.update(viewerInput);
       doodadRenderer.prepareToRenderDoodadRenderer(this.renderHelper.renderInstManager, null);
     });
 
     this.wmoRenderers.forEach(wmoRenderer => {
-      if (!this.world.globalWmo)
-        wmoRenderer.setCulling(viewerInput)
+      if (this.shouldCull())
+        wmoRenderer.setCulling(this.mainView)
       wmoRenderer.update(viewerInput);
-      wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager, viewMat);
+      wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager, this.mainView);
     });
 
     this.renderHelper.renderInstManager.popTemplateRenderInst();
     this.renderHelper.prepareToRender();
+    this.updateCullingState();
   }
 
   public adjustCameraController(c: CameraController) {
@@ -737,21 +859,6 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     console.timeEnd('loading wdt');
     const lightDb = new LightDatabase(this.lightdbMapId);
     await lightDb.load(dataFetcher);
-    const holder = new DebugTexHolder();
-    let entries: DebugTex[] = [];
-    for (let adt of wdt.adts) {
-      for (let blpId of adt.blpIds) {
-        const blp = cache.blps.get(blpId)!;
-        const texPath = getFilePath(blpId);
-        entries.push({
-          name: texPath,
-          width: blp.header.width,
-          height: blp.header.height,
-          blp: blp,
-        });
-      }
-    }
-    holder.addTextures(device, entries);
     return new WdtScene(device, wdt, renderHelper, cache, lightDb);
   }
 }

@@ -49,7 +49,6 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
     return null!;
   }
   const mipMetadata = blp.get_mip_metadata();
-  const texData = blp.get_texture_data();
   const mipmapCount = mipMetadata.length;
 
   const textureDescriptor = {
@@ -64,28 +63,13 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
 
   const texture = device.createTexture(textureDescriptor!);
   const levelDatas = [];
-  let w = blp.header.width;
-  let h = blp.header.height;
   for (let i = 0; i < mipmapCount; i++) {
-    const metadata = mipMetadata[i];
-    let size = metadata.size;
-    if ([GfxFormat.BC3, GfxFormat.BC2].includes(format)) {
-      size = Math.floor((w + 3) / 4) * Math.floor((h + 3) / 4) * 16;
-    } else if ([GfxFormat.BC1, GfxFormat.BC1_SRGB].includes(format)) {
-      size = Math.floor((w + 3) / 4) * Math.floor((h + 3) / 4) * 8;
-    }
-    let buffer = new ArrayBufferSlice(texData.buffer, metadata.offset, size);
-
-    let levelData: ArrayBufferView;
+    const mipBuf = blp.get_mip_data(i);
     if ([GfxFormat.U16_RGB_565, GfxFormat.U16_RGBA_5551, GfxFormat.U16_RGBA_NORM].includes(format)) {
-      levelData = buffer.createTypedArray(Uint16Array);
+      levelDatas.push(new Uint16Array(mipBuf.buffer));
     } else {
-      levelData = buffer.createTypedArray(Uint8Array);
+      levelDatas.push(mipBuf);
     }
-
-    levelDatas.push(levelData);
-    w = Math.max(w >>> 1, 1);
-    h = Math.max(h >>> 1, 1);
   }
 
   device.uploadTextureData(texture, 0, levelDatas);
@@ -220,7 +204,7 @@ export class DebugTexHolder extends TextureHolder<DebugTex> {
   public loadTexture(device: GfxDevice, textureEntry: DebugTex): LoadedTexture | null {
     const tex = textureEntry.blp.get_texture_data();
     const canvases: HTMLCanvasElement[] = [];
-    let gfxTexture: GfxTexture =  makeSolidColorTexture2D(device, {
+    let gfxTexture: GfxTexture = makeSolidColorTexture2D(device, {
       r: 0.5,
       g: 0.5,
       b: 0.5,

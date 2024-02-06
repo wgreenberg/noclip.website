@@ -210,7 +210,7 @@ void mainVS() {
     } else if (colorIndex == ${SkyboxColor.Fog}) {
       v_Color = skyFogColor;
     }
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, 33.333 * vec4(a_Position, 0.0)));
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 0.0)));
 }
 #endif
 

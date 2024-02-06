@@ -500,14 +500,14 @@ impl LightDatabase {
         let default_light = self.lights.records.iter()
             .find(|light| light.map_id == map_id && light.coords == origin)
             .unwrap_or(self.lights.get_record(1).unwrap());
-        self.get_light_result(default_light, time)
+        self.get_light_result(default_light, time).unwrap()
     }
 
-    fn get_light_result(&self, light: &LightRecord, time: u32) -> LightResult {
+    fn get_light_result(&self, light: &LightRecord, time: u32) -> Option<LightResult> {
         let id = light.light_param_ids[0];
         assert!(id != 0);
 
-        let light_param = self.light_params.get_record(id as u32).unwrap();
+        let light_param = self.light_params.get_record(id as u32)?;
 
         // based on the given time, find the current and next LightDataRecord
         let mut current_light_data: Option<&LightDataRecord> = None;
@@ -545,20 +545,23 @@ impl LightDatabase {
             }
         }
 
-        final_result
+        Some(final_result)
     }
 
     pub fn get_lighting_data(&self, map_id: u16, x: f32, y: f32, z: f32, time: u32) -> LightResult {
         let mut outer_lights: Vec<(LightResult, f32)> = Vec::new();
         let coord = Vec3 { x, y, z };
+        let default_light = self.get_default_light(map_id, time);
 
         for light in &self.lights.records {
             if light.map_id == map_id {
                 match light.distance(&coord) {
-                    DistanceResult::Inner(_) => return self.get_light_result(light, time),
+                    DistanceResult::Inner(_) => return self.get_light_result(light, time).unwrap_or(default_light),
                     DistanceResult::Outer(distance) => {
-                        let alpha = 1.0 - (distance - light.falloff_start) / (light.falloff_end - light.falloff_start);
-                        outer_lights.push((self.get_light_result(light, time), alpha))
+                        if let Some(outer_light) = self.get_light_result(light, time) {
+                            let alpha = 1.0 - (distance - light.falloff_start) / (light.falloff_end - light.falloff_start);
+                            outer_lights.push((outer_light, alpha));
+                        }
                     },
                     DistanceResult::None => {},
                 }
@@ -566,7 +569,7 @@ impl LightDatabase {
         }
 
         if outer_lights.len() == 0 {
-            return self.get_default_light(map_id, time);
+            return default_light;
         }
 
         outer_lights.sort_unstable_by(|(_, alpha_a), (_, alpha_b)| {

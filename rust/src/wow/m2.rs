@@ -98,6 +98,10 @@ impl M2 {
         })
     }
 
+    pub fn get_bounding_box(&self) -> AABBox {
+        self.header.bounding_box.clone()
+    }
+
     fn get_m2_data(&self) -> &[u8] {
         // M2 pointers are relative to the end of the MD21 block, which seems to
         // always be 16 bytes in

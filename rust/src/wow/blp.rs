@@ -101,6 +101,28 @@ impl Blp {
         }
     }
 
+    pub fn get_mip_data(&self, mip_level: usize) -> Result<Vec<u8>, String> {
+        if matches!(self.header.color_encoding, ColorEncoding::Uncompressed) {
+            panic!("uncompressed???");
+        }
+        if mip_level > self.header.mip_offsets.len() {
+            return Err("invalid mip level".to_string());
+        }
+        let w = (self.header.width >> mip_level).max(1);
+        let h = (self.header.height >> mip_level).max(1);
+        let offset = self.header.mip_offsets[mip_level] as usize - 1172;
+        let size = match self.header.preferred_format {
+            PixelFormat::Dxt5 | PixelFormat::Dxt3 => {
+                ((w + 3) / 4) * ((h + 3) / 4) * 16
+            },
+            PixelFormat::Dxt1 => {
+                ((w + 3) / 4) * ((h + 3) / 4) * 8
+            },
+            _ => self.header.mip_sizes[mip_level],
+        };
+        Ok(self.texture_data[offset..offset+size as usize].to_vec())
+    }
+
     pub fn get_mip_metadata(&self) -> Vec<BlpMipMetadata> {
         let mut metadata = Vec::new();
         for i in 0..16 {

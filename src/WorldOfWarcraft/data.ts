@@ -16,6 +16,9 @@ import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 
+// game world size in game units
+const MAP_SIZE = 17066;
+
 export class LightDatabase {
   private db: WowLightDatabase;
 
@@ -29,7 +32,7 @@ export class LightDatabase {
     this.db = rust.WowLightDatabase.new(lightDbData, lightDataDbData, lightParamsDbData);
   }
 
-  public setGlobalLightingData(coords: vec3, time: number): WowLightResult {
+  public getGlobalLightingData(coords: vec3, time: number): WowLightResult {
     return this.db.get_lighting_data(this.mapId, coords[0], coords[1], coords[2], time);
   }
 }
@@ -91,6 +94,7 @@ export class ModelData {
   public textureLookupTable: Uint16Array;
   public textureTransformsLookupTable: Uint16Array;
   public transparencyLookupTable: Uint16Array;
+  public modelAABB: AABB;
 
   constructor(public fileId: number) {
   }
@@ -110,6 +114,16 @@ export class ModelData {
         console.error(`failed to load BLP: ${e}`)
       }
     }
+
+    const aabb = this.m2.get_bounding_box();
+    this.modelAABB = new AABB(
+      aabb.min.x,
+      aabb.min.y,
+      aabb.min.z,
+      aabb.max.x,
+      aabb.max.y,
+      aabb.max.z,
+    );
 
     this.materials = this.m2.get_materials().map(mat => {
       return [mat.blending_mode, rust.WowM2MaterialFlags.new(mat.flags)];
@@ -250,6 +264,7 @@ export class WmoBatchData {
 export class WmoGroupData {
   public group: WowWmoGroup;
   public flags: WowWmoGroupFlags;
+  public visible = true;
 
   constructor(public fileId: number) {
   }
@@ -349,8 +364,13 @@ export class WmoData {
     for (let tex of this.wmo.textures) {
       this.materials.push(tex);
       for (let texId of [tex.texture_1, tex.texture_2, tex.texture_3]) {
-        if (texId !== 0)
-          await cache.loadBlp(texId)
+        if (texId !== 0) {
+          try {
+            await cache.loadBlp(texId)
+          } catch (e) {
+            console.error(`failed to fetch BLP: ${e}`);
+          }
+        }
       }
     }
 
@@ -568,15 +588,17 @@ export class ModelRenderPass {
 export class WmoDefinition {
   public modelMatrix: mat4;
   public worldSpaceAABB: AABB;
+  public noclipSpaceAABB: AABB;
   public visible: boolean;
   public doodadsVisible: boolean;
+  public groupIdToVisibility: Map<number, { visible: boolean }> = new Map();
 
   static fromAdtDefinition(def: WowAdtWmoDefinition) {
     const scale = def.scale / 1024;
     const position: vec3 = [
-      def.position.x - 17066,
+      def.position.x - MAP_SIZE,
       def.position.y,
-      def.position.z - 17066,
+      def.position.z - MAP_SIZE,
     ];
     const rotation: vec3 = [
       def.rotation.x,
@@ -584,12 +606,12 @@ export class WmoDefinition {
       def.rotation.z,
     ];
     const aabb = new AABB(
-      def.extents.min.x - 17066,
+      def.extents.min.x - MAP_SIZE,
       def.extents.min.y,
-      def.extents.min.z - 17066,
-      def.extents.max.x - 17066,
+      def.extents.min.z - MAP_SIZE,
+      def.extents.max.x - MAP_SIZE,
       def.extents.max.y,
-      def.extents.max.z - 17066,
+      def.extents.max.z - MAP_SIZE,
     )
     return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation, aabb);
   }
@@ -597,9 +619,9 @@ export class WmoDefinition {
   static fromGlobalDefinition(def: WowGlobalWmoDefinition) {
     const scale = 1.0;
     const position: vec3 = [
-      def.position.x - 17066,
+      def.position.x - MAP_SIZE,
       def.position.y,
-      def.position.z - 17066,
+      def.position.z - MAP_SIZE,
     ];
     const rotation: vec3 = [
       def.rotation.x,
@@ -607,12 +629,12 @@ export class WmoDefinition {
       def.rotation.z,
     ];
     const aabb = new AABB(
-      def.extents.min.x - 17066,
+      def.extents.min.x - MAP_SIZE,
       def.extents.min.y,
-      def.extents.min.z - 17066,
-      def.extents.max.x - 17066,
+      def.extents.min.z - MAP_SIZE,
+      def.extents.max.x - MAP_SIZE,
       def.extents.max.y,
-      def.extents.max.z - 17066,
+      def.extents.max.z - MAP_SIZE,
     )
     return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation, aabb);
   }
@@ -628,9 +650,18 @@ export class WmoDefinition {
     mat4.mul(this.modelMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.modelMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
 
-    this.worldSpaceAABB = extents;
+    this.worldSpaceAABB = new AABB();
+    this.worldSpaceAABB.transform(extents, adtSpaceFromPlacementSpace);
+    this.noclipSpaceAABB = new AABB();
+    this.noclipSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
     this.visible = true;
     this.doodadsVisible = true;
+  }
+
+  public isWmoGroupVisible(groupFileId: number): boolean {
+    // default to true
+    let visibility = this.groupIdToVisibility.get(groupFileId) || { visible: true };
+    return visibility.visible;
   }
 }
 
@@ -647,7 +678,11 @@ export class AdtData {
   
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
       for (let blpId of this.innerAdt.get_texture_file_ids()) {
-        await cache.loadBlp(blpId);
+        try {
+          await cache.loadBlp(blpId);
+        } catch (e) {
+          console.error(`failed to load BLP ${e}`);
+        }
       }
 
       for (let modelId of this.innerAdt.get_model_file_ids()) {
@@ -696,12 +731,13 @@ export class AdtData {
 
 export class DoodadData {
   public visible = true;
+  public worldAABB = new AABB();
 
   constructor(public modelId: number, public modelMatrix: mat4, public color: number[] | null) {
   }
 
   static fromAdtDoodad(doodad: WowDoodad): DoodadData {
-    let position: vec3 = [doodad.position.x - 17066, doodad.position.y, doodad.position.z - 17066];
+    let position: vec3 = [doodad.position.x - MAP_SIZE, doodad.position.y, doodad.position.z - MAP_SIZE];
     let rotation: vec3 = [doodad.rotation.x, doodad.rotation.y, doodad.rotation.z];
     let scale = doodad.scale / 1024;
     const doodadMat = mat4.create();
@@ -727,6 +763,10 @@ export class DoodadData {
     mat4.mul(doodadMat, doodadMat, rotMat);
     mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
     return new DoodadData(modelId, doodadMat, color);
+  }
+
+  public setBoundingBoxFromModel(model: ModelData) {
+    this.worldAABB.transform(model.modelAABB, this.modelMatrix);
   }
 }
 
