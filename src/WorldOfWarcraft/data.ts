@@ -1,5 +1,5 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowM2AnimationManager, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor } from "../gfx/platform/GfxPlatform.js";
@@ -88,12 +88,11 @@ export class ModelData {
   public blpIds: number[] = [];
   public vertexColors: WowVec4[] = [];
   public textureWeights: Float32Array;
+  public textureRotations: WowQuat[] = [];
+  public textureScalings: WowVec3[] = [];
+  public textureTranslations: WowVec3[] = [];
   public textureTransforms: mat4[] = [];
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
-  public animationManager: WowM2AnimationManager;
-  public textureLookupTable: Uint16Array;
-  public textureTransformsLookupTable: Uint16Array;
-  public transparencyLookupTable: Uint16Array;
   public modelAABB: AABB;
 
   constructor(public fileId: number) {
@@ -101,10 +100,6 @@ export class ModelData {
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
-    this.textureLookupTable = this.m2.get_texture_lookup_table();
-    this.textureTransformsLookupTable = this.m2.get_texture_transforms_lookup_table();
-    this.transparencyLookupTable = this.m2.get_transparency_lookup_table();
-    this.animationManager = this.m2.get_animation_manager();
     for (let txid of this.m2.texture_ids) {
       if (txid === 0) continue;
       try {
@@ -114,6 +109,7 @@ export class ModelData {
         console.error(`failed to load BLP: ${e}`)
       }
     }
+    this.textureWeights = new Float32Array(this.m2.get_num_texture_weights());
 
     const aabb = this.m2.get_bounding_box();
     this.modelAABB = new AABB(
@@ -125,7 +121,7 @@ export class ModelData {
       aabb.max.z,
     );
 
-    this.materials = this.m2.get_materials().map(mat => {
+    this.materials = this.m2.materials.map(mat => {
       return [mat.blending_mode, rust.WowM2MaterialFlags.new(mat.flags)];
     })
 
@@ -135,28 +131,33 @@ export class ModelData {
   }
 
   public updateAnimation(deltaTime: number) {
-    this.animationManager.update(deltaTime / 10);
-    this.vertexColors = this.animationManager.calculated_colors!;
-    this.textureWeights = this.animationManager.calculated_transparencies!;
+    this.m2.update_animations(
+      deltaTime / 10,
+      this.textureWeights,
+      this.textureTranslations,
+      this.textureRotations,
+      this.textureScalings,
+      this.vertexColors
+    );
 
-    const rotations = this.animationManager.calculated_texture_rotations!;
-    const translations = this.animationManager.calculated_texture_translations!;
-    const scalings = this.animationManager.calculated_texture_scalings!;
     const transforms: mat4[] = [];
     const pivot: vec3 = [0.5, 0.5, 0];
     const antiPivot: vec3 = [-0.5, -0.5, 0];
-    for (let i = 0; i < rotations.length; i++) {
+    for (let i = 0; i < this.textureRotations.length; i++) {
       const transform = mat4.identity(mat4.create());
 
       mat4.translate(transform, transform, pivot);
-      mat4.fromQuat(transform, [rotations[i].x, rotations[i].y, rotations[i].z, rotations[i].w]);
+      const rotation: vec4 = [this.textureRotations[i].x, this.textureRotations[i].y, this.textureRotations[i].z, this.textureRotations[i].w];
+      mat4.fromQuat(transform, rotation);
       mat4.translate(transform, transform, antiPivot);
 
       mat4.translate(transform, transform, pivot);
-      mat4.scale(transform, transform, [scalings[i].x, scalings[i].y, scalings[i].z]);
+      const scaling: vec3 = [this.textureScalings[i].x, this.textureScalings[i].y, this.textureScalings[i].z];
+      mat4.scale(transform, transform, scaling);
       mat4.translate(transform, transform, antiPivot);
 
-      mat4.translate(transform, transform, [translations[i].x, translations[i].y, translations[i].z]);
+      const translation: vec3 = [this.textureTranslations[i].x, this.textureTranslations[i].y, this.textureTranslations[i].z];
+      mat4.translate(transform, transform, translation);
       transforms.push(transform);
     }
     this.textureTransforms = transforms;
@@ -350,7 +351,8 @@ export class WmoGroupData {
 
 export class WmoData {
   public wmo: WowWmo;
-  public groupIds: number[] = [];
+  public groups: WmoGroupData[] = [];
+  public groupInfos: WowWmoGroupInfo[] = [];
   public blpIds: number[] = [];
   public materials: WowWmoMaterial[] = [];
   public modelIds: Uint32Array;
@@ -380,10 +382,9 @@ export class WmoData {
         await cache.loadModel(modelId)
     }
 
+    this.groupInfos = this.wmo.group_infos;
     for (let gfid of this.wmo.group_file_ids) {
-      const group = await cache.loadWmoGroup(gfid);
-      //group.group.fix_color_vertex_alpha(this.wmo.header);
-      this.groupIds.push(gfid);
+      this.groups.push(await cache.loadWmoGroup(gfid));
     }
   }
 }
@@ -398,7 +399,7 @@ export class SkinData {
     this.submeshes = skin.submeshes;
     this.batches = skin.batches;
     this.renderPasses = this.batches.map(batch => new ModelRenderPass(batch, this.skin, model));
-    this.indexBuffer = skin.get_indices();
+    this.indexBuffer = skin.indices;
   }
 }
 
@@ -504,7 +505,7 @@ export class ModelRenderPass {
 
   private getBlpId(n: number): number | null {
     if (n < this.batch.texture_count) {
-      const i = this.model.textureLookupTable[this.batch.texture_combo_index + n];
+      const i = this.model.m2.lookup_texture(this.batch.texture_combo_index + n)!;
       return this.model.blpIds[i];
     }
     return null;
@@ -521,8 +522,8 @@ export class ModelRenderPass {
   // TODO eventually handle animation logic
   private getTextureTransform(texIndex: number): mat4 {
     const lookupIndex = this.batch.texture_transform_combo_index + texIndex;
-    if (lookupIndex < this.model.textureTransformsLookupTable.length) {
-      const transformIndex = this.model.textureTransformsLookupTable[lookupIndex];
+    const transformIndex = this.model.m2.lookup_texture_transform(lookupIndex);
+    if (transformIndex !== undefined) {
       if (transformIndex < this.model.textureTransforms.length) {
         return this.model.textureTransforms[transformIndex];
       }
@@ -532,8 +533,8 @@ export class ModelRenderPass {
 
   private getTextureWeight(texIndex: number): number {
     const lookupIndex = this.batch.texture_weight_combo_index + texIndex;
-    if (lookupIndex < this.model.transparencyLookupTable.length) {
-      const transparencyIndex = this.model.transparencyLookupTable[lookupIndex];
+    const transparencyIndex = this.model.m2.lookup_transparency(lookupIndex);
+    if (transparencyIndex !== undefined) {
       if (transparencyIndex < this.model.textureWeights.length) {
         return this.model.textureWeights[transparencyIndex];
       }
@@ -613,7 +614,7 @@ export class WmoDefinition {
       def.extents.max.y,
       def.extents.max.z - MAP_SIZE,
     )
-    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation, aabb);
+    return new WmoDefinition(def.name_id, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
   }
 
   static fromGlobalDefinition(def: WowGlobalWmoDefinition) {
@@ -636,11 +637,11 @@ export class WmoDefinition {
       def.extents.max.y,
       def.extents.max.z - MAP_SIZE,
     )
-    return new WmoDefinition(def.name_id, def.doodad_set, scale, position, rotation, aabb);
+    return new WmoDefinition(def.name_id, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
   }
 
   // AABB should be in placement space
-  constructor(public wmoId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3, extents: AABB) {
+  constructor(public wmoId: number, public uniqueId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3, extents: AABB) {
     this.modelMatrix = mat4.create();
     setMatrixTranslation(this.modelMatrix, position);
     mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);

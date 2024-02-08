@@ -129,7 +129,7 @@ class ModelRenderer {
     this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
 
     this.vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.model.m2.get_vertex_data().buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.model.m2.vertex_data.buffer),
       byteOffset: 0,
     };
 
@@ -144,8 +144,9 @@ class ModelRenderer {
   }
 
   public update(viewer: ViewerRenderInput) {
-    if (this.visible)
+    if (this.visible) {
       this.model.updateAnimation(viewer.deltaTime);
+    }
   }
 
   public isDrawable(): boolean {
@@ -183,49 +184,75 @@ class ModelRenderer {
   }
 }
 
+interface Stringy {
+  toString: () => string;
+}
+
+class StringyMap<K extends Stringy, V> {
+  private inner: Map<string, V> = new Map();
+
+  public set(key: K, value: V) {
+    this.inner.set(key.toString(), value);
+  }
+
+  public get(key: K) {
+    return this.inner.get(key.toString());
+  }
+}
+
 class DoodadRenderer {
   public modelIdsToDoodads: Map<number, DoodadData[]>;
   public modelIdsToModelRenderers: Map<number, ModelRenderer>;
+  private doodadDefAABBs: StringyMap<[number, number], AABB> = new StringyMap();
 
-  constructor(device: GfxDevice, textureCache: TextureCache, doodads: DoodadData[], renderHelper: GfxRenderHelper, private wowCache: WowCache) {
+  constructor(device: GfxDevice, textureCache: TextureCache, doodads: DoodadData[], renderHelper: GfxRenderHelper, private wowCache: WowCache, wmoDefs?: WmoDefinition[]) {
     this.modelIdsToDoodads = new Map();
     this.modelIdsToModelRenderers = new Map();
-    for (let doodadData of doodads) {
-      let doodadArray = this.modelIdsToDoodads.get(doodadData.modelId)
+    for (let i=0; i<doodads.length; i++) {
+      const doodad = doodads[i];
+      if (wmoDefs) {
+        for (let def of wmoDefs) {
+          const worldAABB = new AABB();
+          worldAABB.transform(doodad.worldAABB, def.modelMatrix);
+          this.doodadDefAABBs.set([i, def.uniqueId], worldAABB);
+        }
+      }
+      let doodadArray = this.modelIdsToDoodads.get(doodad.modelId)
       if (doodadArray) {
-        doodadArray.push(doodadData);
+        doodadArray.push(doodad);
       } else {
-        this.modelIdsToDoodads.set(doodadData.modelId, [doodadData]);
+        this.modelIdsToDoodads.set(doodad.modelId, [doodad]);
       }
     }
 
     for (let [modelId, doodads] of this.modelIdsToDoodads.entries()) {
-      const modelData = wowCache.models.get(modelId);
+      const modelData = this.wowCache.models.get(modelId);
       if (!modelData) {
         throw new Error(`couldn't find model with id ${modelId}`)
       }
       for (let doodad of doodads) {
         doodad.setBoundingBoxFromModel(modelData);
       }
-      this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper, textureCache, wowCache));
+      this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper, textureCache, this.wowCache));
     }
   }
 
   public setCulling(view: View, def?: WmoDefinition) {
-    for (let doodads of this.modelIdsToDoodads.values()) {
-      for (let doodad of doodads) {
-        let worldAABB = doodad.worldAABB;
-        if (def) {
-          worldAABB = new AABB();
-          worldAABB.transform(doodad.worldAABB, def.modelMatrix);
-        }
-        if (DEBUG_DRAW_BOUNDING_BOXES) {
-          drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, worldAABB);
-        }
-        const closeEnough = view.cameraDistanceToWorldSpaceAABB(worldAABB) < MAX_DOODAD_RENDER_DIST;
-        doodad.visible = closeEnough && view.frustum.contains(worldAABB);
-      }
-    }
+    // for (let doodads of this.modelIdsToDoodads.values()) {
+    //   for (let i=0; i<doodads.length; i++) {
+    //     const doodad = doodads[i];
+    //     let worldAABB = doodad.worldAABB;
+    //     if (def) {
+    //       // FIXME this is causing all wmo models to be invisible
+    //       worldAABB = this.doodadDefAABBs.get([i, def.uniqueId])!;
+    //     }
+    //     if (DEBUG_DRAW_BOUNDING_BOXES) {
+    //       drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, worldAABB);
+    //     }
+    //     const closeEnough = view.cameraDistanceToWorldSpaceAABB(worldAABB) < MAX_DOODAD_RENDER_DIST;
+    //     doodad.visible = closeEnough && view.frustum.contains(worldAABB);
+    //   }
+    // }
   }
 
   public update(viewer: ViewerRenderInput) {
@@ -280,32 +307,34 @@ class WmoStructureRenderer {
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
   private groups: WmoGroupData[] = [];
   private groupAmbientColors: Map<number, vec4>[] = []; // for each group, a map of doodadSetId to ambient color
-  private groupModelAABBs: AABB[] = [];
+  private groupDefModelAABBs: StringyMap<[number, number], AABB> = new StringyMap();
   public batches: WmoBatchData[][] = [];
   public visible = true;
 
   constructor(device: GfxDevice, private wmo: WmoData, private wmoDefs: WmoDefinition[], private textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
-    const groupInfos = wmo.wmo.group_infos;
-    for (let i in wmo.groupIds) {
-      const groupId = wmo.groupIds[i];
-      const group = wowCache.wmoGroups.get(groupId)!;
+    for (let i=0; i<this.wmo.groups.length; i++) {
+      const group = this.wmo.groups[i];
+      const groupInfo = this.wmo.groupInfos[i];
       this.inputLayouts.push(group.getInputLayout(renderHelper.renderCache));
       this.vertexBuffers.push(group.getVertexBuffers(device));
       this.indexBuffers.push(group.getIndexBuffer(device));
       this.batches.push(group.getBatches(this.wmo.materials));
-      const aabb = groupInfos[i].bounding_box;
-      this.groupModelAABBs.push(new AABB(
-        aabb.min.x,
-        aabb.min.y,
-        aabb.min.z,
-        aabb.max.x,
-        aabb.max.y,
-        aabb.max.z,
-      ));
+      const wowAABB = groupInfo.bounding_box;
+      const groupAABB = new AABB(
+        wowAABB.min.x,
+        wowAABB.min.y,
+        wowAABB.min.z,
+        wowAABB.max.x,
+        wowAABB.max.y,
+        wowAABB.max.z,
+      );
       this.groups.push(group);
       const ambientColors = new Map();
-      for (let wmoDef of wmoDefs) {
+      for (let wmoDef of this.wmoDefs) {
         ambientColors.set(wmoDef.doodadSet, group.getAmbientColor(this.wmo, wmoDef.doodadSet));
+        const groupDefModelAABB = new AABB();
+        groupDefModelAABB.transform(groupAABB, wmoDef.modelMatrix)
+        this.groupDefModelAABBs.set([group.fileId, wmoDef.uniqueId], groupDefModelAABB);
       }
       this.groupAmbientColors.push(ambientColors);
     }
@@ -332,13 +361,12 @@ class WmoStructureRenderer {
 
   public setCulling(view: View, def: WmoDefinition) {
     for (let i=0; i<this.groups.length; i++) {
-      const worldAABB = new AABB();
-      worldAABB.transform(this.groupModelAABBs[i], def.modelMatrix);
+      const group = this.groups[i];
+      const worldAABB = this.groupDefModelAABBs.get([group.fileId, def.uniqueId])!;
       if (DEBUG_DRAW_BOUNDING_BOXES) {
         drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, worldAABB);
       }
       let distance = view.cameraDistanceToWorldSpaceAABB(worldAABB);
-      const group = this.groups[i];
       if (group.flags.exterior) {
         const closeEnough = distance < MAX_EXTERIOR_WMO_RENDER_DIST;
         const visible = closeEnough && view.frustum.contains(worldAABB);
@@ -402,17 +430,13 @@ class WmoStructureRenderer {
 class WmoRenderer {
   public wmoProgram: GfxProgram;
   public modelProgram: GfxProgram;
-  public wmoIdToStructureRenderer: Map<number, WmoStructureRenderer>;
-  public wmoIdToDoodadRenderer: Map<number, DoodadRenderer>;
-  public wmoIdToWmoDefs: Map<number, WmoDefinition[]>;
-  public wmoIdToVisible: Map<number, boolean>;
+  public wmoIdToStructureRenderer: Map<number, WmoStructureRenderer> = new Map();
+  public wmoIdToDoodadRenderer: Map<number, DoodadRenderer> = new Map();
+  public wmoIdToWmoDefs: Map<number, WmoDefinition[]> = new Map();
 
   constructor(device: GfxDevice, wmoDefs: WmoDefinition[], textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
     this.wmoProgram = renderHelper.renderCache.createProgram(new WmoProgram());
     this.modelProgram = renderHelper.renderCache.createProgram(new ModelProgram());
-    this.wmoIdToStructureRenderer = new Map();
-    this.wmoIdToDoodadRenderer = new Map();
-    this.wmoIdToWmoDefs = new Map();
 
     for (let wmoDef of wmoDefs) {
       let defs = this.wmoIdToWmoDefs.get(wmoDef.wmoId);
@@ -427,7 +451,7 @@ class WmoRenderer {
       const wmo = wowCache.wmos.get(wmoId)!;
       this.wmoIdToStructureRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, wmoDefs, textureCache, renderHelper, wowCache));
       const doodads = wmo.wmo.doodad_defs.map(def => DoodadData.fromWmoDoodad(def, wmo));
-      this.wmoIdToDoodadRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, renderHelper, wowCache));
+      this.wmoIdToDoodadRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, renderHelper, wowCache, wmoDefs));
     }
   }
 
@@ -645,6 +669,7 @@ class WdtScene implements Viewer.SceneGfx {
   public time: number = 1400;
 
   constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private wowCache: WowCache, private lightDb: LightDatabase) {
+    console.time('WdtScene construction');
     this.textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
@@ -663,6 +688,7 @@ class WdtScene implements Viewer.SceneGfx {
     }
 
     this.skyboxRenderer = new SkyboxRenderer(device, this.renderHelper);
+    console.timeEnd('WdtScene construction');
   }
 
   public addAdt(adt: AdtData) {

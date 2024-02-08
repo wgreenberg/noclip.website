@@ -5,7 +5,6 @@ use super::common::{ChunkedData, AABBox, Vec3};
 
 #[wasm_bindgen(js_name = "WowWdt", getter_with_clone)]
 pub struct Wdt {
-    data: Vec<u8>,
     pub header: Mphd,
     area_infos: Vec<AreaInfo>,
     map_filedata_ids: Vec<MapFileDataIDs>,
@@ -43,7 +42,6 @@ impl Wdt {
             return Err("WDT file has no map filedata!".to_string());
         }
         Ok(Wdt {
-            data,
             header: header.ok_or("WDT has no header chunk!".to_string())?,
             area_infos,
             map_filedata_ids,

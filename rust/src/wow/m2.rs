@@ -1,6 +1,6 @@
 use deku::prelude::*;
 use deku::ctx::ByteSize;
-use js_sys::Uint8Array;
+use js_sys::{Array, Float32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 use crate::wow::common::ChunkedData;
 use crate::wow::animation::*;
@@ -9,8 +9,10 @@ use super::common::{
     WowArray,
     WowCharArray,
     AABBox,
+    Vec4,
     Vec3,
-    Vec2, Quat,
+    Vec2,
+    Quat,
 };
 
 // if it's an MD21 chunk, all pointers are relative to the end of that chunk
@@ -61,13 +63,115 @@ pub struct M2Header {
     blend_map_overrides: WowArray<u16>,
 }
 
+impl M2Header {
+    fn get_name(&self, m2_data: &[u8]) -> Result<String, String> {
+        self.name.to_string(m2_data)
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn get_materials(&self, m2_data: &[u8]) -> Result<Vec<M2Material>, String> {
+        self.materials.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn get_vertex_colors(&self, m2_data: &[u8]) -> Result<Vec<M2Color>, String> {
+        let colors = self.colors.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))?;
+
+        let mut result = Vec::with_capacity(colors.len());
+        for c in colors {
+            result.push(M2Color {
+                color: c.color.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+                alpha: c.alpha.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+            });
+        }
+        Ok(result)
+    }
+
+    fn get_texture_transforms(&self, m2_data: &[u8]) -> Result<Vec<M2TextureTransform>, String> {
+        let texture_transforms = self.texture_transforms.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))?;
+
+        let mut result = Vec::with_capacity(texture_transforms.len());
+        for tex in texture_transforms {
+            result.push(M2TextureTransform {
+                translation: tex.translation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+                rotation: tex.rotation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+                scaling: tex.scaling.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+            });
+        }
+        Ok(result)
+    }
+
+    fn get_bones(&self, m2_data: &[u8]) -> Result<Vec<M2CompBone>, String> {
+        let bones = self.bones.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))?;
+
+        let mut result = Vec::with_capacity(bones.len());
+        for bone in bones {
+            result.push(M2CompBone {
+                translation: bone.translation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+                rotation: bone.rotation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+                scaling: bone.scaling.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+                key_bone_id: bone.key_bone_id,
+                flags: bone.flags,
+                parent_bone: bone.parent_bone,
+                submesh_id: bone.submesh_id,
+                pivot: bone.pivot,
+            });
+        }
+        Ok(result)
+    }
+
+    fn get_texture_weights(&self, m2_data: &[u8]) -> Result<Vec<M2TextureWeight>, String> {
+        let weights = self.texture_weights.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))?;
+
+        let mut result = Vec::with_capacity(weights.len());
+        for weight in weights {
+            result.push(M2TextureWeight {
+                weights: weight.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+            });
+        }
+        Ok(result)
+    }
+
+    fn get_vertex_data(&self, m2_data: &[u8]) -> Result<Vec<u8>, String> {
+        let vertex_data_start = self.vertices.offset as usize;
+        let vertex_data_size = self.vertices.count as usize * M2::get_vertex_stride();
+        let vertex_data_end = vertex_data_start + vertex_data_size;
+        Ok(m2_data[vertex_data_start..vertex_data_end].to_vec())
+    }
+
+    fn get_texture_lookup_table(&self, m2_data: &[u8]) -> Result<Vec<u16>, String> {
+        self.texture_lookup_table.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn get_texture_transforms_lookup_table(&self, m2_data: &[u8]) -> Result<Vec<u16>, String> {
+        self.texture_transforms_lookup_table.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))
+    }
+
+    fn get_transparency_lookup_table(&self, m2_data: &[u8]) -> Result<Vec<u16>, String> {
+        self.transparency_lookup_table.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))
+    }
+}
+
 #[wasm_bindgen(js_name = "WowM2", getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct M2 {
-    data: Vec<u8>,
     header: M2Header,
     pub texture_ids: Vec<u32>,
     pub skin_ids: Vec<u32>,
+    pub name: String,
+    pub materials: Vec<M2Material>,
+    pub vertex_data: Vec<u8>,
+    texture_lookup_table: Vec<u16>,
+    texture_transforms_lookup_table: Vec<u16>,
+    transparency_lookup_table: Vec<u16>,
+    animation_manager: AnimationManager,
 }
 
 #[wasm_bindgen(js_class = "WowM2")]
@@ -90,11 +194,29 @@ impl M2 {
             }
         }
 
+        // M2 pointers are relative to the end of the MD21 block, which seems to
+        // always be 16 bytes in
+        let m2_data = &data[8..];
+        let animation_manager = AnimationManager::new(
+            header.global_sequence_durations.to_vec(m2_data).map_err(|e| format!("{:?}", e))?,
+            header.sequences.to_vec(m2_data).map_err(|e| format!("{:?}", e))?,
+            header.get_texture_weights(m2_data)?,
+            header.get_texture_transforms(m2_data)?,
+            header.get_vertex_colors(m2_data)?,
+            header.get_bones(m2_data)?
+        );
+
         Ok(M2 {
-            data,
-            header,
             texture_ids: txid.unwrap_or(vec![]),
             skin_ids: sfid.ok_or("M2 didn't have SKID chunk!".to_string())?,
+            animation_manager,
+            name: header.get_name(m2_data)?,
+            materials: header.get_materials(m2_data)?,
+            vertex_data: header.get_vertex_data(m2_data)?,
+            texture_lookup_table: header.get_texture_lookup_table(m2_data)?,
+            texture_transforms_lookup_table: header.get_texture_transforms_lookup_table(m2_data)?,
+            transparency_lookup_table: header.get_transparency_lookup_table(m2_data)?,
+            header,
         })
     }
 
@@ -102,93 +224,16 @@ impl M2 {
         self.header.bounding_box.clone()
     }
 
-    fn get_m2_data(&self) -> &[u8] {
-        // M2 pointers are relative to the end of the MD21 block, which seems to
-        // always be 16 bytes in
-        &self.data[8..]
+    pub fn lookup_texture(&self, index: usize) -> Option<u16> {
+        self.texture_lookup_table.get(index).copied()
     }
 
-    pub fn get_name(&self) -> Result<String, String> {
-        self.header.name.to_string(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))
+    pub fn lookup_texture_transform(&self, index: usize) -> Option<u16> {
+        self.texture_transforms_lookup_table.get(index).copied()
     }
 
-    pub fn get_materials(&self) -> Result<Vec<M2Material>, String> {
-        self.header.materials.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))
-    }
-
-    fn get_vertex_colors(&self) -> Result<Vec<M2Color>, String> {
-        let colors = self.header.colors.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))?;
-
-        let mut result = Vec::with_capacity(colors.len());
-        for c in colors {
-            result.push(M2Color {
-                color: c.color.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-                alpha: c.alpha.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-            });
-        }
-        Ok(result)
-    }
-
-    fn get_texture_transforms(&self) -> Result<Vec<M2TextureTransform>, String> {
-        let texture_transforms = self.header.texture_transforms.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))?;
-
-        let mut result = Vec::with_capacity(texture_transforms.len());
-        for tex in texture_transforms {
-            result.push(M2TextureTransform {
-                translation: tex.translation.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-                rotation: tex.rotation.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-                scaling: tex.scaling.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-            });
-        }
-        Ok(result)
-    }
-
-    fn get_bones(&self) -> Result<Vec<M2CompBone>, String> {
-        let bones = self.header.bones.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))?;
-
-        let mut result = Vec::with_capacity(bones.len());
-        for bone in bones {
-            result.push(M2CompBone {
-                translation: bone.translation.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-                rotation: bone.rotation.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-                scaling: bone.scaling.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-                key_bone_id: bone.key_bone_id,
-                flags: bone.flags,
-                parent_bone: bone.parent_bone,
-                submesh_id: bone.submesh_id,
-                pivot: bone.pivot,
-            });
-        }
-        Ok(result)
-    }
-
-    fn get_texture_weights(&self) -> Result<Vec<M2TextureWeight>, String> {
-        let weights = self.header.texture_weights.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))?;
-
-        let mut result = Vec::with_capacity(weights.len());
-        for weight in weights {
-            result.push(M2TextureWeight {
-                weights: weight.to_allocated(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-            });
-        }
-        Ok(result)
-    }
-
-    pub fn get_animation_manager(&self) -> Result<AnimationManager, String> {
-        Ok(AnimationManager::new(
-            self.header.global_sequence_durations.to_vec(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-            self.header.sequences.to_vec(self.get_m2_data()).map_err(|e| format!("{:?}", e))?,
-            self.get_texture_weights()?,
-            self.get_texture_transforms()?,
-            self.get_vertex_colors()?,
-            self.get_bones()?
-        ))
+    pub fn lookup_transparency(&self, index: usize) -> Option<u16> {
+        self.transparency_lookup_table.get(index).copied()
     }
 
     pub fn get_vertex_stride() -> usize {
@@ -196,26 +241,28 @@ impl M2 {
         12 + 4 + 4 + 12 + 2 * 8
     }
 
-    pub unsafe fn get_vertex_data(&self) -> Result<Vec<u8>, String> {
-        let vertex_data_start = self.header.vertices.offset as usize;
-        let vertex_data_size = self.header.vertices.count as usize * M2::get_vertex_stride();
-        let vertex_data_end = vertex_data_start + vertex_data_size;
-        Ok(self.get_m2_data()[vertex_data_start..vertex_data_end].to_vec())
+    pub fn get_num_texture_weights(&self) -> usize {
+        self.animation_manager.texture_weights.len()
     }
 
-    pub fn get_texture_lookup_table(&self) -> Result<Vec<u16>, String> {
-        self.header.texture_lookup_table.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))
-    }
-
-    pub fn get_texture_transforms_lookup_table(&self) -> Result<Vec<u16>, String> {
-        self.header.texture_transforms_lookup_table.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))
-    }
-
-    pub fn get_transparency_lookup_table(&self) -> Result<Vec<u16>, String> {
-        self.header.transparency_lookup_table.to_vec(self.get_m2_data())
-            .map_err(|e| format!("{:?}", e))
+    pub fn update_animations(
+        &mut self, delta_time: f64,
+        transparencies: &Float32Array,
+        texture_translations: &Array,
+        texture_rotations: &Array,
+        texture_scalings: &Array,
+        colors: &Array
+    ) {
+        self.animation_manager.update(delta_time);
+        transparencies.copy_from(&self.animation_manager.calculated_transparencies);
+        for i in 0..self.animation_manager.texture_transforms.len() {
+            texture_translations.set(i as u32, self.animation_manager.calculated_texture_translations[i].into());
+            texture_rotations.set(i as u32, self.animation_manager.calculated_texture_rotations[i].into());
+            texture_scalings.set(i as u32, self.animation_manager.calculated_texture_scalings[i].into());
+        }
+        for i in 0..self.animation_manager.colors.len() {
+            colors.set(i as u32, self.animation_manager.calculated_colors[i].into());
+        }
     }
 }
 
@@ -303,20 +350,6 @@ mod tests {
         //let data = std::fs::read("../data/wow/world/generic/passivedoodads/particleemitters/druidwisp01.m2").unwrap();
         let data = std::fs::read("../data/wow/world/kalimdor/barrens/passivedoodads/waterwheel/orc_waterwheel.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
-        let m2 = M2::new(data).unwrap();
-        let mut animation_manager = m2.get_animation_manager().unwrap();
-        dbg!(&animation_manager);
-        animation_manager.update(6660.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        animation_manager.update(20.0);
-        dbg!(animation_manager.calculated_texture_translations);
+        let mut m2 = M2::new(data).unwrap();
     }
 }

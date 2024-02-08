@@ -46,12 +46,12 @@ pub struct SkinProfile {
     pub bone_count_max: u32,
 }
 
-#[wasm_bindgen(js_name = "WowSkin")]
+#[wasm_bindgen(js_name = "WowSkin", getter_with_clone)]
 #[derive(Debug)]
 pub struct Skin {
-    data: Vec<u8>,
-    #[wasm_bindgen(getter_with_clone)] pub submeshes: Vec<SkinSubmesh>,
-    #[wasm_bindgen(getter_with_clone)] pub batches: Vec<ModelBatch>,
+    pub submeshes: Vec<SkinSubmesh>,
+    pub batches: Vec<ModelBatch>,
+    pub indices: Vec<u16>,
     profile: SkinProfile,
 }
 
@@ -64,24 +64,23 @@ impl Skin {
             .map_err(|e| format!("{:?}", e))?;
         let submeshes = profile.submeshes.to_vec(&data)
             .map_err(|e| format!("{:?}", e))?;
+
+        let global_vertex_indices = profile.vertices.to_vec(&data[..])
+            .map_err(|e| format!("{:?}", e))?;
+        let local_vertex_indices = profile.indices.to_vec(&data[..])
+            .map_err(|e| format!("{:?}", e))?;
+        let mut indices = Vec::with_capacity(local_vertex_indices.len());
+
+        for local_idx in local_vertex_indices {
+            indices.push(global_vertex_indices[local_idx as usize]);
+        }
+
         Ok(Skin {
-            data,
             batches,
             submeshes,
             profile,
+            indices,
         })
-    }
-
-    pub fn get_indices(&self) -> Result<Vec<u16>, String> {
-        let global_vertex_indices = self.profile.vertices.to_vec(&self.data[..])
-            .map_err(|e| format!("{:?}", e))?;
-        let local_vertex_indices = self.profile.indices.to_vec(&self.data[..])
-            .map_err(|e| format!("{:?}", e))?;
-        let mut result = Vec::with_capacity(local_vertex_indices.len());
-        for local_idx in local_vertex_indices {
-            result.push(global_vertex_indices[local_idx as usize]);
-        }
-        Ok(result)
     }
 }
 

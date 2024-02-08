@@ -162,7 +162,6 @@ impl M2Color {
     }
 }
 
-#[wasm_bindgen(js_name = "WowM2AnimationState", getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct AnimationState {
     pub animation_index: Option<usize>,
@@ -203,26 +202,25 @@ impl AnimationState {
     }
 }
 
-#[wasm_bindgen(js_name = "WowM2AnimationManager", getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct AnimationManager {
-    global_sequence_durations: Vec<u32>,
-    global_sequence_times: Vec<f64>,
-    sequences: Vec<M2Sequence>,
-    texture_weights: Vec<M2TextureWeight>,
-    texture_transforms: Vec<M2TextureTransform>,
+    pub global_sequence_durations: Vec<u32>,
+    pub global_sequence_times: Vec<f64>,
+    pub sequences: Vec<M2Sequence>,
+    pub texture_weights: Vec<M2TextureWeight>,
+    pub texture_transforms: Vec<M2TextureTransform>,
     pub current_animation: AnimationState,
     pub next_animation: AnimationState,
     rng: LcgRng,
-    blend_factor: f32,
-    colors: Vec<M2Color>,
-    bones: Vec<M2CompBone>,
+    pub blend_factor: f32,
+    pub colors: Vec<M2Color>,
+    pub bones: Vec<M2CompBone>,
 
-    pub calculated_transparencies: Option<Vec<f32>>,
-    pub calculated_texture_translations: Option<Vec<Vec3>>,
-    pub calculated_texture_rotations: Option<Vec<Quat>>,
-    pub calculated_texture_scalings: Option<Vec<Vec3>>,
-    pub calculated_colors: Option<Vec<Vec4>>,
+    pub calculated_transparencies: Vec<f32>,
+    pub calculated_texture_translations: Vec<Vec3>,
+    pub calculated_texture_rotations: Vec<Quat>,
+    pub calculated_texture_scalings: Vec<Vec3>,
+    pub calculated_colors: Vec<Vec4>,
 }
 
 // rust-only
@@ -240,6 +238,13 @@ impl AnimationManager {
         let mut rng = LcgRng::new(1312);
         current_animation.calculate_animation_repeats(&mut rng);
         let next_animation = AnimationState::new(None);
+
+        let calculated_transparencies: Vec<f32> = Vec::with_capacity(texture_weights.len());
+        let calculated_texture_translations: Vec<Vec3> = Vec::with_capacity(texture_transforms.len());
+        let calculated_texture_rotations: Vec<Quat> = Vec::with_capacity(texture_transforms.len());
+        let calculated_texture_scalings: Vec<Vec3> = Vec::with_capacity(texture_transforms.len());
+        let calculated_colors: Vec<Vec4> = Vec::with_capacity(colors.len());
+
         AnimationManager {
             global_sequence_durations,
             current_animation,
@@ -252,12 +257,11 @@ impl AnimationManager {
             bones,
             global_sequence_times,
             rng,
-
-            calculated_colors: None,
-            calculated_texture_translations: None,
-            calculated_texture_rotations: None,
-            calculated_texture_scalings: None,
-            calculated_transparencies: None,
+            calculated_transparencies,
+            calculated_texture_translations,
+            calculated_texture_rotations,
+            calculated_texture_scalings,
+            calculated_colors,
         }
     }
 
@@ -359,7 +363,6 @@ impl AnimationManager {
     }
 }
 
-#[wasm_bindgen(js_class = "WowM2AnimationManager")]
 impl AnimationManager {
     pub fn update(&mut self, delta_time: f64) {
         self.current_animation.animation_time += delta_time;
@@ -451,9 +454,9 @@ impl AnimationManager {
             }
         }
 
-        let mut colors = Vec::new();
         let default_color = Vec3::new(1.0);
         let default_alpha = 0x7fff;
+        self.calculated_colors.clear();
         for color in &self.colors {
             let mut rgba = Vec4::new(0.0);
             let rgb = self.get_current_value_with_blend(&color.color, default_color);
@@ -461,29 +464,24 @@ impl AnimationManager {
             rgba.y = rgb.y;
             rgba.z = rgb.z;
             rgba.w = self.get_current_value_with_blend(&color.alpha, default_alpha) as f32 / 0x7fff as f32;
-            colors.push(rgba);
+            self.calculated_colors.push(rgba);
         }
-        self.calculated_colors = Some(colors);
 
-        let mut transparencies = Vec::new();
+        self.calculated_transparencies.clear();
         for weight in &self.texture_weights {
-            transparencies.push(self.get_current_value_with_blend(&weight.weights, default_alpha) as f32 / 0x7fff as f32);
+            self.calculated_transparencies.push(self.get_current_value_with_blend(&weight.weights, default_alpha) as f32 / 0x7fff as f32);
         }
-        self.calculated_transparencies = Some(transparencies);
 
-        let mut translations = Vec::new();
+        self.calculated_texture_translations.clear();
         let default_translation = Vec3::new(0.0);
-        let mut rotations = Vec::new();
+        self.calculated_texture_rotations.clear();
         let default_rotation = Quat { x: 1.0, y: 0.0, z: 0.0, w: 0.0 };
-        let mut scalings = Vec::new();
+        self.calculated_texture_scalings.clear();
         let default_scaling = Vec3::new(1.0);
         for transform in &self.texture_transforms {
-            translations.push(self.get_current_value_with_blend(&transform.translation, default_translation));
-            rotations.push(self.get_current_value_with_blend(&transform.rotation, default_rotation));
-            scalings.push(self.get_current_value_with_blend(&transform.scaling, default_scaling));
+            self.calculated_texture_translations.push(self.get_current_value_with_blend(&transform.translation, default_translation));
+            self.calculated_texture_rotations.push(self.get_current_value_with_blend(&transform.rotation, default_rotation));
+            self.calculated_texture_scalings.push(self.get_current_value_with_blend(&transform.scaling, default_scaling));
         }
-        self.calculated_texture_scalings = Some(scalings);
-        self.calculated_texture_translations = Some(translations);
-        self.calculated_texture_rotations = Some(rotations);
     }
 }

@@ -44,26 +44,12 @@ export function getFilePath(fileId: number): string {
 
 export type Constructor<T> = (data: Uint8Array) => T;
 
-// FIXME this is a memory leak
-let _fileCache: Map<number, any> = new Map();
 export async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher, constructor: Constructor<T>): Promise<T> {
-  if (_fileCache.has(fileId)) {
-    return _fileCache.get(fileId);
-  }
   const buf = await fetchDataByFileID(fileId, dataFetcher);
-  const file = constructor(buf);
-  _fileCache.set(fileId, file);
-  return file;
+  return constructor(buf);
 }
 
-let _fetchedIds: {[key: number]: number} = {};
 export async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
-  if (fileId in _fetchedIds) {
-    console.log(`dupe fetch (${_fetchedIds[fileId]} ${getFilePath(fileId)})`)
-    _fetchedIds[fileId]++;
-  } else {
-    _fetchedIds[fileId] = 1;
-  }
   const filePath = getFilePath(fileId);
   const buf = await dataFetcher.fetchData(`/wow/${filePath}`);
   return buf.createTypedArray(Uint8Array);
