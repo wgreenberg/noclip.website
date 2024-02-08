@@ -28,11 +28,13 @@ import { Frustum, AABB } from '../Geometry.js';
 import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram, SkyboxProgram, BaseProgram } from './program.js';
 import { ViewerRenderInput } from '../viewer.js';
 import { skyboxIndices, skyboxVertices } from './skybox.js';
+import { ModelRenderer, SkyboxRenderer, TerrainRenderer, WmoRenderer } from './render.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
 
-const DEBUG_DRAW_BOUNDING_BOXES = false;
+const DEBUG_DRAW_ADT_BOUNDING_BOXES = false;
+const DEBUG_DRAW_WMO_BOUNDING_BOXES = false;
 
 export const noclipSpaceFromAdtSpace = mat4.fromValues(
   0, 0, -1, 0,
@@ -56,8 +58,8 @@ export const noclipSpaceFromPlacementSpace = mat4.fromValues(
 )
 
 const MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
-const MAX_INTERIOR_WMO_RENDER_DIST = 100;
-const MAX_DOODAD_RENDER_DIST = 1000;
+const MAX_INTERIOR_WMO_RENDER_DIST = 1000;
+const MAX_ADT_DOODAD_RENDER_DIST = 1000;
 const MAX_ADT_RENDER_DIST = 10000;
 
 export const adtSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
@@ -108,561 +110,69 @@ class View {
     }
 }
 
-class ModelRenderer {
-  private skinData: SkinData[] = [];
-  private vertexBuffer: GfxVertexBufferDescriptor;
-  private indexBuffers: GfxIndexBufferDescriptor[] = [];
-  private inputLayout: GfxInputLayout;
-  public visible: boolean = true;
-
-  constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache, private wowCache: WowCache) {
-    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-      { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
-      { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
-      { location: ModelProgram.a_TexCoord0, bufferIndex: 0, bufferByteOffset: 32, format: GfxFormat.F32_RG, },
-      { location: ModelProgram.a_TexCoord1, bufferIndex: 0, bufferByteOffset: 40, format: GfxFormat.F32_RG, },
-    ];
-    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-      { byteStride: rust.WowM2.get_vertex_stride(), frequency: GfxVertexBufferFrequency.PerVertex, },
-    ];
-    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
-    this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-
-    this.vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.model.m2.vertex_data.buffer),
-      byteOffset: 0,
-    };
-
-    for (let skin of this.model.skins) {
-      const skinData = new SkinData(skin, this.model);
-      this.indexBuffers.push({
-        buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, skinData.indexBuffer.buffer),
-        byteOffset: 0,
-      });
-      this.skinData.push(skinData);
-    }
-  }
-
-  public update(viewer: ViewerRenderInput) {
-    if (this.visible) {
-      this.model.updateAnimation(viewer.deltaTime);
-    }
-  }
-
-  public isDrawable(): boolean {
-    let nBatches = 0;
-    for (let skinData of this.skinData) {
-      nBatches += skinData.batches.length;
-    }
-    return nBatches > 0;
-  }
-
-  public prepareToRenderModelRenderer(renderInstManager: GfxRenderInstManager, numInstances: number): void {
-    for (let i=0; i<this.skinData.length; i++) {
-      const skinData = this.skinData[i];
-      const indexBuffer = this.indexBuffers[i];
-      for (let renderPass of skinData.renderPasses) {
-        let renderInst = renderInstManager.newRenderInst();
-        renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
-        renderPass.setMegaStateFlags(renderInst);
-        renderInst.drawIndexesInstanced(renderPass.submesh.index_count, numInstances, renderPass.submesh.index_start);
-        const mappings = [renderPass.tex0, renderPass.tex1, renderPass.tex2, renderPass.tex3]
-          .map(tex => tex === null ? null : this.textureCache.getTextureMapping(tex, this.wowCache.blps.get(tex)!));
-        renderInst.setAllowSkippingIfPipelineNotReady(false);
-        renderInst.setSamplerBindingsFromTextureMappings(mappings);
-        renderPass.setModelParams(renderInst);
-        renderInstManager.submitRenderInst(renderInst);
-      }
-    }
-  }
-  
-  public destroy(device: GfxDevice): void {
-    device.destroyBuffer(this.vertexBuffer.buffer);
-    for (let indexBuffer of this.indexBuffers) {
-      device.destroyBuffer(indexBuffer.buffer);
-    }
-  }
-}
-
-interface Stringy {
-  toString: () => string;
-}
-
-class StringyMap<K extends Stringy, V> {
-  private inner: Map<string, V> = new Map();
-
-  public set(key: K, value: V) {
-    this.inner.set(key.toString(), value);
-  }
-
-  public get(key: K) {
-    return this.inner.get(key.toString());
-  }
-}
-
-class DoodadRenderer {
-  public modelIdsToDoodads: Map<number, DoodadData[]>;
-  public modelIdsToModelRenderers: Map<number, ModelRenderer>;
-  private doodadDefAABBs: StringyMap<[number, number], AABB> = new StringyMap();
-
-  constructor(device: GfxDevice, textureCache: TextureCache, doodads: DoodadData[], renderHelper: GfxRenderHelper, private wowCache: WowCache, wmoDefs?: WmoDefinition[]) {
-    this.modelIdsToDoodads = new Map();
-    this.modelIdsToModelRenderers = new Map();
-    for (let i=0; i<doodads.length; i++) {
-      const doodad = doodads[i];
-      if (wmoDefs) {
-        for (let def of wmoDefs) {
-          const worldAABB = new AABB();
-          worldAABB.transform(doodad.worldAABB, def.modelMatrix);
-          this.doodadDefAABBs.set([i, def.uniqueId], worldAABB);
-        }
-      }
-      let doodadArray = this.modelIdsToDoodads.get(doodad.modelId)
-      if (doodadArray) {
-        doodadArray.push(doodad);
-      } else {
-        this.modelIdsToDoodads.set(doodad.modelId, [doodad]);
-      }
-    }
-
-    for (let [modelId, doodads] of this.modelIdsToDoodads.entries()) {
-      const modelData = this.wowCache.models.get(modelId);
-      if (!modelData) {
-        throw new Error(`couldn't find model with id ${modelId}`)
-      }
-      for (let doodad of doodads) {
-        doodad.setBoundingBoxFromModel(modelData);
-      }
-      this.modelIdsToModelRenderers.set(modelId, new ModelRenderer(device, modelData, renderHelper, textureCache, this.wowCache));
-    }
-  }
-
-  public setCulling(view: View, def?: WmoDefinition) {
-    // for (let doodads of this.modelIdsToDoodads.values()) {
-    //   for (let i=0; i<doodads.length; i++) {
-    //     const doodad = doodads[i];
-    //     let worldAABB = doodad.worldAABB;
-    //     if (def) {
-    //       // FIXME this is causing all wmo models to be invisible
-    //       worldAABB = this.doodadDefAABBs.get([i, def.uniqueId])!;
-    //     }
-    //     if (DEBUG_DRAW_BOUNDING_BOXES) {
-    //       drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, worldAABB);
-    //     }
-    //     const closeEnough = view.cameraDistanceToWorldSpaceAABB(worldAABB) < MAX_DOODAD_RENDER_DIST;
-    //     doodad.visible = closeEnough && view.frustum.contains(worldAABB);
-    //   }
-    // }
-  }
-
-  public update(viewer: ViewerRenderInput) {
-    for (let modelRenderer of this.modelIdsToModelRenderers.values()) {
-      modelRenderer.update(viewer);
-    }
-  }
-
-  public prepareToRenderDoodadRenderer(renderInstManager: GfxRenderInstManager, parentModelMatrix: mat4 | null): void {
-    for (let [modelId, doodads] of this.modelIdsToDoodads) {
-      const modelRenderer = this.modelIdsToModelRenderers.get(modelId)!;
-      if (!modelRenderer.isDrawable() || !modelRenderer.visible) continue;
-
-      const visibleDoodads = doodads.filter(d => d.visible);
-
-      const template = renderInstManager.pushTemplateRenderInst();
-
-      for (let doodads of chunk(visibleDoodads, MAX_DOODAD_INSTANCES)) {
-        let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, 16 * MAX_DOODAD_INSTANCES);
-        const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
-        for (let doodad of doodads) {
-          if (parentModelMatrix) {
-            const combinedModelMatrix = mat4.mul(mat4.create(), parentModelMatrix, doodad.modelMatrix);
-            offs += fillMatrix4x4(mapped, offs, combinedModelMatrix);
-          } else {
-            offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
-          }
-        }
-        modelRenderer.prepareToRenderModelRenderer(renderInstManager, doodads.length);
-      }
-      renderInstManager.popTemplateRenderInst();
-    }
-  }
-
-  public destroy(device: GfxDevice): void {
-    for (let modelRenderer of this.modelIdsToModelRenderers.values()) {
-      modelRenderer.destroy(device);
-    }
-  }
-}
-
-function chunk<T>(arr: T[], chunkSize: number): T[][] {
-  const ret: T[][] = [];
-  for (let i = 0; i < arr.length; i += chunkSize)
-      ret.push(arr.slice(i, i + chunkSize));
-  return ret;
-}
-
-class WmoStructureRenderer {
-  private inputLayouts: GfxInputLayout[] = [];
-  private vertexBuffers: GfxVertexBufferDescriptor[][] = [];
-  private indexBuffers: GfxIndexBufferDescriptor[] = [];
-  private groups: WmoGroupData[] = [];
-  private groupAmbientColors: Map<number, vec4>[] = []; // for each group, a map of doodadSetId to ambient color
-  private groupDefModelAABBs: StringyMap<[number, number], AABB> = new StringyMap();
-  public batches: WmoBatchData[][] = [];
-  public visible = true;
-
-  constructor(device: GfxDevice, private wmo: WmoData, private wmoDefs: WmoDefinition[], private textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
-    for (let i=0; i<this.wmo.groups.length; i++) {
-      const group = this.wmo.groups[i];
-      const groupInfo = this.wmo.groupInfos[i];
-      this.inputLayouts.push(group.getInputLayout(renderHelper.renderCache));
-      this.vertexBuffers.push(group.getVertexBuffers(device));
-      this.indexBuffers.push(group.getIndexBuffer(device));
-      this.batches.push(group.getBatches(this.wmo.materials));
-      const wowAABB = groupInfo.bounding_box;
-      const groupAABB = new AABB(
-        wowAABB.min.x,
-        wowAABB.min.y,
-        wowAABB.min.z,
-        wowAABB.max.x,
-        wowAABB.max.y,
-        wowAABB.max.z,
-      );
-      this.groups.push(group);
-      const ambientColors = new Map();
-      for (let wmoDef of this.wmoDefs) {
-        ambientColors.set(wmoDef.doodadSet, group.getAmbientColor(this.wmo, wmoDef.doodadSet));
-        const groupDefModelAABB = new AABB();
-        groupDefModelAABB.transform(groupAABB, wmoDef.modelMatrix)
-        this.groupDefModelAABBs.set([group.fileId, wmoDef.uniqueId], groupDefModelAABB);
-      }
-      this.groupAmbientColors.push(ambientColors);
-    }
-  }
-
-  private getBatchTextureMapping(batch: WmoBatchData): (TextureMapping | null)[] {
-    const mappings = []
-    for (let blpId of [batch.material.texture_1, batch.material.texture_2, batch.material.texture_3]) {
-      if (blpId === 0) {
-        mappings.push(this.textureCache.getAllWhiteTextureMapping());
-      } else {
-        const blp = this.wowCache.blps.get(blpId)!;
-        if (!blp) {
-          throw new Error(`couldn't find WMO BLP with id ${batch.material.texture_1}`);
-        }
-        const wrap = !(batch.materialFlags.clamp_s || batch.materialFlags.clamp_t);
-        mappings.push(this.textureCache.getTextureMapping(batch.material.texture_1, blp, undefined, undefined, {
-          wrap: wrap,
-        }));
-      }
-    }
-    return mappings;
-  }
-
-  public setCulling(view: View, def: WmoDefinition) {
-    for (let i=0; i<this.groups.length; i++) {
-      const group = this.groups[i];
-      const worldAABB = this.groupDefModelAABBs.get([group.fileId, def.uniqueId])!;
-      if (DEBUG_DRAW_BOUNDING_BOXES) {
-        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, worldAABB);
-      }
-      let distance = view.cameraDistanceToWorldSpaceAABB(worldAABB);
-      if (group.flags.exterior) {
-        const closeEnough = distance < MAX_EXTERIOR_WMO_RENDER_DIST;
-        const visible = closeEnough && view.frustum.contains(worldAABB);
-        def.groupIdToVisibility.set(group.fileId, { visible });
-      } else {
-        // TODO: portal culling
-        const closeEnough = distance < MAX_INTERIOR_WMO_RENDER_DIST;
-        const visible = closeEnough && view.frustum.contains(worldAABB);
-        def.groupIdToVisibility.set(group.fileId, { visible });
-      }
-    }
-  }
-
-  public prepareToRenderWmoStructure(renderInstManager: GfxRenderInstManager, def: WmoDefinition) {
-    if (!this.visible) return;
-    const template = renderInstManager.pushTemplateRenderInst();
-    for (let i=0; i<this.vertexBuffers.length; i++) {
-      const group = this.groups[i];
-      if (!def.isWmoGroupVisible(group.fileId)) continue;
-      const ambientColor = this.groupAmbientColors[i].get(def.doodadSet)!;
-      const applyInteriorLight = group.flags.interior && !group.flags.exterior_lit;
-      const applyExteriorLight = true;
-      template.setVertexInput(this.inputLayouts[i], this.vertexBuffers[i], this.indexBuffers[i]);
-      for (let batch of this.batches[i]) {
-        if (!batch.visible) continue;
-        const renderInst = renderInstManager.newRenderInst();
-        let offset = renderInst.allocateUniformBuffer(WmoProgram.ub_BatchParams, 4 * 4);
-        const uniformBuf = renderInst.mapUniformBufferF32(WmoProgram.ub_BatchParams);
-        offset += fillVec4(uniformBuf, offset,
-          batch.vertexShader,
-          batch.pixelShader,
-          0,
-          0
-        );
-        offset += fillVec4(uniformBuf, offset,
-          batch.material.blend_mode,
-          applyInteriorLight ? 1 : 0,
-          applyExteriorLight ? 1 : 0,
-          0
-        );
-        offset += fillVec4v(uniformBuf, offset, ambientColor);
-        offset += fillVec4v(uniformBuf, offset, [0, 0, 0, 0]);
-        batch.setMegaStateFlags(renderInst);
-        const textureMappings = this.getBatchTextureMapping(batch);
-        renderInst.setSamplerBindingsFromTextureMappings(textureMappings);
-        renderInst.drawIndexes(batch.indexCount, batch.indexStart);
-        renderInstManager.submitRenderInst(renderInst);
-      }
-    }
-    renderInstManager.popTemplateRenderInst();
-  }
-
-  public destroy(device: GfxDevice) {
-    for (let i=0; i<this.vertexBuffers.length; i++) {
-      this.vertexBuffers[i].forEach(buf => device.destroyBuffer(buf.buffer));
-      device.destroyBuffer(this.indexBuffers[i].buffer);
-    }
-  }
-}
-
-class WmoRenderer {
-  public wmoProgram: GfxProgram;
-  public modelProgram: GfxProgram;
-  public wmoIdToStructureRenderer: Map<number, WmoStructureRenderer> = new Map();
-  public wmoIdToDoodadRenderer: Map<number, DoodadRenderer> = new Map();
-  public wmoIdToWmoDefs: Map<number, WmoDefinition[]> = new Map();
-
-  constructor(device: GfxDevice, wmoDefs: WmoDefinition[], textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
-    this.wmoProgram = renderHelper.renderCache.createProgram(new WmoProgram());
-    this.modelProgram = renderHelper.renderCache.createProgram(new ModelProgram());
-
-    for (let wmoDef of wmoDefs) {
-      let defs = this.wmoIdToWmoDefs.get(wmoDef.wmoId);
-      if (defs) {
-        defs.push(wmoDef);
-      } else {
-        this.wmoIdToWmoDefs.set(wmoDef.wmoId, [wmoDef]);
-      }
-    }
-
-    for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
-      const wmo = wowCache.wmos.get(wmoId)!;
-      this.wmoIdToStructureRenderer.set(wmo.fileId, new WmoStructureRenderer(device, wmo, wmoDefs, textureCache, renderHelper, wowCache));
-      const doodads = wmo.wmo.doodad_defs.map(def => DoodadData.fromWmoDoodad(def, wmo));
-      this.wmoIdToDoodadRenderer.set(wmo.fileId, new DoodadRenderer(device, textureCache, doodads, renderHelper, wowCache, wmoDefs));
-    }
-  }
-
-  public update(viewer: ViewerRenderInput) {
-    for (let doodadRenderer of this.wmoIdToDoodadRenderer.values()) {
-      doodadRenderer.update(viewer);
-    }
-  }
-
-  public setCulling(view: View) {
-    for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
-      for (let def of wmoDefs) {
-        this.wmoIdToStructureRenderer.get(wmoId)!.setCulling(view, def);
-        this.wmoIdToDoodadRenderer.get(wmoId)!.setCulling(view, def);
-      }
-    }
-  }
-
-  public prepareToRenderWmoRenderer(renderInstManager: GfxRenderInstManager, view: View) {
-    const template = renderInstManager.pushTemplateRenderInst();
-    template.setGfxProgram(this.wmoProgram);
-    template.setBindingLayouts(WmoProgram.bindingLayouts);
-    for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
-      let renderer = this.wmoIdToStructureRenderer.get(wmoId)!;
-      for (let def of wmoDefs) {
-        if (DEBUG_DRAW_BOUNDING_BOXES) {
-          drawWorldSpaceAABB(getDebugOverlayCanvas2D(), (window.main.scene as WdtScene).mainView.clipFromWorldMatrix, def.worldSpaceAABB);
-        }
-        if (!def.visible) continue;
-        let offs = template.allocateUniformBuffer(WmoProgram.ub_ModelParams, 2 * 16);
-        const mapped = template.mapUniformBufferF32(WmoProgram.ub_ModelParams);
-        offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
-        const normalMat = mat4.mul(mat4.create(), noclipSpaceFromAdtSpace, def.modelMatrix);
-        mat4.invert(normalMat, normalMat);
-        mat4.transpose(normalMat, normalMat);
-        offs += fillMatrix4x4(mapped, offs, normalMat);
-        renderer.prepareToRenderWmoStructure(renderInstManager, def);
-      }
-    }
-
-    template.setGfxProgram(this.modelProgram);
-    template.setBindingLayouts(ModelProgram.bindingLayouts);
-    for (let [wmoId, wmoDefs] of this.wmoIdToWmoDefs.entries()) {
-      let renderer = this.wmoIdToDoodadRenderer.get(wmoId)!;
-      for (let def of wmoDefs) {
-        if (!def.doodadsVisible) continue;
-        renderer.prepareToRenderDoodadRenderer(renderInstManager, def.modelMatrix);
-      }
-    }
-
-    renderInstManager.popTemplateRenderInst();
-  }
-
-  public destroy(device: GfxDevice) {
-    for (let renderer of this.wmoIdToDoodadRenderer.values()) {
-      renderer.destroy(device);
-    }
-    for (let renderer of this.wmoIdToStructureRenderer.values()) {
-      renderer.destroy(device);
-    }
-  }
-}
-
-interface VisibleGuy {
-  visible: boolean;
-  data: any;
-}
-
-class AdtTerrainRenderer {
-  private inputLayout: GfxInputLayout;
-  public indexBuffer: GfxIndexBufferDescriptor;
-  public vertexBuffer: GfxVertexBufferDescriptor;
-  public adtChunks: WowAdtChunkDescriptor[] = [];
-  public alphaTextureMappings: (TextureMapping | null)[] = [];
-  public chunkVisible: VisibleGuy[] = [];
-  public worldSpaceAABB: AABB;
-  public noclipSpaceAABB: AABB;
-  public visible: boolean = true;
-
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache, private wowCache: WowCache) {
-    const adtVboInfo = rust.WowAdt.get_vbo_info();
-    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-      { location: TerrainProgram.a_ChunkIndex, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_R },
-      { location: TerrainProgram.a_Position,   bufferIndex: 0, bufferByteOffset: adtVboInfo.vertex_offset, format: GfxFormat.F32_RGB, },
-      { location: TerrainProgram.a_Normal,     bufferIndex: 0, bufferByteOffset: adtVboInfo.normal_offset, format: GfxFormat.F32_RGB, },
-      { location: TerrainProgram.a_Color,      bufferIndex: 0, bufferByteOffset: adtVboInfo.color_offset, format: GfxFormat.F32_RGBA, },
-      { location: TerrainProgram.a_Lighting,   bufferIndex: 0, bufferByteOffset: adtVboInfo.lighting_offset, format: GfxFormat.F32_RGBA, },
-    ];
-    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-      { byteStride: adtVboInfo.stride, frequency: GfxVertexBufferFrequency.PerVertex },
-    ];
-    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
-    const cache = renderHelper.renderCache;
-    this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-    [this.vertexBuffer, this.indexBuffer, this.adtChunks, this.worldSpaceAABB] = this.adt.getBufsAndChunks(device);
-    this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
-    this.noclipSpaceAABB = new AABB();
-    this.noclipSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
-    for (let chunk of this.adtChunks) {
-      const alphaTex = chunk.alpha_texture;
-      this.chunkVisible.push({
-        visible: true,
-        data: {
-          alphaTex: alphaTex,
-          chunk: chunk,
-        }
-      });
-      if (alphaTex) {
-        this.alphaTextureMappings.push(textureCache.getAlphaTextureMapping(device, alphaTex));
-      } else {
-        this.alphaTextureMappings.push(textureCache.getAllBlackTextureMapping());
-      }
-    }
-  }
-
-  public setCulling(view: View) {
-    let distance = view.cameraDistanceToWorldSpaceAABB(this.worldSpaceAABB);
-    const isCloseEnough = distance < MAX_ADT_RENDER_DIST;
-    this.visible = view.frustum.contains(this.worldSpaceAABB) && isCloseEnough;
-  }
-
-  private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): (TextureMapping | null)[] {
-    let mapping: (TextureMapping | null)[] = [
-      null, null, null, null
-    ];
-    chunk.texture_layers.forEach((textureFileId, i) => {
-      const blp = this.wowCache.blps.get(textureFileId);
-      if (!blp) {
-        throw new Error(`couldn't find matching blp for fileID ${textureFileId}`);
-      }
-      mapping[i] = this.textureCache.getTextureMapping(textureFileId, blp);
-    })
-    return mapping;
-  }
-
-  public prepareToRenderAdtTerrain(renderInstManager: GfxRenderInstManager) {
-    if (!this.visible) return;
-    const template = renderInstManager.pushTemplateRenderInst();
-    template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
-    this.adtChunks.forEach((chunk, i) => {
-      if (this.chunkVisible[i].visible && chunk.index_count > 0) {
-        const renderInst = renderInstManager.newRenderInst();
-        const textureMapping = this.getChunkTextureMapping(chunk);
-        textureMapping.push(this.alphaTextureMappings[i])
-        renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
-        renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
-        renderInstManager.submitRenderInst(renderInst);
-      }
-    })
-    renderInstManager.popTemplateRenderInst();
-  }
-
-  public destroy(device: GfxDevice) {
-    device.destroyBuffer(this.vertexBuffer.buffer);
-    device.destroyBuffer(this.indexBuffer.buffer);
-  }
-}
-
-class SkyboxRenderer {
-  private inputLayout: GfxInputLayout;
-  private vertexBuffer: GfxVertexBufferDescriptor;
-  private indexBuffer: GfxIndexBufferDescriptor;
-  private skyboxProgram: GfxProgram;
-
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper) {
-    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-      { location: SkyboxProgram.a_Position,   bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
-      { location: SkyboxProgram.a_ColorIndex, bufferIndex: 0, bufferByteOffset: 3 * 4, format: GfxFormat.F32_R, },
-    ];
-    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-      { byteStride: 16, frequency: GfxVertexBufferFrequency.PerVertex, },
-    ];
-    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
-    this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-
-    this.skyboxProgram = renderHelper.renderCache.createProgram(new SkyboxProgram());
-
-    this.vertexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, skyboxVertices.buffer )}
-    const convertedIndices = convertToTriangleIndexBuffer(GfxTopology.TriStrips, skyboxIndices);
-    this.indexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, convertedIndices.buffer) };
-  }
-
-  public prepareToRenderSkybox(renderInstManager: GfxRenderInstManager) {
-    const renderInst = renderInstManager.newRenderInst();
-    renderInst.setGfxProgram(this.skyboxProgram);
-    renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
-    renderInst.setBindingLayouts(SkyboxProgram.bindingLayouts);
-    renderInst.drawIndexes(skyboxIndices.length, 0);
-    renderInstManager.submitRenderInst(renderInst);
-  }
-
-  public destroy(device: GfxDevice) {
-    device.destroyBuffer(this.vertexBuffer.buffer);
-    device.destroyBuffer(this.indexBuffer.buffer);
-    device.destroyInputLayout(this.inputLayout);
-  }
-}
-
 enum CullingState {
   Running,
   Paused,
   OneShot,
 }
 
+export class MapArray<K, V> {
+  public map: Map<K, V[]> = new Map();
+
+  constructor() {
+  }
+
+  public has(key: K): boolean {
+    return this.map.has(key);
+  }
+
+  public get(key: K): V[] {
+    const result = this.map.get(key);
+    if (result === undefined) {
+      return [];
+    }
+    return result;
+  }
+
+  public append(key: K, value: V) {
+    if (this.map.has(key)) {
+      this.map.get(key)!.push(value);
+    } else {
+      this.map.set(key, [value]);
+    }
+  }
+
+  public extend(key: K, values: V[]) {
+    if (this.map.has(key)) {
+      this.map.set(key, this.map.get(key)!.concat(values));
+    } else {
+      this.map.set(key, values);
+    }
+  }
+
+  public keys(): IterableIterator<K> {
+    return this.map.keys();
+  }
+
+  public values(): IterableIterator<V[]> {
+    return this.map.values();
+  }
+}
+
 class WdtScene implements Viewer.SceneGfx {
-  private terrainRenderers: AdtTerrainRenderer[] = [];
-  private doodadRenderers: DoodadRenderer[] = [];
-  private wmoRenderers: WmoRenderer[] = [];
+  private terrainRenderers: Map<number, TerrainRenderer> = new Map();
+  private modelRenderers: Map<number, ModelRenderer> = new Map();
+  private wmoRenderers: Map<number, WmoRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
+
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
+  private wmoProgram: GfxProgram;
+  private skyboxProgram: GfxProgram;
+
+  private modelIdToDoodads: MapArray<number, DoodadData> = new MapArray();
+  private wmoIdToDefs: MapArray<number, WmoDefinition> = new MapArray();
+
   public mainView = new View();
   private textureCache: TextureCache;
   public cullingState = CullingState.Running;
@@ -673,17 +183,15 @@ class WdtScene implements Viewer.SceneGfx {
     this.textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
+    this.wmoProgram = this.renderHelper.renderCache.createProgram(new WmoProgram());
+    this.skyboxProgram = this.renderHelper.renderCache.createProgram(new SkyboxProgram());
 
     if (this.world.globalWmo) {
-      this.wmoRenderers.push(new WmoRenderer(this.device,
-        [this.world.globalWmoDef!],
-        this.textureCache,
-        this.renderHelper,
-        this.wowCache
-      ));
+      this.setupWmoDef(this.world.globalWmoDef!);
+      this.setupWmo(this.world.globalWmo);
     } else {
       for (let adt of this.world.adts) {
-        this.addAdt(adt);
+        this.setupAdt(adt);
       }
     }
 
@@ -691,17 +199,71 @@ class WdtScene implements Viewer.SceneGfx {
     console.timeEnd('WdtScene construction');
   }
 
-  public addAdt(adt: AdtData) {
-    this.terrainRenderers.push(new AdtTerrainRenderer(this.device, this.renderHelper, adt, this.textureCache, this.wowCache));
-    const adtDoodads = adt.innerAdt.doodads.map(DoodadData.fromAdtDoodad);
-    this.doodadRenderers.push(new DoodadRenderer(this.device, this.textureCache, adtDoodads, this.renderHelper, this.wowCache));
-    this.wmoRenderers.push(new WmoRenderer(
+  public setupWmoDef(def: WmoDefinition) {
+    this.wmoIdToDefs.append(def.wmoId, def);
+    for (let doodad of def.doodads) {
+      this.modelIdToDoodads.append(doodad.modelId, doodad);
+    }
+  }
+
+  public setupAdt(adt: AdtData) {
+    if (this.terrainRenderers.has(adt.fileId)) {
+      return;
+    }
+
+    this.terrainRenderers.set(adt.fileId, new TerrainRenderer(
       this.device,
-      adt.wmoDefs,
+      this.renderHelper,
+      adt,
+      this.textureCache,
+      this.wowCache
+    ));
+    for (let modelId of adt.modelIds) {
+      this.createModelRenderer(modelId);
+    }
+    for (let wmoDef of adt.wmoDefs) {
+      this.setupWmo(this.wowCache.wmos.get(wmoDef.wmoId)!);
+      this.setupWmoDef(wmoDef);
+    }
+    for (let doodad of adt.doodads) {
+      this.modelIdToDoodads.append(doodad.modelId, doodad);
+    }
+  }
+
+  public setupWmo(wmo: WmoData) {
+    if (this.wmoRenderers.has(wmo.fileId)) {
+      return;
+    }
+
+    this.wmoRenderers.set(wmo.fileId, new WmoRenderer(this.device,
+      wmo,
       this.textureCache,
       this.renderHelper,
       this.wowCache
     ));
+    for (let modelId of wmo.modelIds) {
+      this.createModelRenderer(modelId);
+    }
+  }
+
+  // TODO
+  public teardownWmo(wmo: WmoData) {
+
+  }
+
+  // TODO
+  public teardownAdt(adt: AdtData) {
+
+  }
+
+  public createModelRenderer(modelId: number) {
+    if (modelId === 0) {
+      return;
+    }
+    if (!this.modelRenderers.has(modelId)) {
+      const model = this.wowCache.models.get(modelId)!;
+      this.modelRenderers.set(modelId, new ModelRenderer(this.device, model, this.renderHelper, this.textureCache, this.wowCache));
+    }
   }
 
   private shouldCull(): boolean {
@@ -727,59 +289,78 @@ class WdtScene implements Viewer.SceneGfx {
   }
 
   public update(viewer: ViewerRenderInput) {
-    for (let doodadRenderer of this.doodadRenderers) {
-      doodadRenderer.update(viewer);
+    for (let renderer of this.modelRenderers.values()) {
+      renderer.update(viewer);
     }
   }
 
-  public debugModelRenderers() {
-    const modelRenderers: ModelRenderer[] = [];
-    this.wmoRenderers.forEach(d => {
-      for (let r of d.wmoIdToDoodadRenderer.values()) {
-        for (let m of r.modelIdsToModelRenderers.values()) {
-          modelRenderers.push(m);
-        }
-      }
-    })
-    this.doodadRenderers.forEach(d => {
-      for (let m of d.modelIdsToModelRenderers.values()) {
-        modelRenderers.push(m);
-      }
-    })
+  // TODO
+  public cull() {
+    if (this.world.globalWmo) {
 
-    interactiveVizSliderSelect(modelRenderers);
-  }
-
-  public debugWmos() {
-    let defs: WmoDefinition[] = [];
-    for (let d of this.wmoRenderers) {
-      for (let ds of d.wmoIdToWmoDefs.values()) {
-        for (let def of ds) {
-          defs.push(def);
-        }
+    } else {
+      for (let adt of this.world.adts) {
+        this.cullAdt(adt);
       }
     }
-    interactiveVizSliderSelect(defs);
   }
 
-  public debugWmoStructureBatches() {
-    let batches: WmoBatchData[] = [];
-    for (let d of this.wmoRenderers) {
-      for (let s of d.wmoIdToStructureRenderer.values()) {
-        for (let b of s.batches) {
-          batches = batches.concat(b);
-        }
+  public cullWmoDef(def: WmoDefinition) {
+    if (DEBUG_DRAW_WMO_BOUNDING_BOXES) {
+      drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, def.worldSpaceAABB);
+      for (let groupAABB of def.groupDefAABBs.values()) {
+        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, groupAABB);
       }
     }
-    interactiveVizSliderSelect(batches);
+    const closeEnough = this.mainView.cameraDistanceToWorldSpaceAABB(def.worldSpaceAABB) < MAX_EXTERIOR_WMO_RENDER_DIST;
+    const wmoVisible = closeEnough && this.mainView.frustum.contains(def.worldSpaceAABB);
+    def.setVisible(wmoVisible);
+    if (!def.visible) {
+      return;
+    }
+    const wmo = this.wowCache.wmos.get(def.wmoId)!;
+    // TODO: portal culling
+    for (let [groupId, groupAABB] of def.groupDefAABBs.entries()) {
+      if (this.mainView.frustum.contains(groupAABB)) {
+        const group = wmo.groups.find(group => group.fileId === groupId)!;
+        const distance = this.mainView.cameraDistanceToWorldSpaceAABB(groupAABB);
+        if (group.flags.exterior) {
+          def.setGroupVisible(groupId, distance < MAX_EXTERIOR_WMO_RENDER_DIST);
+        } else {
+          def.setGroupVisible(groupId, distance < MAX_INTERIOR_WMO_RENDER_DIST);
+        }
+      } else {
+        def.setGroupVisible(groupId, false);
+      }
+    }
+  }
+
+  public cullAdt(adt: AdtData) {
+    if (DEBUG_DRAW_ADT_BOUNDING_BOXES) {
+      drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, adt.worldSpaceAABB);
+    }
+    adt.setVisible(this.mainView.frustum.contains(adt.worldSpaceAABB));
+    if (!adt.visible) {
+      return;
+    }
+    const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
+    if (distance > MAX_ADT_DOODAD_RENDER_DIST) {
+      for (let doodad of adt.doodads) {
+        doodad.setVisible(false);
+      }
+    }
+    for (let def of adt.wmoDefs) {
+      this.cullWmoDef(def);
+    }
   }
 
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
-    const template = this.renderHelper.pushTemplateRenderInst();
-    template.setBindingLayouts(TerrainProgram.bindingLayouts);
-    template.setGfxProgram(this.terrainProgram)
-
     this.mainView.setupFromViewerInput(viewerInput);
+
+    const template = this.renderHelper.pushTemplateRenderInst();
+    template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
+    template.setGfxProgram(this.skyboxProgram);
+    template.setBindingLayouts(SkyboxProgram.bindingLayouts);
 
     const viewMat = mat4.create();
     mat4.mul(viewMat, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
@@ -791,31 +372,32 @@ class WdtScene implements Viewer.SceneGfx {
       this.mainView.exteriorDirectColorDirection,
       this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.time)
     );
-
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
 
-    template.setMegaStateFlags({ cullMode: GfxCullMode.Back });
-    this.terrainRenderers.forEach(terrainRenderer => {
-      if (this.shouldCull())
-        terrainRenderer.setCulling(this.mainView);
-      terrainRenderer.prepareToRenderAdtTerrain(this.renderHelper.renderInstManager);
-    });
+    if (this.shouldCull()) {
+      this.cull();
+    }
+
+    template.setGfxProgram(this.terrainProgram);
+    template.setBindingLayouts(TerrainProgram.bindingLayouts);
+    for (let renderer of this.terrainRenderers.values()) {
+      renderer.prepareToRenderTerrain(this.renderHelper.renderInstManager);
+    }
+
+    template.setGfxProgram(this.wmoProgram);
+    template.setBindingLayouts(WmoProgram.bindingLayouts);
+    for (let [wmoId, renderer] of this.wmoRenderers.entries()) {
+      const defs = this.wmoIdToDefs.get(wmoId)!;
+      renderer.prepareToRenderWmo(this.renderHelper.renderInstManager, defs);
+    }
 
     template.setBindingLayouts(ModelProgram.bindingLayouts);
     template.setGfxProgram(this.modelProgram);
-    this.doodadRenderers.forEach(doodadRenderer => {
-      if (this.shouldCull())
-        doodadRenderer.setCulling(this.mainView);
-      doodadRenderer.update(viewerInput);
-      doodadRenderer.prepareToRenderDoodadRenderer(this.renderHelper.renderInstManager, null);
-    });
-
-    this.wmoRenderers.forEach(wmoRenderer => {
-      if (this.shouldCull())
-        wmoRenderer.setCulling(this.mainView)
-      wmoRenderer.update(viewerInput);
-      wmoRenderer.prepareToRenderWmoRenderer(this.renderHelper.renderInstManager, this.mainView);
-    });
+    for (let [modelId, renderer] of this.modelRenderers.entries()) {
+      const doodads = this.modelIdToDoodads.get(modelId)!;
+      renderer.update(viewerInput);
+      renderer.prepareToRenderModel(this.renderHelper.renderInstManager, doodads);
+    }
 
     this.renderHelper.renderInstManager.popTemplateRenderInst();
     this.renderHelper.prepareToRender();
@@ -854,15 +436,16 @@ class WdtScene implements Viewer.SceneGfx {
   }
 
   destroy(device: GfxDevice): void {
-    this.terrainRenderers.forEach(terrainRenderer => {
-      terrainRenderer.destroy(device);
-    });
-    this.doodadRenderers.forEach(modelRenderer => {
-      modelRenderer.destroy(device);
-    })
-    this.wmoRenderers.forEach(wmoRenderer => {
-      wmoRenderer.destroy(device);
-    })
+    for (let renderer of this.terrainRenderers.values()) {
+      renderer.destroy(device);
+    };
+    for (let renderer of this.modelRenderers.values()) {
+      renderer.destroy(device);
+    }
+    for (let renderer of this.wmoRenderers.values()) {
+      renderer.destroy(device);
+    }
+    this.skyboxRenderer.destroy(device);
   }
 }
 

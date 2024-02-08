@@ -61,6 +61,7 @@ pub struct Wmo {
     pub doodad_file_ids: Vec<u32>,
     pub fogs: Vec<Fog>,
     pub skybox_file_id: Option<u32>,
+    doodad_sets: Vec<DoodadSet>,
     global_ambient_volumes: Vec<AmbientVolume>,
     ambient_volumes: Vec<AmbientVolume>,
 }
@@ -82,6 +83,7 @@ impl Wmo {
         let mut gfid: Option<Vec<u32>> = None;
         let mut mavg: Vec<AmbientVolume> = Vec::new();
         let mut mavd: Vec<AmbientVolume> = Vec::new();
+        let mut mods: Vec<DoodadSet> = Vec::new();
         let mut mosi: Option<Mosi> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
@@ -94,6 +96,7 @@ impl Wmo {
                 b"DVAM" => mavd = chunk.parse_array(chunk_data, 0x30)?,
                 b"GVAM" => mavg = chunk.parse_array(chunk_data, 0x30)?,
                 b"ISOM" => mosi = Some(chunk.parse(chunk_data)?),
+                b"SDOM" => mods = chunk.parse_array(chunk_data, 0x20)?,
                 _ => println!("skipping {} chunk", chunk.magic_str()),
             }
         }
@@ -106,6 +109,7 @@ impl Wmo {
             fogs: mfog.ok_or("WMO file didn't have MFOG chunk")?,
             group_file_ids: gfid.ok_or("WMO file didn't have group ids")?,
             skybox_file_id: mosi.map(|m| m.skybox_file_id),
+            doodad_sets: mods,
             global_ambient_volumes: mavg,
             ambient_volumes: mavd,
         })
@@ -116,6 +120,34 @@ impl Wmo {
             Some(av) => av.get_color(),
             None => self.header.ambient_color,
         }
+    }
+
+    pub fn get_doodad_set_refs(&self, doodad_set_id: usize) -> Vec<u32> {
+        let default_set = &self.doodad_sets[0];
+        let mut refs: Vec<u32> = (default_set.start_index..default_set.start_index + default_set.count).collect();
+        if doodad_set_id != 0 {
+            let set = &self.doodad_sets[doodad_set_id];
+            refs.extend(set.start_index..set.start_index + set.count);
+        }
+        refs
+    }
+
+    pub fn get_doodad_set(&self, doodad_set_id: u16) -> Option<Vec<DoodadDef>> {
+        let mut doodads = self.get_default_doodad_set();
+        if doodad_set_id != 0 {
+            let set = self.doodad_sets.get(doodad_set_id as usize)?;
+            let start = set.start_index as usize;
+            let end = start + set.count as usize;
+            doodads.extend(self.doodad_defs[start..end].to_vec());
+        }
+        Some(doodads)
+    }
+
+    pub fn get_default_doodad_set(&self) -> Vec<DoodadDef> {
+        let default_set = &self.doodad_sets[0];
+        let start = default_set.start_index as usize;
+        let end = start + default_set.count as usize;
+        self.doodad_defs[start..end].to_vec()
     }
 }
 

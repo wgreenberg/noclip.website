@@ -6,7 +6,7 @@ import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBuff
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
-import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace } from "./scenes.js";
+import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray } from "./scenes.js";
 import { AABB } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
 import { BaseProgram, ModelProgram, WmoProgram } from "./program.js";
@@ -265,6 +265,7 @@ export class WmoBatchData {
 export class WmoGroupData {
   public group: WowWmoGroup;
   public flags: WowWmoGroupFlags;
+  public doodadRefs: Uint16Array;
   public visible = true;
 
   constructor(public fileId: number) {
@@ -346,6 +347,7 @@ export class WmoGroupData {
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     this.group = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmoGroup.new);
     this.flags = rust.WowWmoGroupFlags.new(this.group.header.flags);
+    this.doodadRefs = this.group.doodad_refs;
   }
 }
 
@@ -353,6 +355,7 @@ export class WmoData {
   public wmo: WowWmo;
   public groups: WmoGroupData[] = [];
   public groupInfos: WowWmoGroupInfo[] = [];
+  public groupAABBs: AABB[] = [];
   public blpIds: number[] = [];
   public materials: WowWmoMaterial[] = [];
   public modelIds: Uint32Array;
@@ -383,8 +386,19 @@ export class WmoData {
     }
 
     this.groupInfos = this.wmo.group_infos;
-    for (let gfid of this.wmo.group_file_ids) {
+    for (let i=0; i<this.wmo.group_file_ids.length; i++) {
+      const gfid = this.wmo.group_file_ids[i];
       this.groups.push(await cache.loadWmoGroup(gfid));
+      const groupInfo = this.groupInfos[i];
+      const wowAABB = groupInfo.bounding_box;
+      this.groupAABBs.push(new AABB(
+        wowAABB.min.x,
+        wowAABB.min.y,
+        wowAABB.min.z,
+        wowAABB.max.x,
+        wowAABB.max.y,
+        wowAABB.max.z,
+      ));
     }
   }
 }
@@ -587,14 +601,26 @@ export class ModelRenderPass {
 }
 
 export class WmoDefinition {
-  public modelMatrix: mat4;
-  public worldSpaceAABB: AABB;
-  public noclipSpaceAABB: AABB;
-  public visible: boolean;
-  public doodadsVisible: boolean;
+  public modelMatrix: mat4 = mat4.create();
+  public worldSpaceAABB: AABB = new AABB();
+  public groupDefAABBs: Map<number, AABB> = new Map();
+  public visible = true;
+  public doodads: DoodadData[] = [];
   public groupIdToVisibility: Map<number, { visible: boolean }> = new Map();
+  public groupIdToDoodadIndices: MapArray<number, number> = new MapArray();
+  public groupAmbientColors: Map<number, vec4> = new Map();
 
-  static fromAdtDefinition(def: WowAdtWmoDefinition) {
+  public setVisible(visible: boolean) {
+    this.visible = visible;
+    for (let doodad of this.doodads) {
+      doodad.setVisible(visible);
+    }
+    for (let groupId of this.groupIdToVisibility.keys()) {
+      this.groupIdToVisibility.set(groupId, { visible });
+    }
+  }
+
+  static fromAdtDefinition(def: WowAdtWmoDefinition, wmo: WmoData) {
     const scale = def.scale / 1024;
     const position: vec3 = [
       def.position.x - MAP_SIZE,
@@ -614,10 +640,10 @@ export class WmoDefinition {
       def.extents.max.y,
       def.extents.max.z - MAP_SIZE,
     )
-    return new WmoDefinition(def.name_id, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
+    return new WmoDefinition(def.name_id, wmo, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
   }
 
-  static fromGlobalDefinition(def: WowGlobalWmoDefinition) {
+  static fromGlobalDefinition(def: WowGlobalWmoDefinition, wmo: WmoData) {
     const scale = 1.0;
     const position: vec3 = [
       def.position.x - MAP_SIZE,
@@ -637,12 +663,11 @@ export class WmoDefinition {
       def.extents.max.y,
       def.extents.max.z - MAP_SIZE,
     )
-    return new WmoDefinition(def.name_id, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
+    return new WmoDefinition(def.name_id, wmo, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
   }
 
   // AABB should be in placement space
-  constructor(public wmoId: number, public uniqueId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3, extents: AABB) {
-    this.modelMatrix = mat4.create();
+  constructor(public wmoId: number, wmo: WmoData, public uniqueId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3, extents: AABB) {
     setMatrixTranslation(this.modelMatrix, position);
     mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
     mat4.rotateZ(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[2]);
@@ -651,12 +676,31 @@ export class WmoDefinition {
     mat4.mul(this.modelMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.modelMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
 
-    this.worldSpaceAABB = new AABB();
+    for (let i=0; i<wmo.groups.length; i++) {
+      const group = wmo.groups[i];
+      const groupAABB = new AABB();
+      groupAABB.transform(wmo.groupAABBs[i], this.modelMatrix);
+      this.groupDefAABBs.set(group.fileId, groupAABB);
+      this.groupAmbientColors.set(group.fileId, group.getAmbientColor(wmo, doodadSet));
+    }
+
+    for (let wmoDoodad of wmo.wmo.get_doodad_set(this.doodadSet)!) {
+      this.doodads.push(DoodadData.fromWmoDoodad(wmoDoodad, wmo.modelIds, this.modelMatrix));
+    }
+
+    // keep track of which doodads belong in which group for culling purposes
+    const doodadRefs = wmo.wmo.get_doodad_set_refs(this.doodadSet);
+    for (let group of wmo.groups) {
+      for (let ref of group.doodadRefs) {
+        const index = doodadRefs.indexOf(ref);
+        if (index !== -1) {
+          this.groupIdToDoodadIndices.append(group.fileId, index);
+        }
+      }
+    }
+
     this.worldSpaceAABB.transform(extents, adtSpaceFromPlacementSpace);
-    this.noclipSpaceAABB = new AABB();
-    this.noclipSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
     this.visible = true;
-    this.doodadsVisible = true;
   }
 
   public isWmoGroupVisible(groupFileId: number): boolean {
@@ -664,17 +708,38 @@ export class WmoDefinition {
     let visibility = this.groupIdToVisibility.get(groupFileId) || { visible: true };
     return visibility.visible;
   }
+
+  public setGroupVisible(groupId: number, visible: boolean) {
+    this.groupIdToVisibility.set(groupId, { visible: visible });
+    if (this.groupIdToDoodadIndices.has(groupId)) {
+      for (let index of this.groupIdToDoodadIndices.get(groupId)) {
+        this.doodads[index].setVisible(visible);
+      }
+    }
+  }
 }
 
 export class AdtData {
   public blpIds: number[] = [];
   public modelIds: number[] = [];
-  public wmoIds: number[] = [];
   public wmoDefs: WmoDefinition[] = [];
+  public doodads: DoodadData[] = [];
+  public worldSpaceAABB: AABB;
   public hasBigAlpha: boolean;
   public hasHeightTexturing: boolean;
+  public visible = true;
 
-  constructor(public innerAdt: WowAdt) {
+  constructor(public fileId: number, public innerAdt: WowAdt) {
+  }
+
+  public setVisible(visible: boolean) {
+    this.visible = visible;
+    for (let wmoDef of this.wmoDefs) {
+      wmoDef.setVisible(visible);
+    }
+    for (let doodad of this.doodads) {
+      doodad.setVisible(visible);
+    }
   }
   
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
@@ -686,13 +751,18 @@ export class AdtData {
         }
       }
 
+      for (let adtDoodad of this.innerAdt.doodads) {
+        this.doodads.push(DoodadData.fromAdtDoodad(adtDoodad));
+      }
+
       for (let modelId of this.innerAdt.get_model_file_ids()) {
         await cache.loadModel(modelId);
+        this.modelIds.push(modelId);
       }
 
       for (let wmoDef of this.innerAdt.map_object_defs) {
-        this.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef));
-        await cache.loadWmo(wmoDef.name_id);
+        const wmo = await cache.loadWmo(wmoDef.name_id);
+        this.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef, wmo));
       }
   }
 
@@ -705,7 +775,7 @@ export class AdtData {
     }
   }
 
-  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, WowAdtChunkDescriptor[], AABB] {
+  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, WowAdtChunkDescriptor[]] {
     const renderResult = this.innerAdt.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
     const vertexBuffer = {
       buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
@@ -717,7 +787,7 @@ export class AdtData {
     };
     const adtChunks = renderResult.chunks;
     const extents = renderResult.extents;
-    const aabb = new AABB(
+    this.worldSpaceAABB = new AABB(
       extents.min.x,
       extents.min.y,
       extents.min.z,
@@ -725,8 +795,9 @@ export class AdtData {
       extents.max.y,
       extents.max.z,
     );
-    aabb.transform(aabb, noclipSpaceFromAdtSpace);
-    return [vertexBuffer, indexBuffer, adtChunks, aabb];
+    this.worldSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
+    this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
+    return [vertexBuffer, indexBuffer, adtChunks];
   }
 }
 
@@ -735,6 +806,10 @@ export class DoodadData {
   public worldAABB = new AABB();
 
   constructor(public modelId: number, public modelMatrix: mat4, public color: number[] | null) {
+  }
+
+  public setVisible(visible: boolean) {
+    this.visible = visible;
   }
 
   static fromAdtDoodad(doodad: WowDoodad): DoodadData {
@@ -752,17 +827,18 @@ export class DoodadData {
     return new DoodadData(doodad.name_id, doodadMat, null);
   }
 
-  static fromWmoDoodad(doodad: WowDoodadDef, wmo: WmoData): DoodadData {
+  static fromWmoDoodad(doodad: WowDoodadDef, modelIds: Uint32Array, wmoDefModelMatrix: mat4): DoodadData {
     let position: vec3 = [doodad.position.x, doodad.position.y, doodad.position.z];
     let rotation: quat = [doodad.orientation.x, doodad.orientation.y, doodad.orientation.z, doodad.orientation.w];
     let scale = doodad.scale;
     let color = [doodad.color.g, doodad.color.b, doodad.color.r, doodad.color.a]; // BRGA
-    const modelId = wmo.modelIds[doodad.name_index];
+    const modelId = modelIds[doodad.name_index];
     let doodadMat = mat4.create();
     setMatrixTranslation(doodadMat, position);
     const rotMat = mat4.fromQuat(mat4.create(), rotation as quat);
     mat4.mul(doodadMat, doodadMat, rotMat);
     mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
+    mat4.mul(doodadMat, wmoDefModelMatrix, doodadMat);
     return new DoodadData(modelId, doodadMat, color);
   }
 
@@ -779,7 +855,7 @@ export class LazyWorldData {
   public globalWmoDef: WmoDefinition | null = null;
   private adtFileIds: WowMapFileDataIDs[] = [];
 
-  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 1) {
+  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 2) {
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
@@ -806,7 +882,7 @@ export class LazyWorldData {
     wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
     wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
-    const adt = new AdtData(wowAdt);
+    const adt = new AdtData(fileIDs.root_adt, wowAdt);
     await adt.load(dataFetcher, cache);
     adt.setWorldFlags(this.wdt);
 
@@ -839,9 +915,9 @@ export class WorldData {
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
     this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
     if (this.wdt.wdt_uses_global_map_obj()) {
-      const globalWmo = this.wdt.global_wmo!;
-      this.globalWmo = await cache.loadWmo(globalWmo.name_id);
-      this.globalWmoDef = WmoDefinition.fromGlobalDefinition(globalWmo);
+      const def = this.wdt.global_wmo!;
+      this.globalWmo = await cache.loadWmo(def.name_id);
+      this.globalWmoDef = WmoDefinition.fromGlobalDefinition(def, this.globalWmo);
     } else {
       const adtFileIDs = this.wdt.get_loaded_map_data();
       for (let fileIDs of adtFileIDs) {
@@ -853,7 +929,7 @@ export class WorldData {
         wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
         wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
-        const adt = new AdtData(wowAdt);
+        const adt = new AdtData(fileIDs.root_adt, wowAdt);
         await adt.load(dataFetcher, cache);
         adt.setWorldFlags(this.wdt);
 
