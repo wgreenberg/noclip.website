@@ -17,8 +17,8 @@ pub struct Adt {
 
 #[wasm_bindgen(js_class = "WowAdt")]
 impl Adt {
-    pub fn new(data: Vec<u8>) -> Result<Adt, String> {
-        let mut chunked_data = ChunkedData::new(&data);
+    pub fn new(data: &[u8]) -> Result<Adt, String> {
+        let mut chunked_data = ChunkedData::new(data);
         let mut map_chunks: Vec<MapChunk> = Vec::with_capacity(256);
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
@@ -47,8 +47,8 @@ impl Adt {
         self.doodads.iter().map(|doodad| doodad.name_id).collect()
     }
 
-    pub fn append_obj_adt(&mut self, data: Vec<u8>) -> Result<(), String> {
-        let mut chunked_data = ChunkedData::new(&data);
+    pub fn append_obj_adt(&mut self, data: &[u8]) -> Result<(), String> {
+        let mut chunked_data = ChunkedData::new(data);
         let mut map_chunk_idx = 0;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
@@ -67,8 +67,8 @@ impl Adt {
         Ok(())
     }
 
-    pub fn append_tex_adt(&mut self, data: Vec<u8>) -> Result<(), String> {
-        let mut chunked_data = ChunkedData::new(&data);
+    pub fn append_tex_adt(&mut self, data: &[u8]) -> Result<(), String> {
+        let mut chunked_data = ChunkedData::new(data);
         let mut map_chunk_idx = 0;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
@@ -82,6 +82,10 @@ impl Adt {
             }
         }
         Ok(())
+    }
+
+    pub fn append_lod_adt(&mut self, data: &[u8]) -> Result<(), String> {
+        todo!();
     }
 
     fn chunk_index_to_coords(index: usize) -> (f32, f32) {
@@ -589,8 +593,8 @@ mod tests {
     #[test]
     fn test() {
         let data = std::fs::read("D:/woof/wow uncasced/world/maps/tanarisinstance/tanarisinstance_29_27.adt").unwrap();
-        let mut adt = Adt::new(data).unwrap();
-        adt.append_tex_adt(std::fs::read("D:/woof/wow uncasced/world/maps/tanarisinstance/tanarisinstance_29_27_tex0.adt").unwrap()).unwrap();
+        let mut adt = Adt::new(&data).unwrap();
+        adt.append_tex_adt(&std::fs::read("D:/woof/wow uncasced/world/maps/tanarisinstance/tanarisinstance_29_27_tex0.adt").unwrap()).unwrap();
         for chunk in &adt.map_chunks {
             if let Some(map) = &chunk.alpha_map {
                 for layer in &chunk.texture_layers {

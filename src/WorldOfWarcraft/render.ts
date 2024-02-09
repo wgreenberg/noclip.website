@@ -168,7 +168,6 @@ export class WmoRenderer {
   }
 
   public prepareToRenderWmo(renderInstManager: GfxRenderInstManager, defs: WmoDefinition[]) {
-    // TODO do instance rendering here?
     for (let def of defs) {
       if (!def.visible) continue;
       assert(def.wmoId === this.wmo.fileId, `WmoRenderer handed a WmoDefinition that doesn't belong to it (${def.wmoId} != ${this.wmo.fileId}`);

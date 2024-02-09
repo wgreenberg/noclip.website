@@ -13,8 +13,8 @@ pub struct Wdt {
 
 #[wasm_bindgen(js_class = "WowWdt")]
 impl Wdt {
-    pub fn new(data: Vec<u8>) -> Result<Wdt, String> {
-        let mut chunked_data = ChunkedData::new(&data);
+    pub fn new(data: &[u8]) -> Result<Wdt, String> {
+        let mut chunked_data = ChunkedData::new(data);
         let mut header: Option<Mphd> = None;
         let mut area_infos: Vec<AreaInfo> = Vec::with_capacity(4096);
         let mut map_filedata_ids: Vec<MapFileDataIDs> = Vec::with_capacity(4096);
@@ -134,6 +134,6 @@ mod tests {
     #[test]
     fn test() {
         let data = std::fs::read("../data/wow/world/maps/blackrockdepths/blackrockdepths.wdt").unwrap();
-        dbg!(Wdt::new(data).unwrap().header.flags);
+        dbg!(Wdt::new(&data).unwrap().header.flags);
     }
 }

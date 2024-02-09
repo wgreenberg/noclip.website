@@ -57,17 +57,17 @@ pub struct Skin {
 
 #[wasm_bindgen(js_class = "WowSkin")]
 impl Skin {
-    pub fn new(data: Vec<u8>) -> Result<Skin, String> {
-        let (_, profile) = SkinProfile::from_bytes((&data, 0))
+    pub fn new(data: &[u8]) -> Result<Skin, String> {
+        let (_, profile) = SkinProfile::from_bytes((data, 0))
             .map_err(|e| format!("{:?}", e))?;
         let batches = profile.batches.to_vec(&data)
             .map_err(|e| format!("{:?}", e))?;
         let submeshes = profile.submeshes.to_vec(&data)
             .map_err(|e| format!("{:?}", e))?;
 
-        let global_vertex_indices = profile.vertices.to_vec(&data[..])
+        let global_vertex_indices = profile.vertices.to_vec(data)
             .map_err(|e| format!("{:?}", e))?;
-        let local_vertex_indices = profile.indices.to_vec(&data[..])
+        let local_vertex_indices = profile.indices.to_vec(data)
             .map_err(|e| format!("{:?}", e))?;
         let mut indices = Vec::with_capacity(local_vertex_indices.len());
 

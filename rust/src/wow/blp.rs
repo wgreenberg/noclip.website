@@ -72,8 +72,8 @@ pub struct BlpMipMetadata {
 
 #[wasm_bindgen(js_class = "WowBlp")]
 impl Blp {
-    pub fn new(data: Vec<u8>) -> Result<Blp, String> {
-        let (_, header) = BlpHeader::from_bytes((&data, 0))
+    pub fn new(data: &[u8]) -> Result<Blp, String> {
+        let (_, header) = BlpHeader::from_bytes((data, 0))
             .map_err(|e| format!("{:?}", e))?;
 
         Ok(Blp {
@@ -147,7 +147,7 @@ mod test {
     #[test]
     fn test() {
         let data = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/tileset/plaguelandswest/westplaguedmudgrass_s.blp").unwrap();
-        let blp = Blp::new(data).unwrap();
+        let blp = Blp::new(&data).unwrap();
         dbg!(blp.header);
     }
 }

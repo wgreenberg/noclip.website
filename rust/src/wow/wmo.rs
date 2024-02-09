@@ -68,8 +68,8 @@ pub struct Wmo {
 
 #[wasm_bindgen(js_class = "WowWmo")]
 impl Wmo {
-    pub fn new(data: Vec<u8>) -> Result<Wmo, String> {
-        let mut chunked_data = ChunkedData::new(&data);
+    pub fn new(data: &[u8]) -> Result<Wmo, String> {
+        let mut chunked_data = ChunkedData::new(data);
         let (mver, _) = chunked_data.next().unwrap();
         assert_eq!(mver.magic_str(), "REVM");
         let (mhdr, mhdr_data) = chunked_data.next().unwrap();
@@ -177,8 +177,8 @@ pub struct WmoGroup {
 
 #[wasm_bindgen(js_class = "WowWmoGroup")]
 impl WmoGroup {
-    pub fn new(data: Vec<u8>) -> Result<WmoGroup, String> {
-        let mut chunked_data = ChunkedData::new(&data);
+    pub fn new(data: &[u8]) -> Result<WmoGroup, String> {
+        let mut chunked_data = ChunkedData::new(data);
         let (mver, _) = chunked_data.next().unwrap();
         assert_eq!(mver.magic_str(), "REVM");
         let (mhdr, mhdr_data) = chunked_data.next().unwrap();
@@ -610,8 +610,8 @@ mod tests {
     fn test() {
         let wmoData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03.wmo").unwrap();
         let groupData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03_000.wmo").unwrap();
-        let wmo = Wmo::new(wmoData).unwrap();
+        let wmo = Wmo::new(&wmoData).unwrap();
         dbg!(wmo.group_infos);
-        let mut group = WmoGroup::new(groupData).unwrap();
+        let mut group = WmoGroup::new(&groupData).unwrap();
     }
 }

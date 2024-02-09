@@ -176,8 +176,8 @@ pub struct M2 {
 
 #[wasm_bindgen(js_class = "WowM2")]
 impl M2 {
-    pub fn new(data: Vec<u8>) -> Result<M2, String> {
-        let mut chunked_data = ChunkedData::new(&data);
+    pub fn new(data: &[u8]) -> Result<M2, String> {
+        let mut chunked_data = ChunkedData::new(data);
         let (header_chunk, chunk_data) = chunked_data.next()
             .ok_or("no header chunk".to_string())?;
         assert_eq!(&header_chunk.magic, b"MD21");
@@ -350,6 +350,6 @@ mod tests {
         //let data = std::fs::read("../data/wow/world/generic/passivedoodads/particleemitters/druidwisp01.m2").unwrap();
         let data = std::fs::read("../data/wow/world/kalimdor/barrens/passivedoodads/waterwheel/orc_waterwheel.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
-        let mut m2 = M2::new(data).unwrap();
+        let mut m2 = M2::new(&data).unwrap();
     }
 }
