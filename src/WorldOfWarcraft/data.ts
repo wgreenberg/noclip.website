@@ -15,6 +15,7 @@ import { AttachmentStateSimple, setAttachmentStateSimple } from "../gfx/helpers/
 import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.js";
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
+import { assert } from "../util.js";
 
 // game world size in game units
 const MAP_SIZE = 17066;
@@ -719,26 +720,52 @@ export class WmoDefinition {
   }
 }
 
-export class AdtData {
-  public blpIds: number[] = [];
+export class AdtLodData {
   public modelIds: number[] = [];
   public wmoDefs: WmoDefinition[] = [];
   public doodads: DoodadData[] = [];
-  public worldSpaceAABB: AABB;
-  public hasBigAlpha: boolean;
-  public hasHeightTexturing: boolean;
-  public visible = true;
-
-  constructor(public fileId: number, public innerAdt: WowAdt) {
-  }
 
   public setVisible(visible: boolean) {
-    this.visible = visible;
     for (let wmoDef of this.wmoDefs) {
       wmoDef.setVisible(visible);
     }
     for (let doodad of this.doodads) {
       doodad.setVisible(visible);
+    }
+  }
+}
+
+export class AdtData {
+  public blpIds: number[] = [];
+  public worldSpaceAABB: AABB;
+  public hasBigAlpha: boolean;
+  public hasHeightTexturing: boolean;
+  public lodLevel = 0;
+  public lodData: AdtLodData[] = [];
+  public visible = true;
+
+  constructor(public fileId: number, public innerAdt: WowAdt) {
+  }
+
+  public setVisible(visible: boolean, lodLevel?: number) {
+    this.visible = visible;
+    if (lodLevel === undefined) {
+      this.lodData[0].setVisible(visible);
+      this.lodData[1].setVisible(visible);
+    } else {
+      this.lodData[lodLevel].setVisible(visible);
+    }
+  }
+
+  public setLodLevel(lodLevel: number) {
+    assert(lodLevel === 0 || lodLevel === 1, "lodLevel must be 0 or 1");
+    this.lodLevel = lodLevel;
+    if (this.lodLevel === 0) {
+      this.lodData[0].setVisible(true);
+      this.lodData[1].setVisible(false);
+    } else {
+      this.lodData[0].setVisible(false);
+      this.lodData[1].setVisible(true);
     }
   }
   
@@ -751,19 +778,33 @@ export class AdtData {
         }
       }
 
-      for (let adtDoodad of this.innerAdt.doodads) {
-        this.doodads.push(DoodadData.fromAdtDoodad(adtDoodad));
-      }
+      for (let lodLevel of [0, 1]) {
+        const lodData = new AdtLodData();
 
-      for (let modelId of this.innerAdt.get_model_file_ids()) {
-        await cache.loadModel(modelId);
-        this.modelIds.push(modelId);
-      }
+        for (let adtDoodad of this.innerAdt.get_doodads(lodLevel)) {
+          lodData.doodads.push(DoodadData.fromAdtDoodad(adtDoodad));
+        }
 
-      for (let wmoDef of this.innerAdt.map_object_defs) {
-        const wmo = await cache.loadWmo(wmoDef.name_id);
-        this.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef, wmo));
+        for (let modelId of this.innerAdt.get_model_file_ids(lodLevel)) {
+          await cache.loadModel(modelId);
+          lodData.modelIds.push(modelId);
+        }
+
+        for (let wmoDef of this.innerAdt.get_wmo_defs(lodLevel)) {
+          const wmo = await cache.loadWmo(wmoDef.name_id);
+          lodData.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef, wmo));
+        }
+
+        this.lodData.push(lodData);
       }
+  }
+
+  public lodDoodads(): DoodadData[] {
+    return this.lodData[this.lodLevel].doodads;
+  }
+
+  public lodWmoDefs(): WmoDefinition[] {
+    return this.lodData[this.lodLevel].wmoDefs;
   }
 
   public setWorldFlags(wdt: WowWdt) {
@@ -877,9 +918,11 @@ export class LazyWorldData {
       return;
     }
 
-    // TODO handle obj1 (LOD) adts
     const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-    wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
+    wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher), 0);
+    if (fileIDs.obj1_adt !== 0) {
+      wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, dataFetcher), 1);
+    }
     wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
     const adt = new AdtData(fileIDs.root_adt, wowAdt);
@@ -924,9 +967,11 @@ export class WorldData {
         if (fileIDs.root_adt === 0) {
           throw new Error(`null ADTs in a non-global-WMO WDT`);
         }
-        // TODO handle obj1 (LOD) adts
         const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-        wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
+        wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher), 0);
+        if (fileIDs.obj1_adt !== 0) {
+          wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, dataFetcher), 1);
+        }
         wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
         const adt = new AdtData(fileIDs.root_adt, wowAdt);

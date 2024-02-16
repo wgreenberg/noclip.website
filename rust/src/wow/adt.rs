@@ -9,10 +9,10 @@ use super::common::{Chunk, ChunkedData, Vec3, AABBox};
 #[derive(Debug, Clone)]
 pub struct Adt {
     map_chunks: Vec<MapChunk>,
-    pub doodads: Vec<Doodad>,
+    doodads: [Vec<Doodad>; 2],
     height_tex_ids: Option<HeightTexIds>,
     diffuse_tex_ids: Option<DiffuseTexIds>,
-    pub map_object_defs: Vec<WmoDefinition>,
+    map_object_defs: [Vec<WmoDefinition>; 2],
 }
 
 #[wasm_bindgen(js_class = "WowAdt")]
@@ -28,8 +28,8 @@ impl Adt {
         }
         Ok(Adt {
             map_chunks,
-            doodads: vec![],
-            map_object_defs: vec![],
+            doodads: [vec![], vec![]],
+            map_object_defs: [vec![], vec![]],
             height_tex_ids: None,
             diffuse_tex_ids: None,
         })
@@ -43,24 +43,36 @@ impl Adt {
         ids
     }
 
-    pub fn get_model_file_ids(&self) -> Vec<u32> {
-        self.doodads.iter().map(|doodad| doodad.name_id).collect()
+    pub fn get_model_file_ids(&self, lod_level: usize) -> Vec<u32> {
+        self.doodads[lod_level].iter().map(|doodad| doodad.name_id).collect()
     }
 
-    pub fn append_obj_adt(&mut self, data: &[u8]) -> Result<(), String> {
+    pub fn get_doodads(&self, lod_level: usize) -> Vec<Doodad> {
+        assert!(lod_level <= 1);
+        self.doodads[lod_level].clone()
+    }
+
+    pub fn get_wmo_defs(&self, lod_level: usize) -> Vec<WmoDefinition> {
+        assert!(lod_level <= 1);
+        self.map_object_defs[lod_level].clone()
+    }
+
+    pub fn append_obj_adt(&mut self, data: &[u8], lod_level: usize) -> Result<(), String> {
+        assert!(lod_level <= 1);
         let mut chunked_data = ChunkedData::new(data);
         let mut map_chunk_idx = 0;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"FDDM" => {
                     let mddf: DoodadChunk = chunk.parse_with_byte_size(chunk_data)?;
-                    self.doodads = mddf.doodads;
+                    self.doodads[lod_level] = mddf.doodads;
                 },
                 b"KNCM" => {
+                    assert_eq!(lod_level, 0);
                     self.map_chunks[map_chunk_idx].append_obj_chunk(chunk, chunk_data)?;
                     map_chunk_idx += 1;
                 }
-                b"FDOM" => self.map_object_defs = chunk.parse_array(chunk_data, 0x40)?,
+                b"FDOM" => self.map_object_defs[lod_level] = chunk.parse_array(chunk_data, 0x40)?,
                 _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
             }
         }
@@ -82,10 +94,6 @@ impl Adt {
             }
         }
         Ok(())
-    }
-
-    pub fn append_lod_adt(&mut self, data: &[u8]) -> Result<(), String> {
-        todo!();
     }
 
     fn chunk_index_to_coords(index: usize) -> (f32, f32) {
@@ -143,9 +151,9 @@ impl Adt {
                     Some(mclv) => &mclv.vertex_lighting[j*4..],
                     None => &[127, 127, 127, 127],
                 };
-                result.push(vertex_lighting[0] as f32 / 255.0); // r
+                result.push(vertex_lighting[2] as f32 / 255.0); // r
                 result.push(vertex_lighting[1] as f32 / 255.0); // g
-                result.push(vertex_lighting[2] as f32 / 255.0); // b
+                result.push(vertex_lighting[0] as f32 / 255.0); // b
                 result.push(vertex_lighting[3] as f32 / 255.0); // a
             }
         }
@@ -432,6 +440,7 @@ impl MapChunk {
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
                 b"VCCM" => self.vertex_colors = Some(subchunk.parse(subchunk_data)?),
+                
                 b"VLCM" => self.vertex_lighting = Some(subchunk.parse(subchunk_data)?),
                 _ => {},
             }

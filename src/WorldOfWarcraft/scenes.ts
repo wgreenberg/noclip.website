@@ -59,6 +59,7 @@ export const noclipSpaceFromPlacementSpace = mat4.fromValues(
 
 const MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
 const MAX_INTERIOR_WMO_RENDER_DIST = 1000;
+const ADT_LOD0_DISTANCE = 0;
 const MAX_ADT_DOODAD_RENDER_DIST = 1000;
 const MAX_ADT_RENDER_DIST = 10000;
 
@@ -218,15 +219,17 @@ class WdtScene implements Viewer.SceneGfx {
       this.textureCache,
       this.wowCache
     ));
-    for (let modelId of adt.modelIds) {
-      this.createModelRenderer(modelId);
-    }
-    for (let wmoDef of adt.wmoDefs) {
-      this.setupWmo(this.wowCache.wmos.get(wmoDef.wmoId)!);
-      this.setupWmoDef(wmoDef);
-    }
-    for (let doodad of adt.doodads) {
-      this.modelIdToDoodads.append(doodad.modelId, doodad);
+    for (let lodData of adt.lodData) {
+      for (let modelId of lodData.modelIds) {
+        this.createModelRenderer(modelId);
+      }
+      for (let wmoDef of lodData.wmoDefs) {
+        this.setupWmo(this.wowCache.wmos.get(wmoDef.wmoId)!);
+        this.setupWmoDef(wmoDef);
+      }
+      for (let doodad of lodData.doodads) {
+        this.modelIdToDoodads.append(doodad.modelId, doodad);
+      }
     }
   }
 
@@ -340,17 +343,21 @@ class WdtScene implements Viewer.SceneGfx {
       drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, adt.worldSpaceAABB);
     }
     adt.setVisible(this.mainView.frustum.contains(adt.worldSpaceAABB));
+    // FIXME: some WMOs seem to have AABBs fully disjoint from their parent
+    // ADTs, so this may give us some disappearing WMOs
     if (!adt.visible) {
       return;
     }
     const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
+    //adt.setLodLevel(distance < ADT_LOD0_DISTANCE ? 0 : 1);
+    adt.setLodLevel(1);
     if (distance > MAX_ADT_DOODAD_RENDER_DIST) {
-      for (let doodad of adt.doodads) {
+      for (let doodad of adt.lodDoodads()) {
         doodad.setVisible(false);
       }
     }
-    for (let def of adt.wmoDefs) {
-      this.cullWmoDef(def);
+    for (let def of adt.lodWmoDefs()) {
+      //this.cullWmoDef(def);
     }
   }
 
@@ -522,6 +529,7 @@ const sceneDescs = [
     new ContinentSceneDesc("Ironforge", 775971, 33, 40, 0),
     new ContinentSceneDesc("Dun Morogh", 775971, 31, 43, 0),
     new ContinentSceneDesc("Blockrock Mountain", 775971, 34, 45, 0),
+    new ContinentSceneDesc("Booty Bay", 775971, 31, 58, 0),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
