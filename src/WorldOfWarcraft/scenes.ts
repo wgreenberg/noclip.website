@@ -59,7 +59,7 @@ export const noclipSpaceFromPlacementSpace = mat4.fromValues(
 
 const MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
 const MAX_INTERIOR_WMO_RENDER_DIST = 1000;
-const ADT_LOD0_DISTANCE = 0;
+const ADT_LOD0_DISTANCE = 1000;
 const MAX_ADT_DOODAD_RENDER_DIST = 1000;
 const MAX_ADT_RENDER_DIST = 10000;
 
@@ -178,6 +178,9 @@ class WdtScene implements Viewer.SceneGfx {
   private textureCache: TextureCache;
   public cullingState = CullingState.Running;
   public time: number = 1400;
+
+  // FIXME
+  public forceLod = 0;
 
   constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private wowCache: WowCache, private lightDb: LightDatabase) {
     console.time('WdtScene construction');
@@ -349,15 +352,9 @@ class WdtScene implements Viewer.SceneGfx {
       return;
     }
     const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
-    //adt.setLodLevel(distance < ADT_LOD0_DISTANCE ? 0 : 1);
-    adt.setLodLevel(1);
-    if (distance > MAX_ADT_DOODAD_RENDER_DIST) {
-      for (let doodad of adt.lodDoodads()) {
-        doodad.setVisible(false);
-      }
-    }
+    adt.setLodLevel(distance < ADT_LOD0_DISTANCE ? 0 : 1);
     for (let def of adt.lodWmoDefs()) {
-      //this.cullWmoDef(def);
+      this.cullWmoDef(def);
     }
   }
 

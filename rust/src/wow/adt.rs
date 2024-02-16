@@ -9,10 +9,14 @@ use super::common::{Chunk, ChunkedData, Vec3, AABBox};
 #[derive(Debug, Clone)]
 pub struct Adt {
     map_chunks: Vec<MapChunk>,
-    doodads: [Vec<Doodad>; 2],
+    doodads: Vec<Doodad>,
     height_tex_ids: Option<HeightTexIds>,
     diffuse_tex_ids: Option<DiffuseTexIds>,
-    map_object_defs: [Vec<WmoDefinition>; 2],
+    map_object_defs: Vec<WmoDefinition>,
+    lod_doodads: Vec<Doodad>,
+    lod_doodad_extents: Vec<LodExtent>,
+    lod_map_object_defs: Vec<WmoDefinition>,
+    lod_levels: Option<LodLevels>,
 }
 
 #[wasm_bindgen(js_class = "WowAdt")]
@@ -28,10 +32,14 @@ impl Adt {
         }
         Ok(Adt {
             map_chunks,
-            doodads: [vec![], vec![]],
-            map_object_defs: [vec![], vec![]],
+            doodads: vec![],
+            map_object_defs: vec![],
+            lod_doodads: vec![],
+            lod_doodad_extents: vec![],
+            lod_map_object_defs: vec![],
             height_tex_ids: None,
             diffuse_tex_ids: None,
+            lod_levels: None,
         })
     }
 
@@ -44,35 +52,105 @@ impl Adt {
     }
 
     pub fn get_model_file_ids(&self, lod_level: usize) -> Vec<u32> {
-        self.doodads[lod_level].iter().map(|doodad| doodad.name_id).collect()
+        assert!(lod_level <= 1);
+        if lod_level == 0 {
+            self.doodads.iter().map(|doodad| doodad.name_id).collect()
+        } else {
+            if let Some(lod_levels) = &self.lod_levels {
+                let offset = lod_levels.m2_lod_offset[2] as usize;
+                let length = lod_levels.m2_lod_length[2] as usize;
+                self.lod_doodads[offset..offset+length].iter()
+                    .map(|doodad| doodad.name_id)
+                    .collect()
+            } else {
+                vec![]
+            }
+        }
     }
 
     pub fn get_doodads(&self, lod_level: usize) -> Vec<Doodad> {
         assert!(lod_level <= 1);
-        self.doodads[lod_level].clone()
+        if lod_level == 0 {
+            self.doodads.clone()
+        } else {
+            if let Some(lod_levels) = &self.lod_levels {
+                let offset = lod_levels.m2_lod_offset[2] as usize;
+                let length = lod_levels.m2_lod_length[2] as usize;
+                self.lod_doodads[offset..offset+length].to_vec()
+            } else {
+                vec![]
+            }
+        }
     }
 
     pub fn get_wmo_defs(&self, lod_level: usize) -> Vec<WmoDefinition> {
         assert!(lod_level <= 1);
-        self.map_object_defs[lod_level].clone()
+        if lod_level == 0 {
+            self.map_object_defs.clone()
+        } else {
+            if let Some(lod_levels) = &self.lod_levels {
+                let offset = lod_levels.wmo_lod_offset[2] as usize;
+                let length = lod_levels.wmo_lod_length[2] as usize;
+                self.lod_map_object_defs[offset..offset+length].to_vec()
+            } else {
+                vec![]
+            }
+        }
     }
 
-    pub fn append_obj_adt(&mut self, data: &[u8], lod_level: usize) -> Result<(), String> {
-        assert!(lod_level <= 1);
+    pub fn append_lod_obj_adt(&mut self, data: &[u8]) -> Result<(), String> {
+        let mut chunked_data = ChunkedData::new(data);
+        let mut lod_wmos: Option<Vec<LodWmoDefinition>> = None;
+        let mut lod_wmo_extents: Option<Vec<LodExtent>> = None;
+        for (chunk, chunk_data) in &mut chunked_data {
+            match &chunk.magic {
+                b"DFLM" => self.lod_levels = Some(chunk.parse(chunk_data)?),
+                b"DDLM" => self.lod_doodads = chunk.parse_array(chunk_data, 0x24)?,
+                b"XDLM" => self.lod_doodad_extents = chunk.parse_array(chunk_data, 0x1c)?,
+                b"DMLM" => lod_wmos = Some(chunk.parse_array(chunk_data, 0x28)?),
+                b"XMLM" => lod_wmo_extents = Some(chunk.parse_array(chunk_data, 0x1c)?),
+                _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
+            }
+        }
+        assert_eq!(self.lod_doodads.len(), self.lod_doodad_extents.len());
+        match (lod_wmos, lod_wmo_extents) {
+            (Some(wmos), Some(wmo_extents)) => {
+                assert_eq!(wmos.len(), wmo_extents.len());
+                for i in 0..wmos.len() {
+                    self.lod_map_object_defs.push(WmoDefinition {
+                        name_id: wmos[i].name_id,
+                        unique_id: wmos[i].unique_id,
+                        position: wmos[i].position,
+                        rotation: wmos[i].rotation,
+                        flags: wmos[i].flags,
+                        doodad_set: wmos[i].doodad_set,
+                        name_set: wmos[i].name_set,
+                        scale: wmos[i].scale,
+                        extents: wmo_extents[i].extents,
+                    });
+                }
+            },
+            (None, None) => {},
+            (_, _) => return Err("lod adt was missing some lod components".to_string()),
+            _ => {},
+        }
+        Ok(())
+    }
+
+    pub fn append_obj_adt(&mut self, data: &[u8]) -> Result<(), String> {
         let mut chunked_data = ChunkedData::new(data);
         let mut map_chunk_idx = 0;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"FDDM" => {
                     let mddf: DoodadChunk = chunk.parse_with_byte_size(chunk_data)?;
-                    self.doodads[lod_level] = mddf.doodads;
+                    self.doodads = mddf.doodads;
                 },
                 b"KNCM" => {
-                    assert_eq!(lod_level, 0);
                     self.map_chunks[map_chunk_idx].append_obj_chunk(chunk, chunk_data)?;
                     map_chunk_idx += 1;
                 }
-                b"FDOM" => self.map_object_defs[lod_level] = chunk.parse_array(chunk_data, 0x40)?,
+                b"FDOM" => self.map_object_defs = chunk.parse_array(chunk_data, 0x40)?,
                 _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
             }
         }
@@ -215,6 +293,14 @@ impl Adt {
     pub fn get_vbo_info() -> AdtVBOInfo {
         ADT_VBO_INFO.clone()
     }
+}
+
+#[derive(Debug, DekuRead, Clone)]
+pub struct LodLevels {
+    pub m2_lod_offset: [u32; 3],
+    pub m2_lod_length: [u32; 3],
+    pub wmo_lod_offset: [u32; 3],
+    pub wmo_lod_length: [u32; 3],
 }
 
 #[wasm_bindgen(js_name = "WowAdtRenderResult", getter_with_clone)]
@@ -435,12 +521,9 @@ impl MapChunk {
 
     fn append_obj_chunk(&mut self, chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
         let mut chunked_data = ChunkedData::new(&chunk_data);
-        let mut mccv: Option<VertexColors> = None;
-        let mut mccv: Option<VertexLighting> = None;
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
                 b"VCCM" => self.vertex_colors = Some(subchunk.parse(subchunk_data)?),
-                
                 b"VLCM" => self.vertex_lighting = Some(subchunk.parse(subchunk_data)?),
                 _ => {},
             }
@@ -578,6 +661,24 @@ pub struct WmoDefinition {
     pub scale: u16,
 }
 
+#[derive(Debug, DekuRead, Clone)]
+pub struct LodWmoDefinition {
+    pub name_id: u32,
+    pub unique_id: u32,
+    pub position: Vec3,
+    pub rotation: Vec3,
+    pub flags: u16,
+    pub doodad_set: u16,
+    pub name_set: u16,
+    pub scale: u16,
+}
+
+#[derive(Debug, DekuRead, Clone)]
+pub struct LodExtent {
+    pub extents: AABBox,
+    pub radius: f32,
+}
+
 #[derive(DekuRead, Debug, Clone)]
 pub struct HeightmapChunk {
     // the heightmap stores a row of 9 height values, then 8 LOD height values,
@@ -601,16 +702,9 @@ mod tests {
 
     #[test]
     fn test() {
-        let data = std::fs::read("D:/woof/wow uncasced/world/maps/tanarisinstance/tanarisinstance_29_27.adt").unwrap();
+        let data = std::fs::read("../data/wow/world/maps/azeroth/azeroth_34_46.adt").unwrap();
         let mut adt = Adt::new(&data).unwrap();
-        adt.append_tex_adt(&std::fs::read("D:/woof/wow uncasced/world/maps/tanarisinstance/tanarisinstance_29_27_tex0.adt").unwrap()).unwrap();
-        for chunk in &adt.map_chunks {
-            if let Some(map) = &chunk.alpha_map {
-                for layer in &chunk.texture_layers {
-                    print!("{:?} ", layer.get_settings());
-                }
-                print!("{}\n\n", map.data.len());
-            }
-        }
+        adt.append_lod_obj_adt(&std::fs::read("../data/wow/world/maps/azeroth/azeroth_34_46_obj1.adt").unwrap()).unwrap();
+        dbg!(adt.lod_levels);
     }
 }

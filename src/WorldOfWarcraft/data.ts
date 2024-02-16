@@ -4,7 +4,7 @@ import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
-import { fetchFileByID, fetchDataByFileID } from "./util.js";
+import { fetchFileByID, fetchDataByFileID, getFilePath } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
 import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray } from "./scenes.js";
 import { AABB } from "../Geometry.js";
@@ -794,6 +794,9 @@ export class AdtData {
           const wmo = await cache.loadWmo(wmoDef.name_id);
           lodData.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef, wmo));
         }
+        if (lodLevel > 0 && lodData.modelIds.length > 0) {
+          console.log(lodData);
+        }
 
         this.lodData.push(lodData);
       }
@@ -919,9 +922,9 @@ export class LazyWorldData {
     }
 
     const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-    wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher), 0);
+    wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
     if (fileIDs.obj1_adt !== 0) {
-      wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, dataFetcher), 1);
+      wowAdt.append_lod_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, dataFetcher));
     }
     wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
@@ -968,9 +971,9 @@ export class WorldData {
           throw new Error(`null ADTs in a non-global-WMO WDT`);
         }
         const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-        wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher), 0);
+        wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
         if (fileIDs.obj1_adt !== 0) {
-          wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, dataFetcher), 1);
+          wowAdt.append_lod_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, dataFetcher));
         }
         wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
