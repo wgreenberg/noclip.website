@@ -11,7 +11,7 @@ import { GfxRenderHelper } from "../gfx/render/GfxRenderHelper.js";
 import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager.js";
 import { rust } from "../rustlib.js";
 import { ViewerRenderInput } from "../viewer.js";
-import { SkinData, ModelData, WowCache, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass } from "./data.js";
+import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData } from "./data.js";
 import { MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
@@ -26,9 +26,10 @@ export class ModelRenderer {
   private skinData: SkinData[] = [];
   private vertexBuffer: GfxVertexBufferDescriptor;
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
+  private skinPassTextures: TextureMappingArray[][] = [];
   private inputLayout: GfxInputLayout;
 
-  constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache, private wowCache: WowCache) {
+  constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
       { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
@@ -46,16 +47,17 @@ export class ModelRenderer {
       byteOffset: 0,
     };
 
-    for (let skin of this.model.skins) {
+    for (let i in this.model.skins) {
+      const skin = this.model.skins[i];
       const skinData = new SkinData(skin, this.model);
       this.indexBuffers.push({
         buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, skinData.indexBuffer.buffer),
         byteOffset: 0,
       });
       this.skinData.push(skinData);
+      this.skinPassTextures[i] = [];
       for (let renderPass of skinData.renderPasses) {
-        // warm the texture cache
-        this.getRenderPassTextures(renderPass);
+        this.skinPassTextures[i].push(this.getRenderPassTextures(renderPass));
       }
     }
   }
@@ -74,16 +76,16 @@ export class ModelRenderer {
 
   private getRenderPassTextures(renderPass: ModelRenderPass): TextureMappingArray {
     return [renderPass.tex0, renderPass.tex1, renderPass.tex2, renderPass.tex3]
-      .map(tex => tex === null ? null : this.textureCache.getTextureMapping(tex, this.wowCache.blps.get(tex)!));
+      .map(blp => blp === null ? null : this.textureCache.getTextureMapping(blp.fileId, blp.inner));
   }
 
   public prepareToRenderModel(renderInstManager: GfxRenderInstManager, doodads: DoodadData[]): void {
     if (!this.isDrawable()) return;
 
     const visibleDoodads = doodads.filter(d => d.visible);
-    const template = renderInstManager.pushTemplateRenderInst();
 
     for (let doodadChunk of chunk(visibleDoodads, MAX_DOODAD_INSTANCES)) {
+      const template = renderInstManager.pushTemplateRenderInst();
       let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, (16 + 4 * 3) * MAX_DOODAD_INSTANCES);
       const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
       for (let doodad of doodadChunk) {
@@ -101,20 +103,21 @@ export class ModelRenderer {
       for (let i=0; i<this.skinData.length; i++) {
         const skinData = this.skinData[i];
         const indexBuffer = this.indexBuffers[i];
-        for (let renderPass of skinData.renderPasses) {
+        for (let j in skinData.renderPasses) {
+          const renderPass = skinData.renderPasses[j];
           let renderInst = renderInstManager.newRenderInst();
           renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
           renderPass.setMegaStateFlags(renderInst);
           renderInst.drawIndexesInstanced(renderPass.submesh.index_count, doodadChunk.length, renderPass.submesh.index_start);
-          const mappings = this.getRenderPassTextures(renderPass);
+          const mappings = this.skinPassTextures[i][j];
           renderInst.setAllowSkippingIfPipelineNotReady(false);
           renderInst.setSamplerBindingsFromTextureMappings(mappings);
           renderPass.setModelParams(renderInst);
           renderInstManager.submitRenderInst(renderInst);
         }
       }
+      renderInstManager.popTemplateRenderInst();
     }
-    renderInstManager.popTemplateRenderInst();
   }
   
   public destroy(device: GfxDevice): void {
@@ -138,36 +141,33 @@ export class WmoRenderer {
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
   private groups: WmoGroupData[] = [];
   public batches: WmoBatchData[][] = [];
-  public batchTextureMappings: TextureMappingArray[][] = [];
+  public groupBatchTextureMappings: TextureMappingArray[][] = [];
 
-  constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper, private wowCache: WowCache) {
+  constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper) {
     for (let group of this.wmo.groups) {
       this.inputLayouts.push(group.getInputLayout(renderHelper.renderCache));
       this.vertexBuffers.push(group.getVertexBuffers(device));
       this.indexBuffers.push(group.getIndexBuffer(device));
-      this.batches.push(group.getBatches(this.wmo.materials));
+      this.batches.push(group.getBatches(this.wmo));
       this.groups.push(group);
     }
-    // warm the texture cache
-    for (let batches of this.batches) {
+    for (let i in this.batches) {
+      const batches = this.batches[i];
+      this.groupBatchTextureMappings[i] = [];
       for (let batch of batches) {
-        this.getBatchTextureMapping(batch);
+        this.groupBatchTextureMappings[i].push(this.getBatchTextureMapping(batch));
       }
     }
   }
 
   private getBatchTextureMapping(batch: WmoBatchData): TextureMappingArray {
     const mappings = []
-    for (let blpId of [batch.material.texture_1, batch.material.texture_2, batch.material.texture_3]) {
-      if (blpId === 0) {
+    for (let blp of batch.textures) {
+      if (blp === null) {
         mappings.push(this.textureCache.getAllWhiteTextureMapping());
       } else {
-        const blp = this.wowCache.blps.get(blpId)!;
-        if (!blp) {
-          throw new Error(`couldn't find WMO BLP with id ${batch.material.texture_1}`);
-        }
         const wrap = !(batch.materialFlags.clamp_s || batch.materialFlags.clamp_t);
-        mappings.push(this.textureCache.getTextureMapping(batch.material.texture_1, blp, undefined, undefined, {
+        mappings.push(this.textureCache.getTextureMapping(batch.material.texture_1, blp.inner, undefined, undefined, {
           wrap: wrap,
         }));
       }
@@ -195,7 +195,8 @@ export class WmoRenderer {
         const applyInteriorLight = group.flags.interior && !group.flags.exterior_lit;
         const applyExteriorLight = true;
         template.setVertexInput(this.inputLayouts[i], this.vertexBuffers[i], this.indexBuffers[i]);
-        for (let batch of this.batches[i]) {
+        for (let j in this.batches[i]) {
+          const batch = this.batches[i][j];
           if (!batch.visible) continue;
           const renderInst = renderInstManager.newRenderInst();
           let offset = renderInst.allocateUniformBuffer(WmoProgram.ub_BatchParams, 4 * 4);
@@ -215,7 +216,7 @@ export class WmoRenderer {
           offset += fillVec4v(uniformBuf, offset, ambientColor);
           offset += fillVec4v(uniformBuf, offset, [0, 0, 0, 0]);
           batch.setMegaStateFlags(renderInst);
-          const textureMappings = this.getBatchTextureMapping(batch);
+          const textureMappings = this.groupBatchTextureMappings[i][j];
           renderInst.setSamplerBindingsFromTextureMappings(textureMappings);
           renderInst.drawIndexes(batch.indexCount, batch.indexStart);
           renderInstManager.submitRenderInst(renderInst);
@@ -237,10 +238,11 @@ export class TerrainRenderer {
   private inputLayout: GfxInputLayout;
   public indexBuffer: GfxIndexBufferDescriptor;
   public vertexBuffer: GfxVertexBufferDescriptor;
-  public adtChunks: WowAdtChunkDescriptor[] = [];
+  public adtChunks: ChunkData[] = [];
   public alphaTextureMappings: (TextureMapping | null)[] = [];
+  public chunkTextureMappings: TextureMappingArray[] = [];
 
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache, private wowCache: WowCache) {
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
     const adtVboInfo = rust.WowAdt.get_vbo_info();
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: TerrainProgram.a_ChunkIndex, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_R },
@@ -256,29 +258,23 @@ export class TerrainRenderer {
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
     [this.vertexBuffer, this.indexBuffer, this.adtChunks] = this.adt.getBufsAndChunks(device);
-    for (let chunk of this.adtChunks) {
-      const alphaTex = chunk.alpha_texture;
-      if (alphaTex) {
-        this.alphaTextureMappings.push(textureCache.getAlphaTextureMapping(device, alphaTex));
-      } else {
-        this.alphaTextureMappings.push(textureCache.getAllBlackTextureMapping());
-      }
+    for (let i in this.adtChunks) {
+      const chunk = this.adtChunks[i];
+      this.chunkTextureMappings[i] = this.getChunkTextureMapping(chunk);
 
-      // warm the texture cache
-      this.getChunkTextureMapping(chunk);
+      const alphaTex = chunk.inner.alpha_texture;
+      if (alphaTex) {
+        this.chunkTextureMappings[i].push(textureCache.getAlphaTextureMapping(device, alphaTex));
+      } else {
+        this.chunkTextureMappings[i].push(textureCache.getAllBlackTextureMapping());
+      }
     }
   }
 
-  private getChunkTextureMapping(chunk: WowAdtChunkDescriptor): TextureMappingArray {
-    let mapping: (TextureMapping | null)[] = [
-      null, null, null, null
-    ];
-    chunk.texture_layers.forEach((textureFileId, i) => {
-      const blp = this.wowCache.blps.get(textureFileId);
-      if (!blp) {
-        throw new Error(`couldn't find matching blp for fileID ${textureFileId}`);
-      }
-      mapping[i] = this.textureCache.getTextureMapping(textureFileId, blp);
+  private getChunkTextureMapping(chunk: ChunkData): TextureMappingArray {
+    let mapping: TextureMappingArray = [null, null, null, null];
+    chunk.textures.forEach((blp, i) => {
+      mapping[i] = this.textureCache.getTextureMapping(blp.fileId, blp.inner);
     })
     return mapping;
   }
@@ -288,12 +284,11 @@ export class TerrainRenderer {
     const template = renderInstManager.pushTemplateRenderInst();
     template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
     this.adtChunks.forEach((chunk, i) => {
-      if (chunk.index_count > 0) {
+      if (chunk.inner.index_count > 0) {
         const renderInst = renderInstManager.newRenderInst();
-        const textureMapping = this.getChunkTextureMapping(chunk);
-        textureMapping.push(this.alphaTextureMappings[i])
+        const textureMapping = this.chunkTextureMappings[i];
         renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
-        renderInst.drawIndexes(chunk.index_count, chunk.index_offset);
+        renderInst.drawIndexes(chunk.inner.index_count, chunk.inner.index_offset);
         renderInstManager.submitRenderInst(renderInst);
       }
     })

@@ -1,12 +1,12 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID, getFilePath } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
-import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray } from "./scenes.js";
+import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene } from "./scenes.js";
 import { AABB } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
 import { BaseProgram, ModelProgram, WmoProgram } from "./program.js";
@@ -43,12 +43,19 @@ abstract class Loadable {
 }
 
 export class WowCache {
-  public models: Map<number, ModelData> = new Map();
-  public wmos: Map<number, WmoData> = new Map();
-  public wmoGroups: Map<number, WmoGroupData> = new Map();
-  public blps: Map<number, WowBlp> = new Map();
+  private models: Map<number, ModelData> = new Map();
+  private wmos: Map<number, WmoData> = new Map();
+  private wmoGroups: Map<number, WmoGroupData> = new Map();
+  private blps: Map<number, WowBlp> = new Map();
 
   constructor(public dataFetcher: DataFetcher) {
+  }
+
+  public clear() {
+    this.models.clear();
+    this.wmos.clear();
+    this.wmoGroups.clear();
+    this.blps.clear();
   }
 
   private async getOrLoad<T extends Loadable>(fileId: number, type: (new (fileId: number) => T), map: Map<number, T>): Promise<T> {
@@ -86,7 +93,7 @@ export class WowCache {
 export class ModelData {
   public m2: WowM2;
   public skins: WowSkin[] = [];
-  public blpIds: number[] = [];
+  public blps: BlpData[] = [];
   public vertexColors: WowVec4[] = [];
   public textureWeights: Float32Array;
   public textureRotations: WowQuat[] = [];
@@ -104,8 +111,7 @@ export class ModelData {
     for (let txid of this.m2.texture_ids) {
       if (txid === 0) continue;
       try {
-        await cache.loadBlp(txid);
-        this.blpIds.push(txid);
+        this.blps.push(new BlpData(txid, await cache.loadBlp(txid)));
       } catch (e) {
         console.error(`failed to load BLP: ${e}`)
       }
@@ -165,6 +171,11 @@ export class ModelData {
   }
 }
 
+export class BlpData {
+  constructor(public fileId: number, public inner: WowBlp) {
+  }
+}
+
 export class WmoBatchData {
   public indexStart: number;
   public indexCount: number;
@@ -173,10 +184,11 @@ export class WmoBatchData {
   public materialFlags: WowWmoMaterialFlags;
   public vertexShader: WowWmoMaterialVertexShader;
   public pixelShader: WowWmoMaterialPixelShader;
+  public textures: (BlpData | null)[] = [];
   public normalMat: mat4;
   public visible = true;
 
-  constructor(batch: WowWmoMaterialBatch, materials: WowWmoMaterial[]) {
+  constructor(batch: WowWmoMaterialBatch, wmo: WmoData) {
     this.indexStart = batch.start_index;
     this.indexCount = batch.index_count;
     if (batch.use_material_id_large > 0) {
@@ -184,7 +196,14 @@ export class WmoBatchData {
     } else {
       this.materialId = batch.material_id;
     }
-    this.material = materials[this.materialId];
+    this.material = wmo.materials[this.materialId];
+    for (let blpId of [this.material.texture_1, this.material.texture_2, this.material.texture_3]) {
+      if (blpId === 0) {
+        this.textures.push(null);
+      } else {
+        this.textures.push(wmo.blps.get(blpId)!);
+      }
+    }
     this.materialFlags = rust.WowWmoMaterialFlags.new(this.material.flags);
     this.vertexShader = this.material.get_vertex_shader();
     this.pixelShader = this.material.get_pixel_shader();
@@ -272,10 +291,10 @@ export class WmoGroupData {
   constructor(public fileId: number) {
   }
 
-  public getBatches(materials: WowWmoMaterial[]): WmoBatchData[] {
+  public getBatches(wmo: WmoData): WmoBatchData[] {
     const batches: WmoBatchData[] = [];
     for (let batch of this.group.batches) {
-      batches.push(new WmoBatchData(batch, materials))
+      batches.push(new WmoBatchData(batch, wmo))
     }
     return batches;
   }
@@ -357,8 +376,9 @@ export class WmoData {
   public groups: WmoGroupData[] = [];
   public groupInfos: WowWmoGroupInfo[] = [];
   public groupAABBs: AABB[] = [];
-  public blpIds: number[] = [];
+  public blps: Map<number, BlpData> = new Map();
   public materials: WowWmoMaterial[] = [];
+  public models: Map<number, ModelData> = new Map();
   public modelIds: Uint32Array;
 
   constructor(public fileId: number) {
@@ -367,12 +387,12 @@ export class WmoData {
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<void> {
     this.wmo = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmo.new);
 
-    for (let tex of this.wmo.textures) {
-      this.materials.push(tex);
-      for (let texId of [tex.texture_1, tex.texture_2, tex.texture_3]) {
-        if (texId !== 0) {
+    for (let material of this.wmo.textures) {
+      this.materials.push(material);
+      for (let texId of [material.texture_1, material.texture_2, material.texture_3]) {
+        if (texId !== 0 && !this.blps.has(texId)) {
           try {
-            await cache.loadBlp(texId)
+            this.blps.set(texId, new BlpData(texId, await cache.loadBlp(texId)));
           } catch (e) {
             console.error(`failed to fetch BLP: ${e}`);
           }
@@ -383,7 +403,7 @@ export class WmoData {
     this.modelIds = this.wmo.doodad_file_ids;
     for (let modelId of this.modelIds) {
       if (modelId !== 0)
-        await cache.loadModel(modelId)
+        this.models.set(modelId, await cache.loadModel(modelId))
     }
 
     this.groupInfos = this.wmo.group_infos;
@@ -424,10 +444,10 @@ export class ModelRenderPass {
   public blendMode: WowM2BlendingMode;
   public materialFlags: WowM2MaterialFlags;
   public submesh: WowSkinSubmesh;
-  public tex0: number;
-  public tex1: number | null;
-  public tex2: number | null;
-  public tex3: number | null;
+  public tex0: BlpData;
+  public tex1: BlpData | null;
+  public tex2: BlpData | null;
+  public tex3: BlpData | null;
   public normalMat: mat4;
 
   constructor(public batch: WowModelBatch, public skin: WowSkin, public model: ModelData) {
@@ -435,10 +455,10 @@ export class ModelRenderPass {
     this.vertexShaderId = batch.get_vertex_shader();
     this.submesh = skin.submeshes[batch.skin_submesh_index];
     [this.blendMode, this.materialFlags] = model.materials[this.batch.material_index];
-    this.tex0 = this.getBlpId(0)!;
-    this.tex1 = this.getBlpId(1);
-    this.tex2 = this.getBlpId(2);
-    this.tex3 = this.getBlpId(3);
+    this.tex0 = this.getBlp(0)!;
+    this.tex1 = this.getBlp(1);
+    this.tex2 = this.getBlp(2);
+    this.tex3 = this.getBlp(3);
     this.normalMat = this.createNormalMat();
   }
 
@@ -518,10 +538,12 @@ export class ModelRenderPass {
     return result;
   }
 
-  private getBlpId(n: number): number | null {
+  private getBlp(n: number): BlpData | null {
     if (n < this.batch.texture_count) {
       const i = this.model.m2.lookup_texture(this.batch.texture_combo_index + n)!;
-      return this.model.blpIds[i];
+      if (this.model.blps[i]) {
+        return this.model.blps[i];
+      }
     }
     return null;
   }
@@ -534,7 +556,6 @@ export class ModelRenderPass {
     return [1.0, 1.0, 1.0, 1.0];
   }
 
-  // TODO eventually handle animation logic
   private getTextureTransform(texIndex: number): mat4 {
     const lookupIndex = this.batch.texture_transform_combo_index + texIndex;
     const transformIndex = this.model.m2.lookup_texture_transform(lookupIndex);
@@ -743,13 +764,16 @@ export class AdtLodData {
 }
 
 export class AdtData {
-  public blpIds: number[] = [];
+  public blps: Map<number, BlpData> = new Map();
+  public models: Map<number, ModelData> = new Map();
+  public wmos: Map<number, WmoData> = new Map();
   public worldSpaceAABB: AABB;
   public hasBigAlpha: boolean;
   public hasHeightTexturing: boolean;
   public lodLevel = 0;
   public lodData: AdtLodData[] = [];
   public visible = true;
+  private renderResult: WowAdtRenderResult;
 
   constructor(public fileId: number, public innerAdt: WowAdt) {
   }
@@ -777,38 +801,52 @@ export class AdtData {
   }
   
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
-      for (let blpId of this.innerAdt.get_texture_file_ids()) {
-        try {
-          await cache.loadBlp(blpId);
-        } catch (e) {
-          console.error(`failed to load BLP ${e}`);
-        }
+    for (let blpId of this.innerAdt.get_texture_file_ids()) {
+      try {
+        this.blps.set(blpId, new BlpData(blpId, await cache.loadBlp(blpId)));
+      } catch (e) {
+        console.error(`failed to load BLP ${e}`);
+      }
+    }
+
+    for (let lodLevel of [0, 1]) {
+      const lodData = new AdtLodData();
+
+      for (let adtDoodad of this.innerAdt.get_doodads(lodLevel)) {
+        const doodad = DoodadData.fromAdtDoodad(adtDoodad);
+        doodad.applyExteriorLighting = true;
+        lodData.doodads.push(doodad);
       }
 
-      for (let lodLevel of [0, 1]) {
-        const lodData = new AdtLodData();
-
-        for (let adtDoodad of this.innerAdt.get_doodads(lodLevel)) {
-          const doodad = DoodadData.fromAdtDoodad(adtDoodad);
-          doodad.applyExteriorLighting = true;
-          lodData.doodads.push(doodad);
-        }
-
-        for (let modelId of this.innerAdt.get_model_file_ids(lodLevel)) {
-          await cache.loadModel(modelId);
-          lodData.modelIds.push(modelId);
-        }
-
-        for (let wmoDef of this.innerAdt.get_wmo_defs(lodLevel)) {
-          const wmo = await cache.loadWmo(wmoDef.name_id);
-          lodData.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef, wmo));
-        }
-        if (lodLevel > 0 && lodData.modelIds.length > 0) {
-          console.log(lodData);
-        }
-
-        this.lodData.push(lodData);
+      for (let modelId of this.innerAdt.get_model_file_ids(lodLevel)) {
+        this.models.set(modelId, await cache.loadModel(modelId));
+        lodData.modelIds.push(modelId);
       }
+
+      for (let wmoDef of this.innerAdt.get_wmo_defs(lodLevel)) {
+        const wmo = await cache.loadWmo(wmoDef.name_id);
+        this.wmos.set(wmoDef.name_id, wmo);
+        lodData.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef, wmo));
+      }
+      if (lodLevel > 0 && lodData.modelIds.length > 0) {
+        console.log(lodData);
+      }
+
+      this.lodData.push(lodData);
+    }
+
+    this.renderResult = this.innerAdt.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
+    const extents = this.renderResult.extents;
+    this.worldSpaceAABB = new AABB(
+      extents.min.x,
+      extents.min.y,
+      extents.min.z,
+      extents.max.x,
+      extents.max.y,
+      extents.max.z,
+    );
+    this.worldSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
+    this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
   }
 
   public lodDoodads(): DoodadData[] {
@@ -828,29 +866,30 @@ export class AdtData {
     }
   }
 
-  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, WowAdtChunkDescriptor[]] {
-    const renderResult = this.innerAdt.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
+  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, ChunkData[]] {
     const vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, renderResult.vertex_buffer.buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.renderResult.vertex_buffer.buffer),
       byteOffset: 0,
     };
     const indexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, renderResult.index_buffer.buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.renderResult.index_buffer.buffer),
       byteOffset: 0,
     };
-    const adtChunks = renderResult.chunks;
-    const extents = renderResult.extents;
-    this.worldSpaceAABB = new AABB(
-      extents.min.x,
-      extents.min.y,
-      extents.min.z,
-      extents.max.x,
-      extents.max.y,
-      extents.max.z,
-    );
-    this.worldSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
-    this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
-    return [vertexBuffer, indexBuffer, adtChunks];
+    const chunks = [];
+    for (let chunk of this.renderResult.chunks) {
+      const textures = [];
+      for (let blpId of chunk.texture_layers) {
+        textures.push(this.blps.get(blpId)!);
+      }
+      chunks.push(new ChunkData(chunk, textures));
+    }
+    return [vertexBuffer, indexBuffer, chunks];
+  }
+}
+
+export class ChunkData {
+  constructor(public inner: WowAdtChunkDescriptor, public textures: BlpData[]) {
+
   }
 }
 
@@ -910,43 +949,70 @@ export class LazyWorldData {
   private loadedAdtFileIds: number[] = [];
   public globalWmo: WmoData | null = null;
   public globalWmoDef: WmoDefinition | null = null;
-  private adtFileIds: WowMapFileDataIDs[] = [];
+  public adtFileIds: WowMapFileDataIDs[] = [];
+  public loading = false;
 
-  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 2) {
+  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 2, private dataFetcher: DataFetcher, public cache: WowCache) {
   }
 
-  public async load(dataFetcher: DataFetcher, cache: WowCache) {
-    this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
+  public async load() {
+    this.wdt = await fetchFileByID(this.fileId, this.dataFetcher, rust.WowWdt.new);
     this.adtFileIds = this.wdt.get_all_map_data();
-    const [adtX, adtY] = this.startAdtCoords;
-    for (let x = adtX - this.adtRadius; x <= adtX + this.adtRadius; x++) {
-      for (let y = adtY - this.adtRadius; y <= adtY + this.adtRadius; y++) {
-        await this.loadAdt(x, y, dataFetcher, cache);
+    const [centerX, centerY] = this.startAdtCoords;
+    for (let x = centerX - this.adtRadius; x <= centerX + this.adtRadius; x++) {
+      for (let y = centerY - this.adtRadius; y <= centerY + this.adtRadius; y++) {
+        const maybeAdt = await this.ensureAdtLoaded(x, y);
+        if (maybeAdt) {
+          this.adts.push(maybeAdt);
+        }
       }
     }
   }
 
-  public async loadAdt(x: number, y: number, dataFetcher: DataFetcher, cache: WowCache) {
-    console.log(`loading coords ${x}, ${y}`)
-    const fileIDs = this.adtFileIds[y * 64 + x];
-    if (fileIDs.root_adt === 0) {
-      console.error(`null ADTs in a non-global-WMO WDT`);
+  public onEnterAdt([centerX, centerY]: [number, number], scene: WdtScene) {
+    if (this.loading) {
       return;
     }
+    setTimeout(async () => {
+      this.loading = true;
+      console.log(`loading area around ${centerX}, ${centerY}`)
+      for (let x = centerX - this.adtRadius; x <= centerX + this.adtRadius; x++) {
+        for (let y = centerY - this.adtRadius; y <= centerY + this.adtRadius; y++) {
+          const maybeAdt = await this.ensureAdtLoaded(x, y);
+          if (maybeAdt) {
+            scene.setupAdt(maybeAdt);
+            this.adts.push(maybeAdt);
+          }
+        }
+      }
+      this.loading = false;
+    }, 0);
+  }
 
-    const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
-    wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
-    if (fileIDs.obj1_adt !== 0) {
-      wowAdt.append_lod_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, dataFetcher));
+  public async ensureAdtLoaded(x: number, y: number): Promise<AdtData | undefined> {
+    const fileIDs = this.adtFileIds[y * 64 + x];
+    if (this.loadedAdtFileIds.includes(fileIDs.root_adt)) {
+      return undefined;
     }
-    wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
+    console.log(`loading coords ${x}, ${y}`)
+    if (fileIDs.root_adt === 0) {
+      console.error(`null ADTs in a non-global-WMO WDT`);
+      return undefined;
+    }
+
+    const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, this.dataFetcher));
+    wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, this.dataFetcher));
+    if (fileIDs.obj1_adt !== 0) {
+      wowAdt.append_lod_obj_adt(await fetchDataByFileID(fileIDs.obj1_adt, this.dataFetcher));
+    }
+    wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, this.dataFetcher));
 
     const adt = new AdtData(fileIDs.root_adt, wowAdt);
-    await adt.load(dataFetcher, cache);
+    await adt.load(this.dataFetcher, this.cache);
     adt.setWorldFlags(this.wdt);
 
-    this.adts.push(adt);
     this.loadedAdtFileIds.push(fileIDs.root_adt);
+    return adt;
   }
 
   public getAdtCoords(fileId: number): [number, number] | undefined {

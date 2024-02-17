@@ -58,10 +58,8 @@ export const noclipSpaceFromPlacementSpace = mat4.fromValues(
 )
 
 const MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
-const MAX_INTERIOR_WMO_RENDER_DIST = 1000;
+const MAX_INTERIOR_WMO_RENDER_DIST = 500;
 const ADT_LOD0_DISTANCE = 1000;
-const MAX_ADT_DOODAD_RENDER_DIST = 1000;
-const MAX_ADT_RENDER_DIST = 10000;
 
 export const adtSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
 mat4.mul(adtSpaceFromPlacementSpace, adtSpaceFromPlacementSpace, noclipSpaceFromPlacementSpace);
@@ -181,7 +179,7 @@ export class MapArray<K, V> {
   }
 }
 
-class WdtScene implements Viewer.SceneGfx {
+export class WdtScene implements Viewer.SceneGfx {
   private terrainRenderers: Map<number, TerrainRenderer> = new Map();
   private modelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
@@ -198,11 +196,12 @@ class WdtScene implements Viewer.SceneGfx {
   public mainView = new View();
   private textureCache: TextureCache;
   public cullingState = CullingState.Running;
+  public currentAdtCoords: [number, number] = [0, 0];
 
   // FIXME
   public forceLod = 0;
 
-  constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private wowCache: WowCache, private lightDb: LightDatabase) {
+  constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private lightDb: LightDatabase) {
     console.time('WdtScene construction');
     this.textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
@@ -240,14 +239,14 @@ class WdtScene implements Viewer.SceneGfx {
       this.renderHelper,
       adt,
       this.textureCache,
-      this.wowCache
     ));
     for (let lodData of adt.lodData) {
       for (let modelId of lodData.modelIds) {
-        this.createModelRenderer(modelId);
+        const model = adt.models.get(modelId)!;
+        this.createModelRenderer(model);
       }
       for (let wmoDef of lodData.wmoDefs) {
-        this.setupWmo(this.wowCache.wmos.get(wmoDef.wmoId)!);
+        this.setupWmo(adt.wmos.get(wmoDef.wmoId)!);
         this.setupWmoDef(wmoDef);
       }
       for (let doodad of lodData.doodads) {
@@ -265,10 +264,9 @@ class WdtScene implements Viewer.SceneGfx {
       wmo,
       this.textureCache,
       this.renderHelper,
-      this.wowCache
     ));
-    for (let modelId of wmo.modelIds) {
-      this.createModelRenderer(modelId);
+    for (let model of wmo.models.values()) {
+      this.createModelRenderer(model);
     }
   }
 
@@ -282,13 +280,9 @@ class WdtScene implements Viewer.SceneGfx {
 
   }
 
-  public createModelRenderer(modelId: number) {
-    if (modelId === 0) {
-      return;
-    }
-    if (!this.modelRenderers.has(modelId)) {
-      const model = this.wowCache.models.get(modelId)!;
-      this.modelRenderers.set(modelId, new ModelRenderer(this.device, model, this.renderHelper, this.textureCache, this.wowCache));
+  public createModelRenderer(model: ModelData) {
+    if (!this.modelRenderers.has(model.fileId)) {
+      this.modelRenderers.set(model.fileId, new ModelRenderer(this.device, model, this.renderHelper, this.textureCache));
     }
   }
 
@@ -331,7 +325,7 @@ class WdtScene implements Viewer.SceneGfx {
     }
   }
 
-  public cullWmoDef(def: WmoDefinition) {
+  public cullWmoDef(def: WmoDefinition, wmo: WmoData) {
     if (DEBUG_DRAW_WMO_BOUNDING_BOXES) {
       drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, def.worldSpaceAABB);
       for (let groupAABB of def.groupDefAABBs.values()) {
@@ -344,7 +338,6 @@ class WdtScene implements Viewer.SceneGfx {
     if (!def.visible) {
       return;
     }
-    const wmo = this.wowCache.wmos.get(def.wmoId)!;
     // TODO: portal culling
     for (let [groupId, groupAABB] of def.groupDefAABBs.entries()) {
       if (this.mainView.frustum.contains(groupAABB)) {
@@ -374,7 +367,8 @@ class WdtScene implements Viewer.SceneGfx {
     const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
     adt.setLodLevel(distance < ADT_LOD0_DISTANCE ? 0 : 1);
     for (let def of adt.lodWmoDefs()) {
-      this.cullWmoDef(def);
+      const wmo = adt.wmos.get(def.wmoId)!;
+      this.cullWmoDef(def, wmo);
     }
   }
 
@@ -428,12 +422,36 @@ class WdtScene implements Viewer.SceneGfx {
     this.updateCullingState();
   }
 
+  private updateCurrentAdt() {
+    const [worldY, worldX, _] = this.mainView.cameraPos;
+    const adtCoords = this.adtCoordsForWorldCoords(worldX, worldY);
+    if (adtCoords) {
+      if (this.currentAdtCoords[0] !== adtCoords[0] || this.currentAdtCoords[1] !== adtCoords[1]) {
+        this.currentAdtCoords = adtCoords;
+        if ('onEnterAdt' in this.world) {
+          this.world.onEnterAdt(this.currentAdtCoords, this);
+        }
+      }
+    }
+  }
+
+  public adtCoordsForWorldCoords(x: number, y: number): [number, number] | undefined {
+    const adt_dimension = 533.33;
+    const x_coord = Math.floor(32 - x / adt_dimension);
+    const y_coord = Math.floor(32 - y / adt_dimension);
+    if (x_coord >= 0 && x_coord < 64 && y_coord >= 0 && y_coord < 64) {
+      return [x_coord, y_coord];
+    }
+    return undefined;
+  }
+
   public adjustCameraController(c: CameraController) {
       c.setSceneMoveSpeedMult(0.51);
   }
 
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
     viewerInput.camera.setClipPlanes(0.1);
+    this.updateCurrentAdt();
     const renderInstManager = this.renderHelper.renderInstManager;
 
     const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
@@ -492,7 +510,7 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     console.timeEnd('loading wdt');
     const lightDb = new LightDatabase(this.lightdbMapId);
     await lightDb.load(dataFetcher);
-    return new WdtScene(device, wdt, renderHelper, cache, lightDb);
+    return new WdtScene(device, wdt, renderHelper, lightDb);
   }
 }
 
@@ -509,13 +527,13 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1);
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache);
     console.time('loading wdt')
-    await wdt.load(dataFetcher, cache);
+    await wdt.load();
     console.timeEnd('loading wdt')
     const lightDb = new LightDatabase(this.lightdbMapId);
     await lightDb.load(dataFetcher);
-    return new WdtScene(device, wdt, renderHelper, cache, lightDb);
+    return new WdtScene(device, wdt, renderHelper, lightDb);
   }
 }
 
