@@ -698,6 +698,13 @@ export class WmoDefinition {
           this.groupIdToDoodadIndices.append(group.fileId, index);
         }
       }
+
+      for (let index of this.groupIdToDoodadIndices.get(group.fileId)) {
+        const doodad = this.doodads[index];
+        doodad.ambientColor = this.groupAmbientColors.get(group.fileId)!;
+        doodad.applyInteriorLighting = group.flags.interior && !group.flags.exterior_lit;
+        doodad.applyExteriorLighting = true;
+      }
     }
 
     this.worldSpaceAABB.transform(extents, adtSpaceFromPlacementSpace);
@@ -782,7 +789,9 @@ export class AdtData {
         const lodData = new AdtLodData();
 
         for (let adtDoodad of this.innerAdt.get_doodads(lodLevel)) {
-          lodData.doodads.push(DoodadData.fromAdtDoodad(adtDoodad));
+          const doodad = DoodadData.fromAdtDoodad(adtDoodad);
+          doodad.applyExteriorLighting = true;
+          lodData.doodads.push(doodad);
         }
 
         for (let modelId of this.innerAdt.get_model_file_ids(lodLevel)) {
@@ -848,6 +857,10 @@ export class AdtData {
 export class DoodadData {
   public visible = true;
   public worldAABB = new AABB();
+  public ambientColor: vec4 = [0, 0, 0, 0];
+  public applyInteriorLighting = false;
+  public applyExteriorLighting = false;
+  public interiorExteriorBlend = 0;
 
   constructor(public modelId: number, public modelMatrix: mat4, public color: number[] | null) {
   }

@@ -573,10 +573,9 @@ impl LightDatabase {
         }
 
         outer_lights.sort_unstable_by(|(_, alpha_a), (_, alpha_b)| {
-            alpha_a.partial_cmp(alpha_b).unwrap()
+            alpha_b.partial_cmp(alpha_a).unwrap()
         });
 
-        //let mut result = self.get_default_light(map_id, time);
         let mut result = LightResult::default();
         let mut total_alpha = 0.0;
         for (outer_result, mut alpha) in &outer_lights {

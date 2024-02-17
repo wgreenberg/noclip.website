@@ -688,7 +688,7 @@ pub struct HeightmapChunk {
 
 #[derive(DekuRead, Debug, Clone)]
 pub struct NormalChunk {
-    pub normals: [u8; 3 * (9*9 + 8*8)],
+    pub normals: [i8; 3 * (9*9 + 8*8)],
 }
 
 #[derive(DekuRead, Debug, Clone)]

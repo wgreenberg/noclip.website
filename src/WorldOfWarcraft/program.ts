@@ -33,12 +33,14 @@ vec3 calcLight(
 
     if (applyExteriorLight) {
         float nDotL = clamp(dot(normalizedN, -exteriorDirectColorDir.xyz), 0.0, 1.0);
-        float nDotUp = dot(normalizedN, vec3(0.0, 1.0, 0.0));
+        float nDotUp = dot(normalizedN, vec3(0.0, 0.0, 1.0));
         vec3 adjAmbient = exteriorAmbientColor.rgb + precomputedLight;
+        vec3 adjHorizontal = exteriorAmbientColor.rgb + precomputedLight;
+        vec3 adjGround = exteriorAmbientColor.rgb + precomputedLight;
         if (nDotUp >= 0.0) {
-          currentColor = mix(precomputedLight, adjAmbient, vec3(nDotUp));
+          currentColor = mix(adjHorizontal, adjAmbient, vec3(nDotUp));
         } else {
-          currentColor = precomputedLight;
+          currentColor = mix(adjHorizontal, adjGround, vec3(-nDotUp));
         }
         vec3 skyColor = (currentColor * 1.10000002);
         vec3 groundColor = (currentColor * 0.699999988);
@@ -282,7 +284,8 @@ void mainVS() {
     vec4 worldPoint = Mul(u_Transform, vec4(a_Position, 1.0));
     vec4 cameraPoint = Mul(u_ModelView, worldPoint);
     v_Position = vec4(cameraPoint.xyz, 0.0);
-    v_Normal = normalize(Mul(u_NormalTransform, vec4(a_Normal, 0.0))).xyz;
+    vec4 normal = vec4(a_Normal.x, a_Normal.y, a_Normal.z, 0.0);
+    v_Normal = normalize(Mul(u_Transform, normal)).xyz;
 
     gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform, vec4(a_Position, 1.0))));
     v_Color0 = a_Color0.bgra / 255.0;
@@ -572,6 +575,7 @@ void mainVS() {
     v_Color = a_Color;
     v_Lighting = a_Lighting;
     v_Normal = a_Normal;
+    v_Position = a_Position;
     gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
 }
 #endif
@@ -603,6 +607,13 @@ void mainPS() {
       vec3(0.0), // specular
       vec3(0.0) // emissive
     ), 1.0);
+
+    float specBlend = diffuse.a;
+    vec3 halfVec = -normalize(exteriorDirectColorDir.xyz + normalize(v_Position));
+    vec3 lSpecular = exteriorDirectColor.xyz * pow(max(0.0, dot(halfVec, v_Normal)), 20.0);
+    float adtSpecMult = 1.0;
+    vec3 specTerm = vec3(specBlend) * lSpecular * adtSpecMult;
+    finalColor.rgb += specTerm;
 
     gl_FragColor = finalColor;
 }
@@ -650,8 +661,15 @@ export class ModelProgram extends BaseProgram {
   public override both = `
 ${BaseProgram.commonDeclarations}
 
+struct DoodadInstance {
+    Mat4x4 transform;
+    vec4 interiorAmbientColor;
+    vec4 interiorDirectColor;
+    vec4 lightingParams; // [applyInteriorLighting, applyExteriorLighting, interiorExteriorBlend, _]
+};
+
 layout(std140) uniform ub_DoodadParams {
-    Mat4x4 u_Transform[${MAX_DOODAD_INSTANCES}];
+    DoodadInstance instances[${MAX_DOODAD_INSTANCES}];
 };
 
 layout(std140) uniform ub_MaterialParams {
@@ -674,6 +692,8 @@ varying vec2 v_UV1;
 varying vec2 v_UV2;
 varying vec2 v_UV3;
 varying vec4 v_DiffuseColor;
+varying vec3 v_Normal;
+varying float v_InstanceID;
 
 #ifdef VERT
 layout(location = ${ModelProgram.a_Position}) attribute vec3 a_Position;
@@ -687,7 +707,9 @@ float edgeScan(vec3 position, vec3 normal){
 }
 
 void mainVS() {
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform[gl_InstanceID], vec4(a_Position, 1.0))));
+    DoodadInstance params = instances[gl_InstanceID];
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(params.transform, vec4(a_Position, 1.0))));
+    v_InstanceID = float(gl_InstanceID); // FIXME: hack until we get flat variables working
     vec3 normal = normalize(Mul(normalMat, vec4(a_Normal, 0.0)).xyz);
     vec4 combinedColor = clamp(meshColor, 0.0, 1.0);
     vec4 combinedColorHalved = combinedColor * 0.5;
@@ -699,6 +721,7 @@ void mainVS() {
     v_UV1 = a_TexCoord1;
     v_UV2 = vec2(0.0);
     v_UV3 = vec2(0.0);
+    v_Normal = a_Normal;
 
     if (vertexShader == ${rust.WowVertexShader.DiffuseT1}) {
       ${ModelProgram.buildVertexShaderBlock('diffuse', ['t1'])}
@@ -752,6 +775,9 @@ void mainPS() {
     vec4 tex1WithUV0 = texture(SAMPLER_2D(u_Texture1), v_UV0);
     vec4 tex2WithUV0 = texture(SAMPLER_2D(u_Texture2), v_UV0);
     vec4 tex3WithUV1 = texture(SAMPLER_2D(u_Texture3), v_UV1);
+
+    // TODO: iterate through local lights to calculate this
+    vec3 accumLight = vec3(0.0);
 
     int pixelShader = int(shaderTypes.r);
     vec4 finalColor = vec4(1.0);
@@ -909,7 +935,25 @@ void mainPS() {
       finalOpacity = discardAlpha * v_DiffuseColor.a;
     }
 
-    finalColor = vec4(matDiffuse, finalOpacity);
+    int instanceID = int(v_InstanceID + 0.5);
+    DoodadInstance params = instances[instanceID];
+    bool applyInterior = params.lightingParams.x > 0.0;
+    bool applyExterior = params.lightingParams.y > 0.0;
+    float interiorExteriorBlend = params.lightingParams.z;
+
+    finalColor = vec4(calcLight(
+      matDiffuse.rgb,
+      v_Normal,
+      params.interiorAmbientColor,
+      params.interiorDirectColor,
+      interiorExteriorBlend,
+      applyInterior,
+      applyExterior,
+      accumLight,
+      vec3(0.0), // precomputedLight
+      specular,
+      vec3(0.0) // emissive
+   ), finalOpacity);
     
     gl_FragColor = finalColor;
 }

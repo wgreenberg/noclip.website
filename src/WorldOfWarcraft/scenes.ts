@@ -18,7 +18,7 @@ import { DebugTex, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3, vec4 } from 'gl-matrix';
 import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase, WmoGroupData } from './data.js';
-import { getMatrixTranslation } from "../MathHelpers.js";
+import { getMatrixTranslation, lerp } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
@@ -88,12 +88,32 @@ class View {
     public cameraPos = vec3.create();
     public frustum: Frustum = new Frustum();
     public time: number;
+    public timeOffset = 1440;
+    public secondsPerGameDay = 60;
 
     public finishSetup(): void {
         mat4.invert(this.worldFromViewMatrix, this.viewFromWorldMatrix);
         mat4.mul(this.clipFromWorldMatrix, this.clipFromViewMatrix, this.viewFromWorldMatrix);
         getMatrixTranslation(this.cameraPos, this.worldFromViewMatrix);
         this.frustum.updateClipFrustum(this.clipFromWorldMatrix, this.clipSpaceNearZ);
+    }
+
+    private calculateSunDirection(): void {
+      const theta = 3.926991;
+      const phiMin = 2.2165682;
+      const phiMax = 1.9198623;
+      let timePct = (this.time % 1440.0) / 1440.0;
+      let phi;
+      if (timePct < 0.5) {
+        phi = lerp(phiMax, phiMin, timePct / 0.5);
+      } else {
+        phi = lerp(phiMin, phiMax, (timePct - 0.5) / 0.5);
+      }
+      const sinPhi = Math.sin(phi);
+      const cosPhi = Math.cos(phi);
+      const sinTheta = Math.sin(theta);
+      const cosTheta = Math.cos(theta);
+      this.exteriorDirectColorDirection = [sinPhi * cosTheta, sinPhi * sinTheta, cosPhi, 0];
     }
 
     public cameraDistanceToWorldSpaceAABB(aabb: AABB): number {
@@ -106,7 +126,8 @@ class View {
       this.clipSpaceNearZ = viewerInput.camera.clipSpaceNearZ;
       mat4.mul(this.viewFromWorldMatrix, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
       mat4.copy(this.clipFromViewMatrix, viewerInput.camera.projectionMatrix);
-      this.time = (viewerInput.time * 0.001) % 2880;
+      this.time = (viewerInput.time / this.secondsPerGameDay + this.timeOffset) % 2880;
+      this.calculateSunDirection();
       this.finishSetup();
     }
 }
@@ -177,7 +198,6 @@ class WdtScene implements Viewer.SceneGfx {
   public mainView = new View();
   private textureCache: TextureCache;
   public cullingState = CullingState.Running;
-  public time: number = 1400;
 
   // FIXME
   public forceLod = 0;
@@ -374,7 +394,7 @@ class WdtScene implements Viewer.SceneGfx {
       viewMat,
       this.mainView.interiorSunDirection,
       this.mainView.exteriorDirectColorDirection,
-      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.time)
+      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.mainView.time)
     );
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
 

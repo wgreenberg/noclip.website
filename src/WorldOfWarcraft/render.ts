@@ -15,7 +15,7 @@ import { SkinData, ModelData, WowCache, WmoBatchData, WmoData, WmoDefinition, Wm
 import { MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
-import { adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace } from "./scenes.js";
+import { adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, placementSpaceFromModelSpace } from "./scenes.js";
 import { convertToTriangleIndexBuffer, GfxTopology } from "../gfx/helpers/TopologyHelpers.js";
 import { skyboxVertices, skyboxIndices } from "./skybox.js";
 import { assert } from "../util.js";
@@ -84,10 +84,18 @@ export class ModelRenderer {
     const template = renderInstManager.pushTemplateRenderInst();
 
     for (let doodadChunk of chunk(visibleDoodads, MAX_DOODAD_INSTANCES)) {
-      let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, 16 * MAX_DOODAD_INSTANCES);
+      let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, (16 + 4 * 3) * MAX_DOODAD_INSTANCES);
       const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
       for (let doodad of doodadChunk) {
         offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
+        offs += fillVec4v(mapped, offs, doodad.ambientColor);
+        offs += fillVec4v(mapped, offs, [0, 0, 0, 0]);
+        offs += fillVec4(mapped, offs,
+          doodad.applyInteriorLighting ? 1.0 : 0.0,
+          doodad.applyExteriorLighting ? 1.0 : 0.0,
+          doodad.applyInteriorLighting ? 1.0 : 0.0,
+          0
+        );
       }
 
       for (let i=0; i<this.skinData.length; i++) {
@@ -175,7 +183,7 @@ export class WmoRenderer {
       let offs = template.allocateUniformBuffer(WmoProgram.ub_ModelParams, 2 * 16);
       const mapped = template.mapUniformBufferF32(WmoProgram.ub_ModelParams);
       offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
-      const normalMat = mat4.mul(mat4.create(), noclipSpaceFromAdtSpace, def.modelMatrix);
+      const normalMat = mat4.mul(mat4.create(), def.modelMatrix, placementSpaceFromModelSpace);
       mat4.invert(normalMat, normalMat);
       mat4.transpose(normalMat, normalMat);
       offs += fillMatrix4x4(mapped, offs, normalMat);
