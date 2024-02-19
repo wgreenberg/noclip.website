@@ -51,7 +51,7 @@ pub struct SkinProfile {
 pub struct Skin {
     pub submeshes: Vec<SkinSubmesh>,
     pub batches: Vec<ModelBatch>,
-    pub indices: Vec<u16>,
+    indices: Option<Vec<u16>>,
     profile: SkinProfile,
 }
 
@@ -79,8 +79,12 @@ impl Skin {
             batches,
             submeshes,
             profile,
-            indices,
+            indices: Some(indices),
         })
+    }
+
+    pub fn take_indices(&mut self) -> Vec<u16> {
+        self.indices.take().expect("Skin indices already taken")
     }
 }
 

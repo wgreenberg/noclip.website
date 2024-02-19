@@ -1,8 +1,8 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
-import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor } from "../gfx/platform/GfxPlatform.js";
+import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID, getFilePath } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
@@ -91,24 +91,28 @@ export class WowCache {
 }
 
 export class ModelData {
-  public m2: WowM2;
   public skins: WowSkin[] = [];
   public blps: BlpData[] = [];
-  public vertexColors: WowVec4[] = [];
+  public vertexBuffer: Uint8Array;
+  public vertexColors: Float32Array;
   public textureWeights: Float32Array;
-  public textureRotations: WowQuat[] = [];
-  public textureScalings: WowVec3[] = [];
-  public textureTranslations: WowVec3[] = [];
+  public textureRotations: Float32Array;
+  public textureScalings: Float32Array;
+  public textureTranslations: Float32Array;
   public textureTransforms: mat4[] = [];
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
+  public animationManager: WowM2AnimationManager;
+  public textureLookupTable: Uint16Array;
+  public textureTransparencyLookupTable: Uint16Array;
+  public textureTransformLookupTable: Uint16Array;
   public modelAABB: AABB;
 
   constructor(public fileId: number) {
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
-    this.m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
-    for (let txid of this.m2.texture_ids) {
+    const m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
+    for (let txid of m2.texture_ids) {
       if (txid === 0) continue;
       try {
         this.blps.push(new BlpData(txid, await cache.loadBlp(txid)));
@@ -116,29 +120,47 @@ export class ModelData {
         console.error(`failed to load BLP: ${e}`)
       }
     }
-    this.textureWeights = new Float32Array(this.m2.get_num_texture_weights());
+    this.vertexBuffer = m2.take_vertex_data();
 
-    const aabb = this.m2.get_bounding_box();
+    const aabb = m2.get_bounding_box();
+    const min = aabb.min;
+    const max = aabb.max;
     this.modelAABB = new AABB(
-      aabb.min.x,
-      aabb.min.y,
-      aabb.min.z,
-      aabb.max.x,
-      aabb.max.y,
-      aabb.max.z,
+      min.x,
+      min.y,
+      min.z,
+      max.x,
+      max.y,
+      max.z,
     );
+    aabb.free();
+    min.free();
+    max.free();
 
-    this.materials = this.m2.materials.map(mat => {
+    this.textureLookupTable = m2.take_texture_lookup();
+    this.textureTransformLookupTable = m2.take_texture_transform_lookup();
+    this.textureTransparencyLookupTable = m2.take_texture_transparency_lookup();
+
+    const m2Materials = m2.materials;
+    this.materials = m2Materials.map(mat => {
       return [mat.blending_mode, rust.WowM2MaterialFlags.new(mat.flags)];
-    })
+    });
+    m2Materials.forEach(mat => mat.free());
 
-    for (let skid of this.m2.skin_ids) {
+    for (let skid of m2.skin_ids) {
       this.skins.push(await fetchFileByID(skid, dataFetcher, rust.WowSkin.new));
     }
+    this.animationManager = m2.take_animation_manager();
+    this.textureWeights = new Float32Array(this.animationManager.get_num_texture_weights());
+    this.textureTranslations = new Float32Array(this.animationManager.get_num_transformations() * 3);
+    this.textureRotations = new Float32Array(this.animationManager.get_num_transformations() * 4);
+    this.textureScalings = new Float32Array(this.animationManager.get_num_transformations() * 3);
+    this.vertexColors = new Float32Array(this.animationManager.get_num_colors() * 3);
+    m2.free();
   }
 
   public updateAnimation(deltaTime: number) {
-    this.m2.update_animations(
+    this.animationManager.update_animations(
       deltaTime / 10,
       this.textureWeights,
       this.textureTranslations,
@@ -147,27 +169,38 @@ export class ModelData {
       this.vertexColors
     );
 
-    const transforms: mat4[] = [];
+    if (this.textureTransforms.length === 0) {
+      for (let i=0; i<this.textureRotations.length; i++) {
+        this.textureTransforms.push(mat4.create());
+      }
+    }
+
     const pivot: vec3 = [0.5, 0.5, 0];
     const antiPivot: vec3 = [-0.5, -0.5, 0];
-    for (let i = 0; i < this.textureRotations.length; i++) {
-      const transform = mat4.identity(mat4.create());
+    const numTransforms = this.animationManager.get_num_transformations();
+    for (let i = 0; i < numTransforms; i++) {
+      mat4.identity(this.textureTransforms[i]);
 
-      mat4.translate(transform, transform, pivot);
-      const rotation: vec4 = [this.textureRotations[i].x, this.textureRotations[i].y, this.textureRotations[i].z, this.textureRotations[i].w];
-      mat4.fromQuat(transform, rotation);
-      mat4.translate(transform, transform, antiPivot);
+      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], pivot);
+      const rotation: vec4 = this.textureRotations.slice(i * 4, (i + 1) * 4);
+      mat4.fromQuat(this.textureTransforms[i], rotation);
+      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], antiPivot);
 
-      mat4.translate(transform, transform, pivot);
-      const scaling: vec3 = [this.textureScalings[i].x, this.textureScalings[i].y, this.textureScalings[i].z];
-      mat4.scale(transform, transform, scaling);
-      mat4.translate(transform, transform, antiPivot);
+      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], pivot);
+      const scaling: vec3 = this.textureScalings.slice(i * 3, (i + 1) * 3);
+      mat4.scale(this.textureTransforms[i], this.textureTransforms[i], scaling);
+      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], antiPivot);
 
-      const translation: vec3 = [this.textureTranslations[i].x, this.textureTranslations[i].y, this.textureTranslations[i].z];
-      mat4.translate(transform, transform, translation);
-      transforms.push(transform);
+      const translation: vec3 = this.textureTranslations.slice(i * 3, (i + 1) * 3);
+      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], translation);
     }
-    this.textureTransforms = transforms;
+  }
+
+  public getVertexColor(index: number): vec4 {
+    if (index * 4 < this.vertexColors.length) {
+      return this.vertexColors.slice(index * 4, (index + 1) * 4);
+    }
+    return [1, 1, 1, 1];
   }
 }
 
@@ -185,6 +218,7 @@ export class WmoBatchData {
   public vertexShader: WowWmoMaterialVertexShader;
   public pixelShader: WowWmoMaterialPixelShader;
   public textures: (BlpData | null)[] = [];
+  public megaStateFlags: Partial<GfxMegaStateDescriptor>;
   public normalMat: mat4;
   public visible = true;
 
@@ -207,20 +241,20 @@ export class WmoBatchData {
     this.materialFlags = rust.WowWmoMaterialFlags.new(this.material.flags);
     this.vertexShader = this.material.get_vertex_shader();
     this.pixelShader = this.material.get_pixel_shader();
+    this.megaStateFlags = {
+      cullMode: this.materialFlags.unculled ? GfxCullMode.None : GfxCullMode.Back,
+      depthWrite: this.material.blend_mode <= 1,
+    };
 
     this.normalMat = mat4.create();
     mat4.identity(this.normalMat);
   }
 
   public setMegaStateFlags(renderInst: GfxRenderInst) {
-    let settings = {
-      cullMode: this.materialFlags.unculled ? GfxCullMode.None : GfxCullMode.Back,
-      depthWrite: this.material.blend_mode <= 1,
-    };
     // TODO setSortKeyDepth based on distance to transparent object
     switch (this.material.blend_mode) {
       case rust.WowM2BlendingMode.Alpha: {
-        setAttachmentStateSimple(settings, {
+        setAttachmentStateSimple(this.megaStateFlags, {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.SrcAlpha,
           blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
@@ -229,7 +263,7 @@ export class WmoBatchData {
         break;
       }
       case rust.WowM2BlendingMode.NoAlphaAdd: {
-        setAttachmentStateSimple(settings, {
+        setAttachmentStateSimple(this.megaStateFlags, {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.One,
           blendDstFactor: GfxBlendFactor.One,
@@ -238,7 +272,7 @@ export class WmoBatchData {
         break;
       }
       case rust.WowM2BlendingMode.Add: {
-        setAttachmentStateSimple(settings, {
+        setAttachmentStateSimple(this.megaStateFlags, {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.SrcAlpha,
           blendDstFactor: GfxBlendFactor.One,
@@ -247,7 +281,7 @@ export class WmoBatchData {
         break;
       }
       case rust.WowM2BlendingMode.Mod: {
-        setAttachmentStateSimple(settings, {
+        setAttachmentStateSimple(this.megaStateFlags, {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.Dst,
           blendDstFactor: GfxBlendFactor.Zero,
@@ -256,7 +290,7 @@ export class WmoBatchData {
         break;
       }
       case rust.WowM2BlendingMode.Mod2x: {
-        setAttachmentStateSimple(settings, {
+        setAttachmentStateSimple(this.megaStateFlags, {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.Dst,
           blendDstFactor: GfxBlendFactor.Src,
@@ -266,7 +300,7 @@ export class WmoBatchData {
       }
       case rust.WowM2BlendingMode.BlendAdd: {
 
-        setAttachmentStateSimple(settings, {
+        setAttachmentStateSimple(this.megaStateFlags, {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.One,
           blendDstFactor: GfxBlendFactor.SrcAlpha,
@@ -278,50 +312,64 @@ export class WmoBatchData {
       case rust.WowM2BlendingMode.AlphaKey:
         break;
     }
-    renderInst.setMegaStateFlags(settings);
+    renderInst.setMegaStateFlags(this.megaStateFlags);
   }
 }
 
 export class WmoGroupData {
-  public group: WowWmoGroup;
+  public innerBatches: WowWmoMaterialBatch[] = [];
   public flags: WowWmoGroupFlags;
   public doodadRefs: Uint16Array;
+  public replacementForHeaderColor: WowArgb | undefined;
+  public numUVBufs: number;
+  public numVertices: number;
+  public numColorBufs: number;
   public visible = true;
+  public vertices: Uint8Array;
+  public normals: Uint8Array;
+  public indices: Uint8Array;
+  public uvs: Uint8Array;
+  public colors: Uint8Array;
 
   constructor(public fileId: number) {
   }
 
   public getBatches(wmo: WmoData): WmoBatchData[] {
     const batches: WmoBatchData[] = [];
-    for (let batch of this.group.batches) {
+    for (let batch of this.innerBatches) {
       batches.push(new WmoBatchData(batch, wmo))
     }
     return batches;
   }
 
   public getAmbientColor(wmoData: WmoData, doodadSetId: number): vec4 {
-    let color: vec4 = [0, 0, 0, 0];
     if (!this.flags.exterior && !this.flags.exterior_lit) {
-      let colorVec3 = this.group.replacement_for_header_color;
-      if (!colorVec3) {
-        colorVec3 = wmoData.wmo.get_ambient_color(doodadSetId);
+      if (this.replacementForHeaderColor) {
+        return [
+          this.replacementForHeaderColor.r / 255.0,
+          this.replacementForHeaderColor.g / 255.0,
+          this.replacementForHeaderColor.b / 255.0,
+          1.0,
+        ];
+      } else {
+        const color = wmoData.wmo.get_ambient_color(doodadSetId);
+        return [
+          color.r / 255.0,
+          color.g / 255.0,
+          color.b / 255.0,
+          1.0,
+        ];
       }
-      color = [
-        colorVec3.r / 255.0,
-        colorVec3.g / 255.0,
-        colorVec3.b / 255.0,
-        1.0,
-      ];
     }
-    return color;
+    return [0, 0, 0, 0];
   }
 
   public getVertexBuffers(device: GfxDevice): GfxVertexBufferDescriptor[] {
     return [
-      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.vertices.buffer) },
-      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.normals.buffer) },
-      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.uvs.buffer) },
-      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.group.colors.buffer) },
+      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.vertices.buffer) },
+      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.normals.buffer) },
+      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.uvs.buffer) },
+      { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.colors.buffer) },
     ];
   }
 
@@ -336,19 +384,19 @@ export class WmoGroupData {
       { location: WmoProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
       { location: WmoProgram.a_Normal,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
     ];
-    for (let i=0; i<this.group.num_uv_bufs; i++) {
+    for (let i=0; i<this.numUVBufs; i++) {
       vertexAttributeDescriptors.push({
         location: WmoProgram.a_TexCoord0 + i,
         bufferIndex: 2,
-        bufferByteOffset: 8 * i * this.group.num_vertices,
+        bufferByteOffset: 8 * i * this.numVertices,
         format: GfxFormat.F32_RG,
       });
     }
-    for (let i=0; i<this.group.num_color_bufs; i++) {
+    for (let i=0; i<this.numColorBufs; i++) {
       vertexAttributeDescriptors.push({
         location: WmoProgram.a_Color0 + i,
         bufferIndex: 3,
-        bufferByteOffset: 4 * i * this.group.num_vertices,
+        bufferByteOffset: 4 * i * this.numVertices,
         format: GfxFormat.U8_RGBA,
       });
     }
@@ -361,13 +409,24 @@ export class WmoGroupData {
   }
 
   public getIndexBuffer(device: GfxDevice): GfxIndexBufferDescriptor {
-    return { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.group.indices.buffer) }
+    return { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.indices.buffer) }
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
-    this.group = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmoGroup.new);
-    this.flags = rust.WowWmoGroupFlags.new(this.group.header.flags);
-    this.doodadRefs = this.group.doodad_refs;
+    const group = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmoGroup.new);
+    this.replacementForHeaderColor = group.replacement_for_header_color;
+    this.numVertices = group.num_vertices;
+    this.numUVBufs = group.num_uv_bufs;
+    this.numColorBufs = group.num_color_bufs;
+    this.innerBatches = group.batches;
+    this.vertices = group.take_vertices();
+    this.normals = group.take_normals();
+    this.colors = group.take_colors();
+    this.uvs = group.take_uvs();
+    this.indices = group.take_indices();
+    this.flags = rust.WowWmoGroupFlags.new(group.header.flags);
+    this.doodadRefs = group.take_doodad_refs();
+    group.free();
   }
 }
 
@@ -434,7 +493,7 @@ export class SkinData {
     this.submeshes = skin.submeshes;
     this.batches = skin.batches;
     this.renderPasses = this.batches.map(batch => new ModelRenderPass(batch, this.skin, model));
-    this.indexBuffer = skin.indices;
+    this.indexBuffer = skin.take_indices();
   }
 }
 
@@ -540,7 +599,7 @@ export class ModelRenderPass {
 
   private getBlp(n: number): BlpData | null {
     if (n < this.batch.texture_count) {
-      const i = this.model.m2.lookup_texture(this.batch.texture_combo_index + n)!;
+      const i = this.model.textureLookupTable[this.batch.texture_combo_index + n]!;
       if (this.model.blps[i]) {
         return this.model.blps[i];
       }
@@ -549,16 +608,12 @@ export class ModelRenderPass {
   }
 
   private getCurrentVertexColor(): vec4 {
-    const vertexColor = this.model.vertexColors[this.batch.color_index];
-    if (vertexColor) {
-      return [vertexColor.x, vertexColor.y, vertexColor.z, vertexColor.w];
-    }
-    return [1.0, 1.0, 1.0, 1.0];
+    return this.model.getVertexColor(this.batch.color_index);
   }
 
   private getTextureTransform(texIndex: number): mat4 {
     const lookupIndex = this.batch.texture_transform_combo_index + texIndex;
-    const transformIndex = this.model.m2.lookup_texture_transform(lookupIndex);
+    const transformIndex = this.model.textureTransformLookupTable[lookupIndex];
     if (transformIndex !== undefined) {
       if (transformIndex < this.model.textureTransforms.length) {
         return this.model.textureTransforms[transformIndex];
@@ -569,7 +624,7 @@ export class ModelRenderPass {
 
   private getTextureWeight(texIndex: number): number {
     const lookupIndex = this.batch.texture_weight_combo_index + texIndex;
-    const transparencyIndex = this.model.m2.lookup_transparency(lookupIndex);
+    const transparencyIndex = this.model.textureTransparencyLookupTable[lookupIndex];
     if (transparencyIndex !== undefined) {
       if (transparencyIndex < this.model.textureWeights.length) {
         return this.model.textureWeights[transparencyIndex];
@@ -624,11 +679,12 @@ export class ModelRenderPass {
 
 export class WmoDefinition {
   public modelMatrix: mat4 = mat4.create();
+  public normalMatrix: mat4 = mat4.create();
   public worldSpaceAABB: AABB = new AABB();
   public groupDefAABBs: Map<number, AABB> = new Map();
   public visible = true;
   public doodads: DoodadData[] = [];
-  public groupIdToVisibility: Map<number, { visible: boolean }> = new Map();
+  public groupIdToVisibility: Map<number, boolean> = new Map();
   public groupIdToDoodadIndices: MapArray<number, number> = new MapArray();
   public groupAmbientColors: Map<number, vec4> = new Map();
 
@@ -638,54 +694,82 @@ export class WmoDefinition {
       doodad.setVisible(visible);
     }
     for (let groupId of this.groupIdToVisibility.keys()) {
-      this.groupIdToVisibility.set(groupId, { visible });
+      this.groupIdToVisibility.set(groupId, visible);
     }
   }
 
   static fromAdtDefinition(def: WowAdtWmoDefinition, wmo: WmoData) {
     const scale = def.scale / 1024;
+    const defPos = def.position;
     const position: vec3 = [
-      def.position.x - MAP_SIZE,
-      def.position.y,
-      def.position.z - MAP_SIZE,
+      defPos.x - MAP_SIZE,
+      defPos.y,
+      defPos.z - MAP_SIZE,
     ];
+    defPos.free();
+    const defRot = def.rotation;
     const rotation: vec3 = [
-      def.rotation.x,
-      def.rotation.y,
-      def.rotation.z,
+      defRot.x,
+      defRot.y,
+      defRot.z,
     ];
+    defRot.free();
+    const extents = def.extents;
+    const min = extents.min;
+    const max = extents.max;
     const aabb = new AABB(
-      def.extents.min.x - MAP_SIZE,
-      def.extents.min.y,
-      def.extents.min.z - MAP_SIZE,
-      def.extents.max.x - MAP_SIZE,
-      def.extents.max.y,
-      def.extents.max.z - MAP_SIZE,
+      min.x - MAP_SIZE,
+      min.y,
+      min.z - MAP_SIZE,
+      max.x - MAP_SIZE,
+      max.y,
+      max.z - MAP_SIZE,
     )
-    return new WmoDefinition(def.name_id, wmo, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
+    extents.free();
+    min.free();
+    max.free();
+    const fileId = def.name_id;
+    const uniqueId = def.unique_id;
+    const doodadSet = def.doodad_set;
+    def.free();
+    return new WmoDefinition(fileId, wmo, uniqueId, doodadSet, scale, position, rotation, aabb);
   }
 
   static fromGlobalDefinition(def: WowGlobalWmoDefinition, wmo: WmoData) {
     const scale = 1.0;
+    const defPos = def.position;
     const position: vec3 = [
-      def.position.x - MAP_SIZE,
-      def.position.y,
-      def.position.z - MAP_SIZE,
+      defPos.x - MAP_SIZE,
+      defPos.y,
+      defPos.z - MAP_SIZE,
     ];
+    defPos.free();
+    const defRot = def.rotation;
     const rotation: vec3 = [
-      def.rotation.x,
-      def.rotation.y,
-      def.rotation.z,
+      defRot.x,
+      defRot.y,
+      defRot.z,
     ];
+    defRot.free();
+    const extents = def.extents;
+    const min = extents.min;
+    const max = extents.max;
     const aabb = new AABB(
-      def.extents.min.x - MAP_SIZE,
-      def.extents.min.y,
-      def.extents.min.z - MAP_SIZE,
-      def.extents.max.x - MAP_SIZE,
-      def.extents.max.y,
-      def.extents.max.z - MAP_SIZE,
+      min.x - MAP_SIZE,
+      min.y,
+      min.z - MAP_SIZE,
+      max.x - MAP_SIZE,
+      max.y,
+      max.z - MAP_SIZE,
     )
-    return new WmoDefinition(def.name_id, wmo, def.unique_id, def.doodad_set, scale, position, rotation, aabb);
+    extents.free();
+    min.free();
+    max.free();
+    const fileId = def.name_id;
+    const uniqueId = def.unique_id;
+    const doodadSet = def.doodad_set;
+    def.free();
+    return new WmoDefinition(fileId, wmo, uniqueId, doodadSet, scale, position, rotation, aabb);
   }
 
   // AABB should be in placement space
@@ -697,6 +781,10 @@ export class WmoDefinition {
     mat4.rotateX(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[0]);
     mat4.mul(this.modelMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.modelMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
+
+    mat4.mul(this.normalMatrix, this.modelMatrix, placementSpaceFromModelSpace);
+    mat4.invert(this.normalMatrix, this.normalMatrix);
+    mat4.transpose(this.normalMatrix, this.normalMatrix);
 
     for (let i=0; i<wmo.groups.length; i++) {
       const group = wmo.groups[i];
@@ -734,12 +822,11 @@ export class WmoDefinition {
 
   public isWmoGroupVisible(groupFileId: number): boolean {
     // default to true
-    let visibility = this.groupIdToVisibility.get(groupFileId) || { visible: true };
-    return visibility.visible;
+    return this.groupIdToVisibility.get(groupFileId) || true;
   }
 
   public setGroupVisible(groupId: number, visible: boolean) {
-    this.groupIdToVisibility.set(groupId, { visible: visible });
+    this.groupIdToVisibility.set(groupId, visible);
     if (this.groupIdToDoodadIndices.has(groupId)) {
       for (let index of this.groupIdToDoodadIndices.get(groupId)) {
         this.doodads[index].setVisible(visible);
@@ -773,9 +860,13 @@ export class AdtData {
   public lodLevel = 0;
   public lodData: AdtLodData[] = [];
   public visible = true;
-  private renderResult: WowAdtRenderResult;
+  public chunkData: ChunkData[] = [];
+  private vertexBuffer: Float32Array;
+  private indexBuffer: Uint16Array;
+  private inner: WowAdt | null = null;
 
-  constructor(public fileId: number, public innerAdt: WowAdt) {
+  constructor(public fileId: number, adt: WowAdt) {
+    this.inner = adt;
   }
 
   public setVisible(visible: boolean, lodLevel?: number) {
@@ -801,7 +892,7 @@ export class AdtData {
   }
   
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
-    for (let blpId of this.innerAdt.get_texture_file_ids()) {
+    for (let blpId of this.inner!.get_texture_file_ids()) {
       try {
         this.blps.set(blpId, new BlpData(blpId, await cache.loadBlp(blpId)));
       } catch (e) {
@@ -812,18 +903,18 @@ export class AdtData {
     for (let lodLevel of [0, 1]) {
       const lodData = new AdtLodData();
 
-      for (let adtDoodad of this.innerAdt.get_doodads(lodLevel)) {
+      for (let adtDoodad of this.inner!.get_doodads(lodLevel)) {
         const doodad = DoodadData.fromAdtDoodad(adtDoodad);
         doodad.applyExteriorLighting = true;
         lodData.doodads.push(doodad);
       }
 
-      for (let modelId of this.innerAdt.get_model_file_ids(lodLevel)) {
+      for (let modelId of this.inner!.get_model_file_ids(lodLevel)) {
         this.models.set(modelId, await cache.loadModel(modelId));
         lodData.modelIds.push(modelId);
       }
 
-      for (let wmoDef of this.innerAdt.get_wmo_defs(lodLevel)) {
+      for (let wmoDef of this.inner!.get_wmo_defs(lodLevel)) {
         const wmo = await cache.loadWmo(wmoDef.name_id);
         this.wmos.set(wmoDef.name_id, wmo);
         lodData.wmoDefs.push(WmoDefinition.fromAdtDefinition(wmoDef, wmo));
@@ -835,18 +926,35 @@ export class AdtData {
       this.lodData.push(lodData);
     }
 
-    this.renderResult = this.innerAdt.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
-    const extents = this.renderResult.extents;
+    const renderResult = this.inner!.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
+    const extents = renderResult.extents;
+    const min = extents.min;
+    const max = extents.max;
     this.worldSpaceAABB = new AABB(
-      extents.min.x,
-      extents.min.y,
-      extents.min.z,
-      extents.max.x,
-      extents.max.y,
-      extents.max.z,
+      min.x,
+      min.y,
+      min.z,
+      max.x,
+      max.y,
+      max.z,
     );
+    extents.free();
+    min.free();
+    max.free();
     this.worldSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
     this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
+    this.vertexBuffer = renderResult.take_vertex_buffer();
+    this.indexBuffer = renderResult.take_index_buffer();
+    for (let chunk of renderResult.chunks) {
+      const textures = [];
+      for (let blpId of chunk.texture_layers) {
+        textures.push(this.blps.get(blpId)!);
+      }
+      this.chunkData.push(new ChunkData(chunk, textures));
+    }
+    renderResult.free();
+    this.inner!.free();
+    this.inner = null;
   }
 
   public lodDoodads(): DoodadData[] {
@@ -857,39 +965,29 @@ export class AdtData {
     return this.lodData[this.lodLevel].wmoDefs;
   }
 
-  public setWorldFlags(wdt: WowWdt) {
-    this.hasBigAlpha = wdt.adt_has_big_alpha();
-    this.hasHeightTexturing = wdt.adt_has_height_texturing();
-
-    if (this.hasHeightTexturing) {
-      console.log('height texturing!', this);
-    }
-  }
-
-  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, ChunkData[]] {
+  public getBufsAndChunks(device: GfxDevice): [GfxVertexBufferDescriptor, GfxIndexBufferDescriptor] {
     const vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.renderResult.vertex_buffer.buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.vertexBuffer.buffer),
       byteOffset: 0,
     };
     const indexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.renderResult.index_buffer.buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.indexBuffer.buffer),
       byteOffset: 0,
     };
-    const chunks = [];
-    for (let chunk of this.renderResult.chunks) {
-      const textures = [];
-      for (let blpId of chunk.texture_layers) {
-        textures.push(this.blps.get(blpId)!);
-      }
-      chunks.push(new ChunkData(chunk, textures));
-    }
-    return [vertexBuffer, indexBuffer, chunks];
+    return [vertexBuffer, indexBuffer];
   }
 }
 
 export class ChunkData {
-  constructor(public inner: WowAdtChunkDescriptor, public textures: BlpData[]) {
+  public alphaTexture: Uint8Array | undefined;
+  public indexCount: number;
+  public indexOffset: number;
 
+  constructor(chunk: WowAdtChunkDescriptor, public textures: BlpData[]) {
+    this.alphaTexture = chunk.alpha_texture;
+    this.indexCount = chunk.index_count;
+    this.indexOffset = chunk.index_offset;
+    chunk.free();
   }
 }
 
@@ -909,8 +1007,12 @@ export class DoodadData {
   }
 
   static fromAdtDoodad(doodad: WowDoodad): DoodadData {
-    let position: vec3 = [doodad.position.x - MAP_SIZE, doodad.position.y, doodad.position.z - MAP_SIZE];
-    let rotation: vec3 = [doodad.rotation.x, doodad.rotation.y, doodad.rotation.z];
+    const doodadPos = doodad.position;
+    let position: vec3 = [doodadPos.x - MAP_SIZE, doodadPos.y, doodadPos.z - MAP_SIZE];
+    doodadPos.free();
+    const doodadRot = doodad.rotation;
+    let rotation: vec3 = [doodadRot.x, doodadRot.y, doodadRot.z];
+    doodadRot.free();
     let scale = doodad.scale / 1024;
     const doodadMat = mat4.create();
     setMatrixTranslation(doodadMat, position);
@@ -920,14 +1022,22 @@ export class DoodadData {
     mat4.rotateX(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[0]);
     mat4.mul(doodadMat, doodadMat, placementSpaceFromModelSpace);
     mat4.mul(doodadMat, adtSpaceFromPlacementSpace, doodadMat);
-    return new DoodadData(doodad.name_id, doodadMat, null);
+    const fileId = doodad.name_id;
+    doodad.free();
+    return new DoodadData(fileId, doodadMat, null);
   }
 
   static fromWmoDoodad(doodad: WowDoodadDef, modelIds: Uint32Array, wmoDefModelMatrix: mat4): DoodadData {
-    let position: vec3 = [doodad.position.x, doodad.position.y, doodad.position.z];
-    let rotation: quat = [doodad.orientation.x, doodad.orientation.y, doodad.orientation.z, doodad.orientation.w];
+    const doodadPos = doodad.position;
+    let position: vec3 = [doodadPos.x, doodadPos.y, doodadPos.z];
+    doodadPos.free();
+    const doodadRot = doodad.orientation;
+    let rotation: quat = [doodadRot.x, doodadRot.y, doodadRot.z, doodadRot.w];
+    doodadRot.free();
     let scale = doodad.scale;
-    let color = [doodad.color.g, doodad.color.b, doodad.color.r, doodad.color.a]; // BRGA
+    const doodadColor = doodad.color;
+    let color = [doodadColor.g, doodadColor.b, doodadColor.r, doodadColor.a]; // BRGA
+    doodadColor.free();
     const modelId = modelIds[doodad.name_index];
     let doodadMat = mat4.create();
     setMatrixTranslation(doodadMat, position);
@@ -935,6 +1045,7 @@ export class DoodadData {
     mat4.mul(doodadMat, doodadMat, rotMat);
     mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
     mat4.mul(doodadMat, wmoDefModelMatrix, doodadMat);
+    doodad.free();
     return new DoodadData(modelId, doodadMat, color);
   }
 
@@ -944,11 +1055,12 @@ export class DoodadData {
 }
 
 export class LazyWorldData {
-  public wdt: WowWdt;
   public adts: AdtData[] = [];
   private loadedAdtFileIds: number[] = [];
   public globalWmo: WmoData | null = null;
   public globalWmoDef: WmoDefinition | null = null;
+  public hasBigAlpha: boolean;
+  public hasHeightTexturing: boolean;
   public adtFileIds: WowMapFileDataIDs[] = [];
   public loading = false;
 
@@ -956,8 +1068,8 @@ export class LazyWorldData {
   }
 
   public async load() {
-    this.wdt = await fetchFileByID(this.fileId, this.dataFetcher, rust.WowWdt.new);
-    this.adtFileIds = this.wdt.get_all_map_data();
+    const wdt = await fetchFileByID(this.fileId, this.dataFetcher, rust.WowWdt.new);
+    this.adtFileIds = wdt.get_all_map_data();
     const [centerX, centerY] = this.startAdtCoords;
     for (let x = centerX - this.adtRadius; x <= centerX + this.adtRadius; x++) {
       for (let y = centerY - this.adtRadius; y <= centerY + this.adtRadius; y++) {
@@ -967,6 +1079,9 @@ export class LazyWorldData {
         }
       }
     }
+    this.hasBigAlpha = wdt.adt_has_big_alpha();
+    this.hasHeightTexturing = wdt.adt_has_height_texturing();
+    wdt.free();
   }
 
   public onEnterAdt([centerX, centerY]: [number, number], scene: WdtScene) {
@@ -1009,7 +1124,9 @@ export class LazyWorldData {
 
     const adt = new AdtData(fileIDs.root_adt, wowAdt);
     await adt.load(this.dataFetcher, this.cache);
-    adt.setWorldFlags(this.wdt);
+
+    adt.hasBigAlpha = this.hasBigAlpha;
+    adt.hasHeightTexturing = this.hasHeightTexturing;
 
     this.loadedAdtFileIds.push(fileIDs.root_adt);
     return adt;
@@ -1028,7 +1145,6 @@ export class LazyWorldData {
 }
 
 export class WorldData {
-  public wdt: WowWdt;
   public adts: AdtData[] = [];
   public globalWmo: WmoData | null = null;
   public globalWmoDef: WmoDefinition | null = null;
@@ -1038,13 +1154,15 @@ export class WorldData {
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
-    this.wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
-    if (this.wdt.wdt_uses_global_map_obj()) {
-      const def = this.wdt.global_wmo!;
+    const wdt = await fetchFileByID(this.fileId, dataFetcher, rust.WowWdt.new);
+    const hasBigAlpha = wdt.adt_has_big_alpha();
+    const hasHeightTexturing = wdt.adt_has_height_texturing();
+    if (wdt.wdt_uses_global_map_obj()) {
+      const def = wdt.global_wmo!;
       this.globalWmo = await cache.loadWmo(def.name_id);
       this.globalWmoDef = WmoDefinition.fromGlobalDefinition(def, this.globalWmo);
     } else {
-      const adtFileIDs = this.wdt.get_loaded_map_data();
+      const adtFileIDs = wdt.get_loaded_map_data();
       for (let fileIDs of adtFileIDs) {
         if (fileIDs.root_adt === 0) {
           throw new Error(`null ADTs in a non-global-WMO WDT`);
@@ -1058,10 +1176,13 @@ export class WorldData {
 
         const adt = new AdtData(fileIDs.root_adt, wowAdt);
         await adt.load(dataFetcher, cache);
-        adt.setWorldFlags(this.wdt);
+
+        adt.hasBigAlpha = hasBigAlpha;
+        adt.hasHeightTexturing = hasHeightTexturing;
 
         this.adts.push(adt);
       }
     }
+    wdt.free();
   }
 }

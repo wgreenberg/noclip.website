@@ -123,20 +123,13 @@ impl Blp {
         Ok(self.texture_data[offset..offset+size as usize].to_vec())
     }
 
-    pub fn get_mip_metadata(&self) -> Vec<BlpMipMetadata> {
-        let mut metadata = Vec::new();
+    pub fn get_num_mips(&self) -> usize {
         for i in 0..16 {
             if self.header.mip_offsets[i] == 0 || self.header.mip_sizes[i] == 0 {
-                break;
+                return i;
             }
-            metadata.push(BlpMipMetadata {
-                // offsets are relative to the start of the chunk, so subtract
-                // the size of the header
-                offset: self.header.mip_offsets[i] - 1172,
-                size: self.header.mip_sizes[i],
-            })
         }
-        metadata
+        return 16;
     }
 }
 

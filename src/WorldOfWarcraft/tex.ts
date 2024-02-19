@@ -48,8 +48,7 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
   if (format === GfxFormat.U8_RGBA_NORM) {
     return null!;
   }
-  const mipMetadata = blp.get_mip_metadata();
-  const mipmapCount = mipMetadata.length;
+  const mipmapCount = blp.get_num_mips();
 
   const textureDescriptor = {
     dimension: GfxTextureDimension.n2D,
@@ -176,7 +175,8 @@ export class TextureCache {
       device.destroyTexture(this.allBlackTexture);
       device.destroyTexture(this.allWhiteTexture);
       for (let tex of this.textures.values()) {
-        device.destroyTexture(tex);
+        if (tex)
+          device.destroyTexture(tex);
       }
     }
 }

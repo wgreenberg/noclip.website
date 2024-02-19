@@ -195,6 +195,7 @@ export class WdtScene implements Viewer.SceneGfx {
 
   public mainView = new View();
   private textureCache: TextureCache;
+  public enableProgressiveLoading = false;
   public cullingState = CullingState.Running;
   public currentAdtCoords: [number, number] = [0, 0];
 
@@ -308,12 +309,6 @@ export class WdtScene implements Viewer.SceneGfx {
     this.cullingState = CullingState.OneShot;
   }
 
-  public update(viewer: ViewerRenderInput) {
-    for (let renderer of this.modelRenderers.values()) {
-      renderer.update(viewer);
-    }
-  }
-
   // TODO
   public cull() {
     if (this.world.globalWmo) {
@@ -413,8 +408,10 @@ export class WdtScene implements Viewer.SceneGfx {
     template.setGfxProgram(this.modelProgram);
     for (let [modelId, renderer] of this.modelRenderers.entries()) {
       const doodads = this.modelIdToDoodads.get(modelId)!;
+      const visibleDoodads = doodads.filter(doodad => doodad.visible);
+      if (visibleDoodads.length === 0) continue;
       renderer.update(viewerInput);
-      renderer.prepareToRenderModel(this.renderHelper.renderInstManager, doodads);
+      renderer.prepareToRenderModel(this.renderHelper.renderInstManager, visibleDoodads);
     }
 
     this.renderHelper.renderInstManager.popTemplateRenderInst();
@@ -428,7 +425,7 @@ export class WdtScene implements Viewer.SceneGfx {
     if (adtCoords) {
       if (this.currentAdtCoords[0] !== adtCoords[0] || this.currentAdtCoords[1] !== adtCoords[1]) {
         this.currentAdtCoords = adtCoords;
-        if ('onEnterAdt' in this.world) {
+        if (this.enableProgressiveLoading && 'onEnterAdt' in this.world) {
           this.world.onEnterAdt(this.currentAdtCoords, this);
         }
       }
@@ -488,6 +485,8 @@ export class WdtScene implements Viewer.SceneGfx {
       renderer.destroy(device);
     }
     this.skyboxRenderer.destroy(device);
+    this.textureCache.destroy(device);
+    this.renderHelper.destroy();
   }
 }
 
@@ -527,7 +526,7 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache);
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 4, dataFetcher, cache);
     console.time('loading wdt')
     await wdt.load();
     console.timeEnd('loading wdt')

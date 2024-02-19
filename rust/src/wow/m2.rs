@@ -167,11 +167,11 @@ pub struct M2 {
     pub skin_ids: Vec<u32>,
     pub name: String,
     pub materials: Vec<M2Material>,
-    pub vertex_data: Vec<u8>,
-    texture_lookup_table: Vec<u16>,
-    texture_transforms_lookup_table: Vec<u16>,
-    transparency_lookup_table: Vec<u16>,
-    animation_manager: AnimationManager,
+    vertex_data: Option<Vec<u8>>,
+    texture_lookup_table: Option<Vec<u16>>,
+    texture_transforms_lookup_table: Option<Vec<u16>>,
+    transparency_lookup_table: Option<Vec<u16>>,
+    animation_manager: Option<AnimationManager>,
 }
 
 #[wasm_bindgen(js_class = "WowM2")]
@@ -197,14 +197,14 @@ impl M2 {
         // M2 pointers are relative to the end of the MD21 block, which seems to
         // always be 16 bytes in
         let m2_data = &data[8..];
-        let animation_manager = AnimationManager::new(
+        let animation_manager = Some(AnimationManager::new(
             header.global_sequence_durations.to_vec(m2_data).map_err(|e| format!("{:?}", e))?,
             header.sequences.to_vec(m2_data).map_err(|e| format!("{:?}", e))?,
             header.get_texture_weights(m2_data)?,
             header.get_texture_transforms(m2_data)?,
             header.get_vertex_colors(m2_data)?,
             header.get_bones(m2_data)?
-        );
+        ));
 
         Ok(M2 {
             texture_ids: txid.unwrap_or(vec![]),
@@ -212,28 +212,32 @@ impl M2 {
             animation_manager,
             name: header.get_name(m2_data)?,
             materials: header.get_materials(m2_data)?,
-            vertex_data: header.get_vertex_data(m2_data)?,
-            texture_lookup_table: header.get_texture_lookup_table(m2_data)?,
-            texture_transforms_lookup_table: header.get_texture_transforms_lookup_table(m2_data)?,
-            transparency_lookup_table: header.get_transparency_lookup_table(m2_data)?,
+            vertex_data: Some(header.get_vertex_data(m2_data)?),
+            texture_lookup_table: Some(header.get_texture_lookup_table(m2_data)?),
+            texture_transforms_lookup_table: Some(header.get_texture_transforms_lookup_table(m2_data)?),
+            transparency_lookup_table: Some(header.get_transparency_lookup_table(m2_data)?),
             header,
         })
+    }
+
+    pub fn take_animation_manager(&mut self) -> AnimationManager {
+        self.animation_manager.take().expect("M2 AnimationManager already taken")
     }
 
     pub fn get_bounding_box(&self) -> AABBox {
         self.header.bounding_box.clone()
     }
 
-    pub fn lookup_texture(&self, index: usize) -> Option<u16> {
-        self.texture_lookup_table.get(index).copied()
+    pub fn take_texture_lookup(&mut self) -> Vec<u16> {
+        self.texture_lookup_table.take().expect("M2 texture lookup table already taken")
     }
 
-    pub fn lookup_texture_transform(&self, index: usize) -> Option<u16> {
-        self.texture_transforms_lookup_table.get(index).copied()
+    pub fn take_texture_transform_lookup(&mut self) -> Vec<u16> {
+        self.texture_transforms_lookup_table.take().expect("M2 texture transform lookup table already taken")
     }
 
-    pub fn lookup_transparency(&self, index: usize) -> Option<u16> {
-        self.transparency_lookup_table.get(index).copied()
+    pub fn take_texture_transparency_lookup(&mut self) -> Vec<u16> {
+        self.transparency_lookup_table.take().expect("M2 transparency lookup table already taken")
     }
 
     pub fn get_vertex_stride() -> usize {
@@ -241,28 +245,8 @@ impl M2 {
         12 + 4 + 4 + 12 + 2 * 8
     }
 
-    pub fn get_num_texture_weights(&self) -> usize {
-        self.animation_manager.texture_weights.len()
-    }
-
-    pub fn update_animations(
-        &mut self, delta_time: f64,
-        transparencies: &Float32Array,
-        texture_translations: &Array,
-        texture_rotations: &Array,
-        texture_scalings: &Array,
-        colors: &Array
-    ) {
-        self.animation_manager.update(delta_time);
-        transparencies.copy_from(&self.animation_manager.calculated_transparencies);
-        for i in 0..self.animation_manager.texture_transforms.len() {
-            texture_translations.set(i as u32, self.animation_manager.calculated_texture_translations[i].into());
-            texture_rotations.set(i as u32, self.animation_manager.calculated_texture_rotations[i].into());
-            texture_scalings.set(i as u32, self.animation_manager.calculated_texture_scalings[i].into());
-        }
-        for i in 0..self.animation_manager.colors.len() {
-            colors.set(i as u32, self.animation_manager.calculated_colors[i].into());
-        }
+    pub fn take_vertex_data(&mut self) -> Vec<u8> {
+        self.vertex_data.take().expect("M2 vertex data already taken")
     }
 }
 

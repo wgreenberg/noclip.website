@@ -1,6 +1,5 @@
 use deku::prelude::*;
 use deku::ctx::ByteSize;
-use js_sys::{Float32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
 
 use super::common::{Chunk, ChunkedData, Vec3, AABBox};
@@ -283,8 +282,8 @@ impl Adt {
         let (vertex_buffer, extents) = self.get_vertex_buffer_and_extents();
         let (index_buffer, chunks) = self.get_index_buffer_and_descriptors(adt_has_big_alpha, adt_has_height_texturing);
         AdtRenderResult {
-            vertex_buffer,
-            index_buffer,
+            vertex_buffer: Some(vertex_buffer),
+            index_buffer: Some(index_buffer),
             chunks,
             extents,
         }
@@ -305,24 +304,20 @@ pub struct LodLevels {
 
 #[wasm_bindgen(js_name = "WowAdtRenderResult", getter_with_clone)]
 pub struct AdtRenderResult {
-    pub vertex_buffer: Vec<f32>,
-    pub index_buffer: Vec<u16>,
+    pub vertex_buffer: Option<Vec<f32>>,
+    pub index_buffer: Option<Vec<u16>>,
     pub chunks: Vec<ChunkDescriptor>,
     pub extents: AABBox,
 }
 
 #[wasm_bindgen(js_class = "WowAdtRenderResult")]
 impl AdtRenderResult {
-    pub fn get_num_vertices(&self) -> usize {
-        self.vertex_buffer.len()
+    pub fn take_vertex_buffer(&mut self) -> Vec<f32> {
+        self.vertex_buffer.take().expect("ADT RenderResult vertex buffer already taken")
     }
 
-    pub fn get_num_indices(&self) -> usize {
-        self.index_buffer.len()
-    }
-
-    pub fn set_vertex_data(&self, buf: &Float32Array) {
-        buf.copy_from(&self.vertex_buffer[..]);
+    pub fn take_index_buffer(&mut self) -> Vec<u16> {
+        self.index_buffer.take().expect("ADT RenderResult index buffer already taken")
     }
 }
 

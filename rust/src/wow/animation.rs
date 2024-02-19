@@ -1,5 +1,6 @@
 use deku::prelude::*;
 use wasm_bindgen::prelude::*;
+use js_sys::{Float32Array, Uint8Array, Array};
 use crate::wow::m2::*;
 use crate::wow::common::*;
 
@@ -202,28 +203,84 @@ impl AnimationState {
     }
 }
 
+#[wasm_bindgen(js_name = "WowM2AnimationManager")]
 #[derive(Debug, Clone)]
 pub struct AnimationManager {
-    pub global_sequence_durations: Vec<u32>,
-    pub global_sequence_times: Vec<f64>,
-    pub sequences: Vec<M2Sequence>,
-    pub texture_weights: Vec<M2TextureWeight>,
-    pub texture_transforms: Vec<M2TextureTransform>,
-    pub current_animation: AnimationState,
-    pub next_animation: AnimationState,
+    global_sequence_durations: Vec<u32>,
+    global_sequence_times: Vec<f64>,
+    sequences: Vec<M2Sequence>,
+    texture_weights: Vec<M2TextureWeight>,
+    texture_transforms: Vec<M2TextureTransform>,
+    current_animation: AnimationState,
+    next_animation: AnimationState,
     rng: LcgRng,
-    pub blend_factor: f32,
-    pub colors: Vec<M2Color>,
-    pub bones: Vec<M2CompBone>,
+    blend_factor: f32,
+    colors: Vec<M2Color>,
+    bones: Vec<M2CompBone>,
 
-    pub calculated_transparencies: Vec<f32>,
-    pub calculated_texture_translations: Vec<Vec3>,
-    pub calculated_texture_rotations: Vec<Quat>,
-    pub calculated_texture_scalings: Vec<Vec3>,
-    pub calculated_colors: Vec<Vec4>,
+    calculated_transparencies: Vec<f32>,
+    calculated_texture_translations: Vec<Vec3>,
+    calculated_texture_rotations: Vec<Quat>,
+    calculated_texture_scalings: Vec<Vec3>,
+    calculated_colors: Vec<Vec4>,
 }
 
-// rust-only
+#[wasm_bindgen(js_class = "WowM2AnimationManager")]
+impl AnimationManager {
+    pub fn update_animations(
+        &mut self, delta_time: f64,
+        transparencies: &Float32Array,
+        texture_translations: &Float32Array,
+        texture_rotations: &Float32Array,
+        texture_scalings: &Float32Array,
+        colors: &Float32Array
+    ) {
+        self.update(delta_time);
+        transparencies.copy_from(&self.calculated_transparencies);
+        for i in 0..self.texture_transforms.len() {
+            let translation_index = i as u32 * 3;
+            let translation = &self.calculated_texture_translations[i];
+            texture_translations.set_index(translation_index + 0, translation.x);
+            texture_translations.set_index(translation_index + 1, translation.y);
+            texture_translations.set_index(translation_index + 2, translation.z);
+
+            let rotation_index = i as u32 * 4;
+            let rotation = &self.calculated_texture_rotations[i];
+            texture_rotations.set_index(rotation_index + 0, rotation.x);
+            texture_rotations.set_index(rotation_index + 1, rotation.y);
+            texture_rotations.set_index(rotation_index + 2, rotation.z);
+            texture_rotations.set_index(rotation_index + 3, rotation.w);
+
+            let scaling_index = i as u32 * 3;
+            let scaling = &self.calculated_texture_scalings[i];
+            texture_scalings.set_index(scaling_index + 0, scaling.x);
+            texture_scalings.set_index(scaling_index + 1, scaling.y);
+            texture_scalings.set_index(scaling_index + 2, scaling.z);
+        }
+        for i in 0..self.colors.len() {
+            let color_index = i as u32 * 4;
+            let color = &self.calculated_colors[i];
+            colors.set_index(color_index as u32 + 0, color.x);
+            colors.set_index(color_index as u32 + 1, color.y);
+            colors.set_index(color_index as u32 + 2, color.z);
+            colors.set_index(color_index as u32 + 3, color.w);
+        }
+    }
+
+    pub fn get_num_colors(&self) -> usize {
+        self.colors.len()
+    }
+
+    pub fn get_num_transformations(&self) -> usize {
+        self.texture_transforms.len()
+    }
+
+    pub fn get_num_texture_weights(&self) -> usize {
+        self.texture_weights.len()
+    }
+}
+
+// rust-only interface
 impl AnimationManager {
     pub fn new(
         global_sequence_durations: Vec<u32>,

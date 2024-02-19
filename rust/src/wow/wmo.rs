@@ -161,17 +161,17 @@ pub struct Mosi {
 pub struct WmoGroup {
     pub header: WmoGroupHeader,
     pub material_info: Vec<MaterialInfo>,
-    pub indices: Vec<u8>,
-    pub vertices: Vec<u8>,
+    indices: Option<Vec<u8>>,
+    vertices: Option<Vec<u8>>,
+    normals: Option<Vec<u8>>,
+    uvs: Option<Vec<u8>>,
+    colors: Option<Vec<u8>>,
+    doodad_refs: Option<Vec<u16>>,
     pub num_vertices: usize,
-    pub normals: Vec<u8>,
-    pub uvs: Vec<u8>,
     pub num_uv_bufs: usize,
-    pub colors: Vec<u8>,
     pub num_color_bufs: usize,
     pub first_color_buf_len: Option<usize>,
     pub batches: Vec<MaterialBatch>,
-    pub doodad_refs: Vec<u16>,
     pub replacement_for_header_color: Option<Argb>,
 }
 
@@ -229,107 +229,131 @@ impl WmoGroup {
         Ok(WmoGroup {
             header,
             material_info: mopy.ok_or("WMO group didn't have MOPY chunk")?,
-            indices: indices.ok_or("WMO group didn't have indices")?,
-            vertices: vertices.ok_or("WMO group didn't have vertices")?,
+            indices: Some(indices.ok_or("WMO group didn't have indices")?),
+            vertices: Some(vertices.ok_or("WMO group didn't have vertices")?),
             num_vertices,
-            normals: normals.ok_or("WMO group didn't have normals")?,
+            normals: Some(normals.ok_or("WMO group didn't have normals")?),
             replacement_for_header_color,
             first_color_buf_len,
-            uvs,
+            uvs: Some(uvs),
             num_uv_bufs,
-            colors,
+            colors: Some(colors),
             num_color_bufs,
             batches: batches.unwrap_or(vec![]),
-            doodad_refs: doodad_refs.unwrap_or(vec![]),
+            doodad_refs: Some(doodad_refs.unwrap_or(vec![])),
         })
     }
 
-    pub fn fix_color_vertex_alpha(&mut self, wmo_header: &WmoHeader) {
-        let num_colors = match self.first_color_buf_len {
-            Some(n) => n,
-            None => { return; }
-        };
-
-        let wmo_flags = WmoHeaderFlags::new(wmo_header.flags);
-        let group_flags = WmoGroupFlags::new(self.header.flags);
-
-        let mut begin_second_fixup = 0;
-        if self.header.trans_batch_count > 0 {
-            begin_second_fixup = self.batches[self.header.trans_batch_count as usize - 1].last_vertex + 1;
-        }
-
-        let mut r_diff: u8 = 0;
-        let mut g_diff: u8 = 0;
-        let mut b_diff: u8 = 0;
-
-        if (wmo_flags.lighten_interiors) {
-            for i in begin_second_fixup as usize..num_colors {
-                if group_flags.exterior {
-                    self.colors[i*4 + 3] = 0xff;
-                } else {
-                    self.colors[i*4 + 3] = 0x00;
-                }
-            }
-        } else {
-            if !wmo_flags.skip_base_color {
-                r_diff = wmo_header.ambient_color.r;
-                g_diff = wmo_header.ambient_color.g;
-                b_diff = wmo_header.ambient_color.b;
-            }
-
-            for i in 0..begin_second_fixup as usize {
-                let r_index = i*4 + 2;
-                let g_index = i*4 + 1;
-                let b_index = i*4 + 0;
-                let a_index = i*4 + 3;
-                self.colors[r_index] -= r_diff;
-                self.colors[g_index] -= g_diff;
-                self.colors[b_index] -= b_diff;
-                let a = self.colors[a_index] as f32 / 255.0;
-
-                let scaled_r = self.colors[r_index] as f32 - a * self.colors[r_index] as f32;
-                assert!(scaled_r > -0.5);
-                assert!(scaled_r < 255.5);
-                self.colors[r_index] = (scaled_r / 2.0).floor().max(0.0) as u8;
-
-                let scaled_g = self.colors[g_index] as f32 - a * self.colors[g_index] as f32;
-                assert!(scaled_g > -0.5);
-                assert!(scaled_g < 255.5);
-                self.colors[g_index] = (scaled_g / 2.0).floor().max(0.0) as u8;
-
-                let scaled_b = self.colors[b_index] as f32 - a * self.colors[b_index] as f32;
-                assert!(scaled_b > -0.5);
-                assert!(scaled_b < 255.5);
-                self.colors[b_index] = (scaled_b / 2.0).floor().max(0.0) as u8;
-            }
-
-            for i in begin_second_fixup as usize..num_colors {
-                let r_index = i*4 + 2;
-                let g_index = i*4 + 1;
-                let b_index = i*4 + 0;
-                let a_index = i*4 + 3;
-                let r = self.colors[r_index] as f32;
-                let g = self.colors[g_index] as f32;
-                let b = self.colors[b_index] as f32;
-                let a = self.colors[a_index] as f32;
-
-                let scaled_r = (r * a) / 64.0 + r - r_diff as f32;
-                self.colors[r_index] = (scaled_r / 2.0).max(0.0).min(255.0) as u8;
-
-                let scaled_g = (g * a) / 64.0 + g - g_diff as f32;
-                self.colors[g_index] = (scaled_g / 2.0).max(0.0).min(255.0) as u8;
-
-                let scaled_b = (b * a) / 64.0 + b - b_diff as f32;
-                self.colors[b_index] = (scaled_b / 2.0).max(0.0).min(255.0) as u8;
-
-                if group_flags.exterior {
-                    self.colors[a_index] = 0xff;
-                } else {
-                    self.colors[a_index] = 0;
-                }
-            }
-        }
+    pub fn take_vertices(&mut self) -> Vec<u8> {
+        self.vertices.take().expect("WmoGroup vertices already taken")
     }
+
+    pub fn take_colors(&mut self) -> Vec<u8> {
+        self.colors.take().expect("WmoGroup vertices already taken")
+    }
+
+    pub fn take_uvs(&mut self) -> Vec<u8> {
+        self.uvs.take().expect("WmoGroup vertices already taken")
+    }
+
+    pub fn take_normals(&mut self) -> Vec<u8> {
+        self.normals.take().expect("WmoGroup vertices already taken")
+    }
+
+    pub fn take_indices(&mut self) -> Vec<u8> {
+        self.indices.take().expect("WmoGroup vertices already taken")
+    }
+
+    pub fn take_doodad_refs(&mut self) -> Vec<u16> {
+        self.doodad_refs.take().expect("WmoGroup doodad_refs already taken")
+    }
+
+    // pub fn fix_color_vertex_alpha(&mut self, wmo_header: &WmoHeader) {
+    //     let num_colors = match self.first_color_buf_len {
+    //         Some(n) => n,
+    //         None => { return; }
+    //     };
+
+    //     let wmo_flags = WmoHeaderFlags::new(wmo_header.flags);
+    //     let group_flags = WmoGroupFlags::new(self.header.flags);
+
+    //     let mut begin_second_fixup = 0;
+    //     if self.header.trans_batch_count > 0 {
+    //         begin_second_fixup = self.batches[self.header.trans_batch_count as usize - 1].last_vertex + 1;
+    //     }
+
+    //     let mut r_diff: u8 = 0;
+    //     let mut g_diff: u8 = 0;
+    //     let mut b_diff: u8 = 0;
+
+    //     if (wmo_flags.lighten_interiors) {
+    //         for i in begin_second_fixup as usize..num_colors {
+    //             if group_flags.exterior {
+    //                 self.colors[i*4 + 3] = 0xff;
+    //             } else {
+    //                 self.colors[i*4 + 3] = 0x00;
+    //             }
+    //         }
+    //     } else {
+    //         if !wmo_flags.skip_base_color {
+    //             r_diff = wmo_header.ambient_color.r;
+    //             g_diff = wmo_header.ambient_color.g;
+    //             b_diff = wmo_header.ambient_color.b;
+    //         }
+
+    //         for i in 0..begin_second_fixup as usize {
+    //             let r_index = i*4 + 2;
+    //             let g_index = i*4 + 1;
+    //             let b_index = i*4 + 0;
+    //             let a_index = i*4 + 3;
+    //             self.colors[r_index] -= r_diff;
+    //             self.colors[g_index] -= g_diff;
+    //             self.colors[b_index] -= b_diff;
+    //             let a = self.colors[a_index] as f32 / 255.0;
+
+    //             let scaled_r = self.colors[r_index] as f32 - a * self.colors[r_index] as f32;
+    //             assert!(scaled_r > -0.5);
+    //             assert!(scaled_r < 255.5);
+    //             self.colors[r_index] = (scaled_r / 2.0).floor().max(0.0) as u8;
+
+    //             let scaled_g = self.colors[g_index] as f32 - a * self.colors[g_index] as f32;
+    //             assert!(scaled_g > -0.5);
+    //             assert!(scaled_g < 255.5);
+    //             self.colors[g_index] = (scaled_g / 2.0).floor().max(0.0) as u8;
+
+    //             let scaled_b = self.colors[b_index] as f32 - a * self.colors[b_index] as f32;
+    //             assert!(scaled_b > -0.5);
+    //             assert!(scaled_b < 255.5);
+    //             self.colors[b_index] = (scaled_b / 2.0).floor().max(0.0) as u8;
+    //         }
+
+    //         for i in begin_second_fixup as usize..num_colors {
+    //             let r_index = i*4 + 2;
+    //             let g_index = i*4 + 1;
+    //             let b_index = i*4 + 0;
+    //             let a_index = i*4 + 3;
+    //             let r = self.colors[r_index] as f32;
+    //             let g = self.colors[g_index] as f32;
+    //             let b = self.colors[b_index] as f32;
+    //             let a = self.colors[a_index] as f32;
+
+    //             let scaled_r = (r * a) / 64.0 + r - r_diff as f32;
+    //             self.colors[r_index] = (scaled_r / 2.0).max(0.0).min(255.0) as u8;
+
+    //             let scaled_g = (g * a) / 64.0 + g - g_diff as f32;
+    //             self.colors[g_index] = (scaled_g / 2.0).max(0.0).min(255.0) as u8;
+
+    //             let scaled_b = (b * a) / 64.0 + b - b_diff as f32;
+    //             self.colors[b_index] = (scaled_b / 2.0).max(0.0).min(255.0) as u8;
+
+    //             if group_flags.exterior {
+    //                 self.colors[a_index] = 0xff;
+    //             } else {
+    //                 self.colors[a_index] = 0;
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 #[derive(DekuRead, Debug, Clone)]

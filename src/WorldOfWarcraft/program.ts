@@ -168,6 +168,7 @@ ${BaseProgram.utils}
       0,
       0
     );
+    lightingData.free();
   }
 }
 
@@ -176,6 +177,7 @@ function fillColor(buf: Float32Array, offset: number, color: WowVec3): number {
   buf[offset + 1] = color.y;
   buf[offset + 2] = color.z;
   buf[offset + 3] = 1.0;
+  color.free();
   return 4;
 }
 

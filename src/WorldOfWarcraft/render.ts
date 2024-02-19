@@ -43,7 +43,7 @@ export class ModelRenderer {
     this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
 
     this.vertexBuffer = {
-      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.model.m2.vertex_data.buffer),
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.model.vertexBuffer.buffer),
       byteOffset: 0,
     };
 
@@ -183,10 +183,7 @@ export class WmoRenderer {
       let offs = template.allocateUniformBuffer(WmoProgram.ub_ModelParams, 2 * 16);
       const mapped = template.mapUniformBufferF32(WmoProgram.ub_ModelParams);
       offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
-      const normalMat = mat4.mul(mat4.create(), def.modelMatrix, placementSpaceFromModelSpace);
-      mat4.invert(normalMat, normalMat);
-      mat4.transpose(normalMat, normalMat);
-      offs += fillMatrix4x4(mapped, offs, normalMat);
+      offs += fillMatrix4x4(mapped, offs, def.normalMatrix);
 
       for (let i=0; i<this.vertexBuffers.length; i++) {
         const group = this.groups[i];
@@ -216,8 +213,7 @@ export class WmoRenderer {
           offset += fillVec4v(uniformBuf, offset, ambientColor);
           offset += fillVec4v(uniformBuf, offset, [0, 0, 0, 0]);
           batch.setMegaStateFlags(renderInst);
-          const textureMappings = this.groupBatchTextureMappings[i][j];
-          renderInst.setSamplerBindingsFromTextureMappings(textureMappings);
+          renderInst.setSamplerBindingsFromTextureMappings(this.groupBatchTextureMappings[i][j]);
           renderInst.drawIndexes(batch.indexCount, batch.indexStart);
           renderInstManager.submitRenderInst(renderInst);
         }
@@ -238,7 +234,6 @@ export class TerrainRenderer {
   private inputLayout: GfxInputLayout;
   public indexBuffer: GfxIndexBufferDescriptor;
   public vertexBuffer: GfxVertexBufferDescriptor;
-  public adtChunks: ChunkData[] = [];
   public alphaTextureMappings: (TextureMapping | null)[] = [];
   public chunkTextureMappings: TextureMappingArray[] = [];
 
@@ -257,14 +252,15 @@ export class TerrainRenderer {
     const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
-    [this.vertexBuffer, this.indexBuffer, this.adtChunks] = this.adt.getBufsAndChunks(device);
-    for (let i in this.adtChunks) {
-      const chunk = this.adtChunks[i];
+    [this.vertexBuffer, this.indexBuffer] = this.adt.getBufsAndChunks(device);
+    for (let i in this.adt.chunkData) {
+      const chunk = this.adt.chunkData[i];
       this.chunkTextureMappings[i] = this.getChunkTextureMapping(chunk);
 
-      const alphaTex = chunk.inner.alpha_texture;
-      if (alphaTex) {
-        this.chunkTextureMappings[i].push(textureCache.getAlphaTextureMapping(device, alphaTex));
+      if (chunk.alphaTexture) {
+        const alphaMapping = textureCache.getAlphaTextureMapping(device, chunk.alphaTexture);
+        this.alphaTextureMappings.push(alphaMapping)
+        this.chunkTextureMappings[i].push(alphaMapping);
       } else {
         this.chunkTextureMappings[i].push(textureCache.getAllBlackTextureMapping());
       }
@@ -283,12 +279,11 @@ export class TerrainRenderer {
     if (!this.adt.visible) return;
     const template = renderInstManager.pushTemplateRenderInst();
     template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
-    this.adtChunks.forEach((chunk, i) => {
-      if (chunk.inner.index_count > 0) {
+    this.adt.chunkData.forEach((chunk, i) => {
+      if (chunk.indexCount > 0) {
         const renderInst = renderInstManager.newRenderInst();
-        const textureMapping = this.chunkTextureMappings[i];
-        renderInst.setSamplerBindingsFromTextureMappings(textureMapping);
-        renderInst.drawIndexes(chunk.inner.index_count, chunk.inner.index_offset);
+        renderInst.setSamplerBindingsFromTextureMappings(this.chunkTextureMappings[i]);
+        renderInst.drawIndexes(chunk.indexCount, chunk.indexOffset);
         renderInstManager.submitRenderInst(renderInst);
       }
     })
@@ -298,6 +293,20 @@ export class TerrainRenderer {
   public destroy(device: GfxDevice) {
     device.destroyBuffer(this.vertexBuffer.buffer);
     device.destroyBuffer(this.indexBuffer.buffer);
+    for (let mapping of this.alphaTextureMappings) {
+      if (mapping) {
+        destroyTextureMapping(device, mapping);
+      }
+    }
+  }
+}
+
+function destroyTextureMapping(device: GfxDevice, mapping: TextureMapping) {
+  if (mapping.gfxSampler) {
+    device.destroySampler(mapping.gfxSampler);
+  }
+  if (mapping.gfxTexture) {
+    device.destroyTexture(mapping.gfxTexture);
   }
 }
 
@@ -337,6 +346,5 @@ export class SkyboxRenderer {
   public destroy(device: GfxDevice) {
     device.destroyBuffer(this.vertexBuffer.buffer);
     device.destroyBuffer(this.indexBuffer.buffer);
-    device.destroyInputLayout(this.inputLayout);
   }
 }
