@@ -267,12 +267,6 @@ impl Adt {
                 index_offset,
                 alpha_texture,
                 index_count,
-                debug_string: format!(
-                    "big_alpha: {}, height_texturing: {}, layers: {:?}",
-                    adt_has_big_alpha,
-                    adt_has_height_texturing,
-                    &mcnk.texture_layers
-                ),
             });
         }
         (index_buffer, descriptors)
@@ -328,7 +322,6 @@ pub struct ChunkDescriptor {
     pub alpha_texture: Option<Vec<u8>>,
     pub index_offset: usize,
     pub index_count: usize,
-    pub debug_string: String,
 }
 
 static SQUARE_INDICES_TRIANGLE: &[u16] = &[9, 0, 17, 9, 1, 0, 9, 18, 1, 9, 17, 18];

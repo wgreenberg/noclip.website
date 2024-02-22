@@ -314,6 +314,7 @@ export class SkyboxRenderer {
   private inputLayout: GfxInputLayout;
   private vertexBuffer: GfxVertexBufferDescriptor;
   private indexBuffer: GfxIndexBufferDescriptor;
+  public numIndices: number;
   private skyboxProgram: GfxProgram;
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper) {
@@ -331,6 +332,7 @@ export class SkyboxRenderer {
 
     this.vertexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, skyboxVertices.buffer )}
     const convertedIndices = convertToTriangleIndexBuffer(GfxTopology.TriStrips, skyboxIndices);
+    this.numIndices = convertedIndices.length;
     this.indexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, convertedIndices.buffer) };
   }
 
@@ -339,7 +341,7 @@ export class SkyboxRenderer {
     renderInst.setGfxProgram(this.skyboxProgram);
     renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
     renderInst.setBindingLayouts(SkyboxProgram.bindingLayouts);
-    renderInst.drawIndexes(skyboxIndices.length, 0);
+    renderInst.drawIndexes(this.numIndices, 0);
     renderInstManager.submitRenderInst(renderInst);
   }
 

@@ -213,6 +213,8 @@ void mainVS() {
       v_Color = skySmogColor;
     } else if (colorIndex == ${SkyboxColor.Fog}) {
       v_Color = skyFogColor;
+    } else {
+      v_Color = vec4(1.0, 0.0, 1.0, 1.0);
     }
     gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 0.0)));
 }
@@ -392,7 +394,7 @@ void mainPS() {
     vec4 tex3 = texture(SAMPLER_2D(u_Texture2), v_UV2);
 
     int blendMode = int(materialParams.x);
-    if (blendMode > 1) {
+    if (blendMode == 1) {
       if (tex.a < 0.501960814) {
         discard;
       }
@@ -566,7 +568,7 @@ layout(location = ${TerrainProgram.a_ChunkIndex}) attribute float a_ChunkIndex;
 
 void mainVS() {
     float iX = mod(a_ChunkIndex, 17.0);
-    float iY = floor(a_ChunkIndex/17.0);
+    float iY = floor(a_ChunkIndex / 17.0);
 
     if (iX > 8.01) {
         iY = iY + 0.5;
@@ -583,10 +585,6 @@ void mainVS() {
 #endif
 
 #ifdef FRAG
-vec4 mixTex(vec4 tex0, vec4 tex1, float alpha) {
-  return (alpha * (tex1 - tex0) + tex0);
-}
-
 void mainPS() {
     vec2 alphaCoord = v_ChunkCoords / 8.0;
     vec4 alphaBlend = texture(SAMPLER_2D(u_AlphaTexture0), alphaCoord);
@@ -594,14 +592,14 @@ void mainPS() {
     vec4 tex1 = texture(SAMPLER_2D(u_Texture1), v_ChunkCoords);
     vec4 tex2 = texture(SAMPLER_2D(u_Texture2), v_ChunkCoords);
     vec4 tex3 = texture(SAMPLER_3D(u_Texture3), v_ChunkCoords);
-    vec4 tex = mixTex(mixTex(mixTex(tex0, tex1, alphaBlend.g), tex2, alphaBlend.b), tex3, alphaBlend.a);
+    vec4 tex = mix(mix(mix(tex0, tex1, alphaBlend.g), tex2, alphaBlend.b), tex3, alphaBlend.a);
     vec4 diffuse = tex * v_Color;
     vec4 finalColor = vec4(calcLight(
       diffuse.rgb,
       v_Normal,
       vec4(0.0), // ambient color
       vec4(0.0), // direct color
-      0.0, // interiorExteriorBlend
+      1.0, // interiorExteriorBlend
       false, // apply interior light
       true, // apply exterior light
       v_Lighting.rgb, // accumLight
@@ -610,7 +608,7 @@ void mainPS() {
       vec3(0.0) // emissive
     ), 1.0);
 
-    float specBlend = diffuse.a;
+    float specBlend = tex.a;
     vec3 halfVec = -normalize(exteriorDirectColorDir.xyz + normalize(v_Position));
     vec3 lSpecular = exteriorDirectColor.xyz * pow(max(0.0, dot(halfVec, v_Normal)), 20.0);
     float adtSpecMult = 1.0;

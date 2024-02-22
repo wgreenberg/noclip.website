@@ -583,7 +583,7 @@ impl LightDatabase {
                 break;
             }
 
-            if total_alpha + alpha > 1.0 {
+            if total_alpha + alpha >= 1.0 {
                 alpha = 1.0 - total_alpha;
             }
             result.add_scaled(outer_result, alpha);

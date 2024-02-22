@@ -57,10 +57,6 @@ export const noclipSpaceFromPlacementSpace = mat4.fromValues(
   0, 0, 0, 1,
 )
 
-const MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
-const MAX_INTERIOR_WMO_RENDER_DIST = 500;
-const ADT_LOD0_DISTANCE = 1000;
-
 export const adtSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), noclipSpaceFromAdtSpace);
 mat4.mul(adtSpaceFromPlacementSpace, adtSpaceFromPlacementSpace, noclipSpaceFromPlacementSpace);
 
@@ -184,6 +180,11 @@ export class WdtScene implements Viewer.SceneGfx {
   private modelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
+
+  public MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
+  public MAX_INTERIOR_WMO_RENDER_DIST = 500;
+  public MAX_ADT_RENDER_DISTANCE = 5000;
+  public ADT_LOD0_DISTANCE = 1000;
 
   private terrainProgram: GfxProgram;
   private modelProgram: GfxProgram;
@@ -327,7 +328,7 @@ export class WdtScene implements Viewer.SceneGfx {
         drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, groupAABB);
       }
     }
-    const closeEnough = this.mainView.cameraDistanceToWorldSpaceAABB(def.worldSpaceAABB) < MAX_EXTERIOR_WMO_RENDER_DIST;
+    const closeEnough = this.mainView.cameraDistanceToWorldSpaceAABB(def.worldSpaceAABB) < this.MAX_EXTERIOR_WMO_RENDER_DIST;
     const wmoVisible = closeEnough && this.mainView.frustum.contains(def.worldSpaceAABB);
     def.setVisible(wmoVisible);
     if (!def.visible) {
@@ -339,9 +340,9 @@ export class WdtScene implements Viewer.SceneGfx {
         const group = wmo.groups.find(group => group.fileId === groupId)!;
         const distance = this.mainView.cameraDistanceToWorldSpaceAABB(groupAABB);
         if (group.flags.exterior) {
-          def.setGroupVisible(groupId, distance < MAX_EXTERIOR_WMO_RENDER_DIST);
+          def.setGroupVisible(groupId, distance < this.MAX_EXTERIOR_WMO_RENDER_DIST);
         } else {
-          def.setGroupVisible(groupId, distance < MAX_INTERIOR_WMO_RENDER_DIST);
+          def.setGroupVisible(groupId, distance < this.MAX_INTERIOR_WMO_RENDER_DIST);
         }
       } else {
         def.setGroupVisible(groupId, false);
@@ -353,14 +354,15 @@ export class WdtScene implements Viewer.SceneGfx {
     if (DEBUG_DRAW_ADT_BOUNDING_BOXES) {
       drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, adt.worldSpaceAABB);
     }
-    adt.setVisible(this.mainView.frustum.contains(adt.worldSpaceAABB));
+    const inFrustum = this.mainView.frustum.contains(adt.worldSpaceAABB);
+    const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
+    adt.setVisible(inFrustum && distance < this.MAX_ADT_RENDER_DISTANCE);
     // FIXME: some WMOs seem to have AABBs fully disjoint from their parent
     // ADTs, so this may give us some disappearing WMOs
     if (!adt.visible) {
       return;
     }
-    const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
-    adt.setLodLevel(distance < ADT_LOD0_DISTANCE ? 0 : 1);
+    adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
     for (let def of adt.lodWmoDefs()) {
       const wmo = adt.wmos.get(def.wmoId)!;
       this.cullWmoDef(def, wmo);

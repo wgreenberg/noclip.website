@@ -821,8 +821,12 @@ export class WmoDefinition {
   }
 
   public isWmoGroupVisible(groupFileId: number): boolean {
+    const visible = this.groupIdToVisibility.get(groupFileId);
     // default to true
-    return this.groupIdToVisibility.get(groupFileId) || true;
+    if (visible === undefined) {
+      return true;
+    }
+    return visible;
   }
 
   public setGroupVisible(groupId: number, visible: boolean) {
