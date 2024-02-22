@@ -146,24 +146,8 @@ export function setSortKeyDepth(sortKey: number, depth: number, maxDepth: number
 //#endregion
 
 //#region GfxRenderInst
-// TODO(jstpierre): Very little of this is used, could be removed.
-const enum GfxRenderInstFlags {
-    None = 0,
-    Indexed = 1 << 0,
-    AllowSkippingIfPipelineNotReady = 1 << 1,
-
-    // Mostly for error checking.
-    Template = 1 << 2,
-    Draw = 1 << 3,
-
-    // Which flags are inherited from templates...
-    InheritedFlags = Indexed | AllowSkippingIfPipelineNotReady,
-}
-
 export class GfxRenderInst {
     public sortKey: number = 0;
-    // TODO(jstpierre): Remove when we remove legacy GfxRenderInstManager.
-    public filterKey: number = 0;
 
     // Debugging pointer for whomever wants it...
     public debug: any = null;
@@ -176,7 +160,7 @@ export class GfxRenderInst {
     private _bindingDescriptors: GfxBindingsDescriptor[] = nArray(1, () => ({ bindingLayout: null!, samplerBindings: [], uniformBufferBindings: [] }));
     private _dynamicUniformBufferByteOffsets: number[] = nArray(4, () => 0);
 
-    public _flags: GfxRenderInstFlags = 0;
+    private _allowSkippingPipelineIfNotReady: boolean = false;
     private _vertexBuffers: (GfxVertexBufferDescriptor | null)[] | null = null;
     private _indexBuffer: GfxIndexBufferDescriptor | null = null;
     private _drawStart: number = 0;
@@ -206,8 +190,7 @@ export class GfxRenderInst {
      */
     public reset(): void {
         this.sortKey = 0;
-        this.filterKey = 0;
-        this._flags = GfxRenderInstFlags.AllowSkippingIfPipelineNotReady;
+        this._allowSkippingPipelineIfNotReady = true;
         this._vertexBuffers = null;
         this._indexBuffer = null;
         this._renderPipelineDescriptor.inputLayout = null;
@@ -235,9 +218,8 @@ export class GfxRenderInst {
         this._drawInstanceCount = o._drawInstanceCount;
         this._vertexBuffers = o._vertexBuffers;
         this._indexBuffer = o._indexBuffer;
-        this._flags = (this._flags & ~GfxRenderInstFlags.InheritedFlags) | (o._flags & GfxRenderInstFlags.InheritedFlags);
+        this._allowSkippingPipelineIfNotReady = o._allowSkippingPipelineIfNotReady;
         this.sortKey = o.sortKey;
-        this.filterKey = o.filterKey;
         const tbd = this._bindingDescriptors[0], obd = o._bindingDescriptors[0];
         if (obd.bindingLayout !== null)
             this._setBindingLayout(obd.bindingLayout);
@@ -318,25 +300,22 @@ export class GfxRenderInst {
         this._setBindingLayout(bindingLayouts[0]);
     }
 
-    public drawIndexes(indexCount: number, indexStart: number = 0): void {
-        this._flags = setBitFlagEnabled(this._flags, GfxRenderInstFlags.Indexed, true);
-        this._drawCount = indexCount;
-        this._drawStart = indexStart;
-        this._drawInstanceCount = 1;
-    }
-
-    public drawIndexesInstanced(indexCount: number, instanceCount: number, indexStart: number = 0): void {
-        this._flags = setBitFlagEnabled(this._flags, GfxRenderInstFlags.Indexed, true);
-        this._drawCount = indexCount;
-        this._drawStart = indexStart;
+    /**
+     * Sets the draw count parameters for this render inst. Whether this is an indexed or an unindexed draw is
+     * determined by whether an index buffer is bound in the input layout. If this is an indexed draw, then
+     * the counts are index counts. If this is an unindexed draw, then this is a vertex count.
+     *
+     * Instance counts are the same for both indexed and unindexed draws, however instanced draws are (currently)
+     * only supported for indexed draws.
+     *
+     * @param count The index count, or vertex count.
+     * @param start The first index, or first vertex to render with.
+     * @param instanceCount The number of instances to render.
+     */
+    public setDrawCount(count: number, start: number = 0, instanceCount: number = 1): void {
+        this._drawCount = count;
+        this._drawStart = start;
         this._drawInstanceCount = instanceCount;
-    }
-
-    public drawPrimitives(primitiveCount: number, primitiveStart: number = 0): void {
-        this._flags = setBitFlagEnabled(this._flags, GfxRenderInstFlags.Indexed, false);
-        this._drawCount = primitiveCount;
-        this._drawStart = primitiveStart;
-        this._drawInstanceCount = 1;
     }
 
     public setUniformBuffer(uniformBuffer: GfxRenderDynamicUniformBuffer): void {
@@ -469,7 +448,7 @@ export class GfxRenderInst {
      * By default, this is true.
      */
     public setAllowSkippingIfPipelineNotReady(v: boolean): void {
-        this._flags = setBitFlagEnabled(this._flags, GfxRenderInstFlags.AllowSkippingIfPipelineNotReady, v);
+        this._allowSkippingPipelineIfNotReady = v;
     }
 
     private setAttachmentFormatsFromRenderPass(device: GfxDevice, passRenderer: GfxRenderPass): void {
@@ -508,7 +487,7 @@ export class GfxRenderInst {
 
         const pipelineReady = device.pipelineQueryReady(gfxPipeline);
         if (!pipelineReady) {
-            if (!!(this._flags & GfxRenderInstFlags.AllowSkippingIfPipelineNotReady))
+            if (this._allowSkippingPipelineIfNotReady)
                 return;
 
             device.pipelineForceReady(gfxPipeline);
@@ -524,10 +503,11 @@ export class GfxRenderInst {
         const gfxBindings = cache.createBindings(this._bindingDescriptors[0]);
         passRenderer.setBindings(0, gfxBindings, this._dynamicUniformBufferByteOffsets);
 
+        const indexed = this._indexBuffer !== null;
         if (this._drawInstanceCount > 1) {
-            assert(!!(this._flags & GfxRenderInstFlags.Indexed));
+            assert(indexed);
             passRenderer.drawIndexedInstanced(this._drawCount, this._drawStart, this._drawInstanceCount);
-        } else if ((this._flags & GfxRenderInstFlags.Indexed)) {
+        } else if (indexed) {
             passRenderer.drawIndexed(this._drawCount, this._drawStart);
         } else {
             passRenderer.draw(this._drawCount, this._drawStart);
@@ -587,7 +567,6 @@ export class GfxRenderInstList {
 
     public submitRenderInst(renderInst: GfxRenderInst): void {
         renderInst.validate();
-        renderInst._flags |= GfxRenderInstFlags.Draw;
         this.insertSorted(renderInst);
     }
 
@@ -680,8 +659,7 @@ class RenderInstPool {
 export class GfxRenderInstManager {
     public instPool = new RenderInstPool();
     public templateStack: GfxRenderInst[] = [];
-    public simpleRenderInstList: GfxRenderInstList | null = new GfxRenderInstList();
-    public currentRenderInstList: GfxRenderInstList = this.simpleRenderInstList!;
+    public currentRenderInstList: GfxRenderInstList = null!;
 
     constructor(public gfxRenderCache: GfxRenderCache) {
     }
@@ -705,19 +683,18 @@ export class GfxRenderInstManager {
      * this assumes the render inst was fully filled in, so do not modify it
      * after submitting it.
      */
-    public submitRenderInst(renderInst: GfxRenderInst, list: GfxRenderInstList = this.currentRenderInstList): void {
-        list.submitRenderInst(renderInst);
+    public submitRenderInst(renderInst: GfxRenderInst): void {
+        this.currentRenderInstList.submitRenderInst(renderInst);
     }
 
     /**
      * Sets the currently active render inst list. This is the list that will
-     * be used by @param submitRenderInst}. If you use this function, please
-     * make sure to call {@see disableSimpleMode} when the GfxRenderInstManager
-     * is created, to ensure that nobody uses the "legacy" APIs. Failure to do
-     * so might cause memory leaks or other problems.
+     * be used by {@see submitRenderInst}. This is provided as convenience so
+     * you don't need to pass a {@see GfxRenderInstList} around at the same time
+     * you pass the manager, you can also call {@see submitRenderInst} directly
+     * on the provided list.
      */
     public setCurrentRenderInstList(list: GfxRenderInstList): void {
-        assert(this.simpleRenderInstList === null);
         this.currentRenderInstList = list;
     }
 
@@ -725,13 +702,12 @@ export class GfxRenderInstManager {
      * Pushes a new template render inst to the template stack. All properties set
      * on the topmost template on the template stack will be the defaults for both
      * for any future render insts created. Once done with a template, call
-     * {@param popTemplateRenderInst} to pop it off the template stack.
+     * {@see popTemplateRenderInst} to pop it off the template stack.
      */
     public pushTemplateRenderInst(): GfxRenderInst {
         const newTemplate = new GfxRenderInst();
         if (this.templateStack.length > 0)
             newTemplate.setFromTemplate(this.getTemplateRenderInst());
-        newTemplate._flags |= GfxRenderInstFlags.Template;
         this.templateStack.push(newTemplate);
         return newTemplate;
     }
@@ -752,63 +728,12 @@ export class GfxRenderInstManager {
      * once done with all of the allocated render insts and render inst lists.
      */
     public resetRenderInsts(): void {
-        // Retire the existing render insts.
         this.instPool.reset();
-        if (this.simpleRenderInstList !== null)
-            this.simpleRenderInstList.reset();
-        // Ensure we aren't leaking templates.
         assert(this.templateStack.length === 0);
     }
 
     public destroy(): void {
         this.instPool.destroy();
     }
-
-    /**
-     * Disables the "simple" render inst list management API.
-     */
-    public disableSimpleMode(): void {
-        // This is a one-way street!
-        this.simpleRenderInstList = null;
-    }
-    //#region Legacy render inst list management API.
-
-    /**
-     * {@deprecated}
-     */
-    public setVisibleByFilterKeyExact(filterKey: number): GfxRenderInstList {
-        const list = assertExists(this.simpleRenderInstList);
-        // Guess whether we should speed things up with a post-sort by the previous contents of the list...
-        list.checkUsePostSort();
-        list.renderInsts.length = 0;
-
-        for (let i = 0; i < this.instPool.allocCount; i++)
-            if (!!(this.instPool.pool[i]._flags & GfxRenderInstFlags.Draw) && this.instPool.pool[i].filterKey === filterKey)
-                list.submitRenderInst(this.instPool.pool[i]);
-
-        return list;
-    }
-
-    public drawOnPassRenderer(passRenderer: GfxRenderPass): void {
-        const list = assertExists(this.simpleRenderInstList);
-        list.drawOnPassRenderer(this.gfxRenderCache, passRenderer);
-    }
-    //#endregion
-}
-
-/**
- * {@deprecated}
- */
-export function executeOnPass(renderInstManager: GfxRenderInstManager, passRenderer: GfxRenderPass, passMask: number): void {
-    renderInstManager.setVisibleByFilterKeyExact(passMask);
-    renderInstManager.drawOnPassRenderer(passRenderer);
-}
-
-/**
- * {@deprecated}
- */
-export function hasAnyVisible(renderInstManager: GfxRenderInstManager, passMask: number): boolean {
-    renderInstManager.setVisibleByFilterKeyExact(passMask);
-    return renderInstManager.simpleRenderInstList!.renderInsts.length > 0;
 }
 //#endregion

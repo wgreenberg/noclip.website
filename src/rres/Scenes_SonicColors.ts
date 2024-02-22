@@ -1,20 +1,20 @@
 
 import * as Viewer from '../viewer.js';
-import * as U8 from './u8.js';
 import * as BRRES from './brres.js';
+import * as U8 from './u8.js';
 
-import ArrayBufferSlice from "../ArrayBufferSlice.js";
 import { vec3 } from "gl-matrix";
-import { readString, assert, assertExists } from "../util.js";
-import { GfxDevice } from '../gfx/platform/GfxPlatform.js';
-import { MDL0ModelInstance, RRESTextureHolder, MDL0Model } from './render.js';
 import AnimationController from '../AnimationController.js';
-import { GXRenderHelperGfx, fillSceneParamsDataOnTemplate } from '../gx/gx_render.js';
-import { makeBackbufferDescSimple, pushAntialiasingPostProcessPass, standardFullClearRenderPassDescriptor } from '../gfx/helpers/RenderGraphHelpers.js';
-import { GXMaterialHacks } from '../gx/gx_material.js';
-import { executeOnPass } from '../gfx/render/GfxRenderInstManager.js';
+import ArrayBufferSlice from "../ArrayBufferSlice.js";
 import { SceneContext } from '../SceneBase.js';
+import { makeBackbufferDescSimple, pushAntialiasingPostProcessPass, standardFullClearRenderPassDescriptor } from '../gfx/helpers/RenderGraphHelpers.js';
+import { GfxDevice } from '../gfx/platform/GfxPlatform.js';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
+import { GfxRenderInstList } from '../gfx/render/GfxRenderInstManager.js';
+import { GXMaterialHacks } from '../gx/gx_material.js';
+import { GXRenderHelperGfx, fillSceneParamsDataOnTemplate } from '../gx/gx_render.js';
+import { assert, assertExists, readString } from "../util.js";
+import { MDL0Model, MDL0ModelInstance, RRESTextureHolder } from './render.js';
 
 interface MapEntry {
     index: number;
@@ -59,6 +59,8 @@ enum SonicColorsPass {
 
 class SonicColorsRenderer implements Viewer.SceneGfx {
     public renderHelper: GXRenderHelperGfx;
+    private renderInstListSky = new GfxRenderInstList();
+    private renderInstListMain = new GfxRenderInstList();
     public textureHolder = new RRESTextureHolder();
     public animationController = new AnimationController();
 
@@ -69,13 +71,24 @@ class SonicColorsRenderer implements Viewer.SceneGfx {
         this.renderHelper = new GXRenderHelperGfx(device);
     }
 
+    private preparePass(device: GfxDevice, list: GfxRenderInstList, passMask: number, viewerInput: Viewer.ViewerRenderInput): void {
+        const renderInstManager = this.renderHelper.renderInstManager;
+        renderInstManager.setCurrentRenderInstList(list);
+        for (let i = 0; i < this.modelInstances.length; i++) {
+            const m = this.modelInstances[i];
+            if (!(m.passMask & passMask))
+                continue;
+            m.prepareToRender(device, renderInstManager, viewerInput);
+        }
+    }
+
     protected prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
         this.animationController.setTimeInMilliseconds(viewerInput.time);
 
         const template = this.renderHelper.pushTemplateRenderInst();
         fillSceneParamsDataOnTemplate(template, viewerInput);
-        for (let i = 0; i < this.modelInstances.length; i++)
-            this.modelInstances[i].prepareToRender(device, this.renderHelper.renderInstManager, viewerInput);
+        this.preparePass(device, this.renderInstListSky, SonicColorsPass.SKYBOX, viewerInput);
+        this.preparePass(device, this.renderInstListMain, SonicColorsPass.MAIN, viewerInput);
         this.renderHelper.prepareToRender();
         this.renderHelper.renderInstManager.popTemplateRenderInst();
     }
@@ -94,7 +107,7 @@ class SonicColorsRenderer implements Viewer.SceneGfx {
             const skyboxDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Skybox Depth');
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, skyboxDepthTargetID);
             pass.exec((passRenderer) => {
-                executeOnPass(renderInstManager, passRenderer, SonicColorsPass.SKYBOX);
+                this.renderInstListSky.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
             });
         });
         const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
@@ -103,7 +116,7 @@ class SonicColorsRenderer implements Viewer.SceneGfx {
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
             pass.exec((passRenderer) => {
-                executeOnPass(renderInstManager, passRenderer, SonicColorsPass.MAIN);
+                this.renderInstListMain.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
             });
         });
         pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
@@ -111,6 +124,8 @@ class SonicColorsRenderer implements Viewer.SceneGfx {
 
         this.prepareToRender(device, viewerInput);
         this.renderHelper.renderGraph.execute(builder);
+        this.renderInstListSky.reset();
+        this.renderInstListMain.reset();
         renderInstManager.resetRenderInsts();
     }
 
@@ -127,7 +142,7 @@ const materialHacks: GXMaterialHacks = {
     lightingFudge: (p) => `${p.ambSource} + 0.6`,
 };
 
-const pathBase = `sonic_colors`;
+const pathBase = `SonicColors`;
 class SonicColorsSceneDesc implements Viewer.SceneDesc {
     constructor(public id: string, public name: string) {
     }

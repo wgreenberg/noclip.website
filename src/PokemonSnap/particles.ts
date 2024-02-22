@@ -16,7 +16,6 @@ import { fillMatrix4x4, fillMatrix4x3, fillVec4v } from "../gfx/helpers/UniformB
 import { TextureMapping } from "../TextureHolder.js";
 import { computeViewMatrix } from "../Camera.js";
 import { setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
-import { SnapPass } from "./render.js";
 
 export interface EmitterData {
     isCommon: boolean;
@@ -466,7 +465,6 @@ export class ParticleManager {
         template.setVertexInput(this.spriteData.inputLayout, this.spriteData.vertexBufferDescriptors, this.spriteData.indexBufferDescriptor);
         template.setMegaStateFlags(this.megaStateFlags);
 
-        template.filterKey = SnapPass.MAIN;
         template.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT);
 
         let offs = template.allocateUniformBuffer(ParticleProgram.ub_SceneParams, 16);
@@ -960,13 +958,12 @@ class Particle {
 
         const renderInst = renderInstManager.newRenderInst();
         renderInst.setGfxProgram(this.gfxProgram);
-        renderInst.filterKey = SnapPass.MAIN;
         renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT);
 
         mappingScratch[0].gfxSampler = this.textures[this.texIndex].sampler;
         mappingScratch[0].gfxTexture = this.textures[this.texIndex].texture;
         renderInst.setSamplerBindingsFromTextureMappings(mappingScratch);
-        renderInst.drawIndexes(6);
+        renderInst.setDrawCount(6);
 
         let offs = renderInst.allocateUniformBuffer(ParticleProgram.ub_DrawParams, 12 + 4 * 2);
         const draw = renderInst.mapUniformBufferF32(ParticleProgram.ub_DrawParams);

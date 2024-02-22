@@ -247,7 +247,7 @@ class DrawCallInstance {
         renderInst.setGfxProgram(this.gfxProgram);
         renderInst.setSamplerBindingsFromTextureMappings(this.textureMappings);
         renderInst.setMegaStateFlags(this.megaStateFlags);
-        renderInst.drawIndexes(this.drawCall.indexCount, this.drawCall.firstIndex);
+        renderInst.setDrawCount(this.drawCall.indexCount, this.drawCall.firstIndex);
 
         let offs = renderInst.allocateUniformBuffer(F3DEX_Program.ub_DrawParams, 12 + 8*2);
         const mappedF32 = renderInst.mapUniformBufferF32(F3DEX_Program.ub_DrawParams);
@@ -277,11 +277,6 @@ class DrawCallInstance {
             if (this.textureMappings[i].gfxTexture !== null)
                 device.destroyTexture(this.textureMappings[i].gfxTexture!);
     }
-}
-
-export const enum BKPass {
-    MAIN = 0x01,
-    SKYBOX = 0x02,
 }
 
 const bindingLayouts: GfxBindingLayoutDescriptor[] = [
@@ -410,8 +405,6 @@ export class RootMeshRenderer {
         template.setBindingLayouts(bindingLayouts);
         template.setVertexInput(renderData.inputLayout, renderData.vertexBufferDescriptors, renderData.indexBufferDescriptor);
         template.setMegaStateFlags(this.megaStateFlags);
-
-        template.filterKey = this.isSkybox ? BKPass.SKYBOX : BKPass.MAIN;
         template.sortKey = this.sortKeyBase;
 
         const computeLookAt = false; // FIXME: or true?

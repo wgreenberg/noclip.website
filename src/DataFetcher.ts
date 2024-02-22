@@ -12,10 +12,10 @@ function getDataStorageBaseURL(isDevelopment: boolean): string {
     if (isDevelopment)
         return `/data`;
     else
-        return `https://noclip.beyond3d.com`;
+        return `https://z.noclip.website`;
 }
 
-function getDataURLForPath(url: string, isDevelopment: boolean = IS_DEVELOPMENT): string {
+function getDataURLForPath(url: string, isDevelopment: boolean): string {
     if (url.startsWith('https://') || url.startsWith('http://'))
         return url;
 
@@ -67,11 +67,8 @@ class DataFetcherRequest {
         if (response === null)
             return false;
 
+        // In production environments, 404s sometimes show up as CORS errors, which come back as status 200.
         if (response.status === 404)
-            return true;
-
-        // In production environments, 404s sometimes show up as CORS errors, which come back as status 0.
-        if (response.status === 0)
             return true;
 
         return false;
@@ -97,7 +94,7 @@ class DataFetcherRequest {
 
         if (this.retriesLeft > 0) {
             this.retriesLeft--;
-            this.destroy();
+            this.response = null;
             this.start();
             return true;
         } else {
@@ -130,7 +127,7 @@ class DataFetcherRequest {
         assert(this.response === null);
         try {
             this.response = await fetch(this.request);
-        } catch(e) {
+        } catch (e: unknown) {
             // Error handling below.
         }
 
@@ -173,7 +170,7 @@ class DataFetcherRequest {
 
                 if (this.onprogress !== null)
                     this.onprogress();
-            } catch(e) {
+            } catch (e) {
                 break;
             }
         }
@@ -282,6 +279,7 @@ export class DataFetcher {
     public useDevelopmentStorage: boolean | null = null;
     private cache: Cache | null = null;
     private mounts: DataFetcherMount[] = [];
+    public debug = IS_DEVELOPMENT;
 
     constructor(public progressMeter: ProgressMeter | null = null) {
     }
@@ -341,6 +339,34 @@ export class DataFetcher {
         return Promise.all(this.requests.map((request) => request.promise)) as Promise<any>;
     }
 
+    private debugDisplay: HTMLElement | null = null;
+    private debugCalcProgress(): void {
+        if (!this.debug) {
+            if (this.debugDisplay !== null)
+                this.debugDisplay.parentElement!.removeChild(this.debugDisplay)
+
+            return;
+        }
+
+        if (this.debugDisplay == null) {
+            this.debugDisplay = document.createElement('div');
+            this.debugDisplay.style.position = 'absolute';
+            this.debugDisplay.style.bottom = '16px';
+            this.debugDisplay.style.right = '16px';
+            this.debugDisplay.style.color = 'white';
+            this.debugDisplay.style.textShadow = '1px 1px 2px black';
+            this.debugDisplay.style.font = '12pt monospace';
+            this.debugDisplay.style.whiteSpace = `pre`;
+            this.debugDisplay.style.textAlign = 'right';
+            window.main.ui.elem.appendChild(this.debugDisplay);
+        }
+
+        let S = '';
+        for (let i = 0; i < this.requests.length; i++)
+            S += `${this.requests[i].url} ${(this.requests[i].progress * 100) | 0}%\n`;
+        this.debugDisplay.textContent = S;
+    }
+
     private calcProgress(): number {
         if (this.requests.length === 0)
             return 1;
@@ -376,8 +402,10 @@ export class DataFetcher {
             this.requests.splice(this.requests.indexOf(request), 1);
             this.pump();
             this.manageCache();
+            this.debugCalcProgress();
         };
         request.onprogress = () => {
+            this.debugCalcProgress();
             this.setProgress();
         };
         this.pump();

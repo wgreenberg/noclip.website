@@ -256,7 +256,7 @@ export class TwilightPrincessRenderer implements Viewer.SceneGfx {
 
     constructor(device: GfxDevice, public globals: dGlobals) {
         this.renderHelper = new GXRenderHelperGfx(device);
-        this.renderHelper.renderInstManager.disableSimpleMode();
+
         
         this.renderCache = this.renderHelper.renderInstManager.gfxRenderCache;
         this.applyCurrentLayer();
@@ -713,7 +713,7 @@ export class ModelCache {
     }
 }
 
-const pathBase = `j3d/ztp`;
+const pathBase = `ZeldaTwilightPrincess`;
 
 class d_s_play extends fopScn {
     public bgS = new dBgS();

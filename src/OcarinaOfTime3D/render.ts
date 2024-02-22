@@ -865,7 +865,7 @@ class ShapeInstance {
             const prmsData = this.sepdData.prmsData[i];
             const prms = prmsData.prms;
             const renderInst = renderInstManager.newRenderInst();
-            renderInst.drawIndexes(prms.prm.count, prmsData.indexBufferOffset);
+            renderInst.setDrawCount(prms.prm.count, prmsData.indexBufferOffset);
 
             let offs = renderInst.allocateUniformBuffer(DMPProgram.ub_PrmParams, 12*16+12+4*2);
             const prmParamsMapped = renderInst.mapUniformBufferF32(DMPProgram.ub_PrmParams);
@@ -1056,11 +1056,8 @@ export class CmbInstance {
             }
         }
 
-        const template = renderInstManager.pushTemplateRenderInst();
-        template.filterKey = this.passMask;
         for (let i = 0; i < this.shapeInstances.length; i++)
             this.shapeInstances[i].prepareToRender(device, renderInstManager, this.textureHolder, this.boneMatrices, scratchViewMatrix, this.cmbData.inverseBindPoseMatrices);
-        renderInstManager.popTemplateRenderInst();
     }
 
     public setVisible(visible: boolean): void {

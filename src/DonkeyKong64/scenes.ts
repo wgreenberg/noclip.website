@@ -13,7 +13,7 @@ import { mat4, vec3 } from 'gl-matrix';
 import { GfxRenderCache } from '../gfx/render/GfxRenderCache.js';
 import { TextureMapping, FakeTextureHolder } from '../TextureHolder.js';
 import { DrawCall, RSPState, runDL_F3DEX2, RSPOutput } from './f3dex2.js';
-import { GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
+import { GfxRenderInstList, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
 import { computeViewMatrixSkybox, computeViewMatrix, CameraController } from '../Camera.js';
 import { fillMatrix4x3, fillMatrix4x2, fillVec4, fillMatrix4x4 } from '../gfx/helpers/UniformBufferHelpers.js';
 import { translateCM, Texture, OtherModeH_Layout, OtherModeH_CycleType } from '../Common/N64/RDP.js';
@@ -172,7 +172,7 @@ class DrawCallInstance {
         renderInst.setGfxProgram(this.gfxProgram);
         renderInst.setSamplerBindingsFromTextureMappings(this.textureMappings);
         renderInst.setMegaStateFlags(this.megaStateFlags);
-        renderInst.drawIndexes(this.drawCall.indexCount, this.drawCall.firstIndex);
+        renderInst.setDrawCount(this.drawCall.indexCount, this.drawCall.firstIndex);
 
         let offs = renderInst.allocateUniformBuffer(F3DEX_Program.ub_DrawParams, 12 + 8*2);
         const mappedF32 = renderInst.mapUniformBufferF32(F3DEX_Program.ub_DrawParams);
@@ -438,6 +438,7 @@ const bindingLayouts: GfxBindingLayoutDescriptor[] = [
 
 class DK64Renderer implements Viewer.SceneGfx {
     public renderHelper: GfxRenderHelper;
+    private renderInstListMain = new GfxRenderInstList();
 
     public meshDatas: MeshData[] = [];
     public meshRenderers: RootMeshRenderer[] = [];
@@ -455,6 +456,8 @@ class DK64Renderer implements Viewer.SceneGfx {
     private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
         const template = this.renderHelper.pushTemplateRenderInst();
         template.setBindingLayouts(bindingLayouts);
+
+        this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
 
         for (let i = 0; i < this.meshRenderers.length; i++)
             this.meshRenderers[i].prepareToRender(device, this.renderHelper.renderInstManager, viewerInput);
@@ -477,7 +480,7 @@ class DK64Renderer implements Viewer.SceneGfx {
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
             pass.exec((passRenderer) => {
-                renderInstManager.drawOnPassRenderer(passRenderer);
+                this.renderInstListMain.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
             });
         });
         pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
@@ -485,6 +488,7 @@ class DK64Renderer implements Viewer.SceneGfx {
 
         this.prepareToRender(device, viewerInput);
         this.renderHelper.renderGraph.execute(builder);
+        this.renderInstListMain.reset();
         renderInstManager.resetRenderInsts();
     }
 

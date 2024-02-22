@@ -10,7 +10,7 @@ import { DeviceProgram } from '../Program.js';
 import { computeViewMatrix, computeViewMatrixSkybox } from '../Camera.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { GfxFormat, GfxBufferUsage, GfxBlendMode, GfxBlendFactor, GfxDevice, GfxBuffer, GfxVertexBufferFrequency, GfxTexFilterMode, GfxMipFilterMode, GfxInputLayout, GfxVertexAttributeDescriptor, GfxSampler, makeTextureDescriptor2D, GfxMegaStateDescriptor, GfxTexture, GfxInputLayoutBufferDescriptor, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor } from '../gfx/platform/GfxPlatform.js';
-import { fillMatrix4x3, fillVec4, fillMatrix4x2 } from '../gfx/helpers/UniformBufferHelpers.js';
+import { fillMatrix4x3, fillVec4, fillMatrix4x2, fillColor } from '../gfx/helpers/UniformBufferHelpers.js';
 import { GfxRenderInstManager, GfxRenderInst, makeSortKey, GfxRendererLayer } from '../gfx/render/GfxRenderInstManager.js';
 import { makeStaticDataBuffer } from '../gfx/helpers/BufferHelpers.js';
 import { parseTexImageParamWrapModeS, parseTexImageParamWrapModeT } from './nitro_tex.js';
@@ -20,6 +20,7 @@ import AnimationController from '../AnimationController.js';
 import { CalcBillboardFlags, calcBillboardMatrix, computeMatrixWithoutScale } from '../MathHelpers.js';
 import { GfxRenderCache } from '../gfx/render/GfxRenderCache.js';
 import { setAttachmentStateSimple } from '../gfx/helpers/GfxMegaStateDescriptorHelpers.js';
+import { White, colorNewCopy } from '../Color.js';
 
 export class NITRO_Program extends DeviceProgram {
     public static a_Position = 0;
@@ -38,16 +39,24 @@ precision mediump float;
 // Expected to be constant across the entire scene.
 layout(std140) uniform ub_SceneParams {
     Mat4x4 u_Projection;
+    // Light configuration
+    vec4 u_LightDir[4];
+    vec4 u_LightColor[4];
 };
 
 // Expected to change with each material.
 layout(std140) uniform ub_MaterialParams {
     Mat4x2 u_TexMtx[1];
-    vec4 u_Misc0;
+    vec4 u_Misc[4];
 };
-#define u_TexCoordMode (u_Misc0.x)
+#define u_DiffuseColor  (u_Misc[0].xyz)
+#define u_AmbientColor  (u_Misc[1].xyz)
+#define u_SpecularColor (u_Misc[2].xyz)
+#define u_EmissionColor (u_Misc[3].xyz)
+#define u_TexCoordMode  (u_Misc[0].w)
+#define u_LightMask     (u_Misc[1].w)
 
-layout(std140) uniform ub_drawParams {
+layout(std140) uniform ub_DrawParams {
     Mat4x3 u_PosMtx[32];
 };
 
@@ -65,10 +74,36 @@ layout(location = ${NITRO_Program.a_PosMtxIdx}) in float a_PosMtxIdx;
 out vec4 v_Color;
 out vec2 v_TexCoord;
 
+vec3 CalcLight(in vec3 vtxNormal) {
+    vec3 ret = vec3(0.0);
+
+    int lightMask = int(u_LightMask);
+    for (int i = 0; i < 4; i++) {
+        int lightBit = (1 << i);
+        if ((lightMask & lightBit) == 0)
+            continue;
+
+        vec3 lightDir = u_LightDir[i].xyz;
+        vec3 lightColor = u_LightColor[i].xyz;
+        ret += max(dot(vtxNormal, lightDir), 0.0) * u_DiffuseColor * lightColor;
+        ret += u_AmbientColor * lightColor;
+        // TODO(jstpierre): Specular
+    }
+
+    ret += u_EmissionColor;
+    return ret;
+}
+
 void main() {
     Mat4x3 t_PosMtx = u_PosMtx[int(a_PosMtxIdx)];
     gl_Position = Mul(u_Projection, Mul(_Mat4x4(t_PosMtx), vec4(a_Position, 1.0)));
     v_Color = a_Color;
+
+    if (a_Color.r < 0.0) {
+        // Turn on lighting
+        vec3 vtxNormal = normalize(Mul(_Mat4x4(t_PosMtx), vec4(a_Normal, 0.0))).xyz;
+        v_Color.rgb = CalcLight(vtxNormal);
+    }
 
     vec2 t_TexSpaceCoord;
     if (u_TexCoordMode == 2.0) { // TexCoordMode.NORMAL
@@ -157,11 +192,6 @@ function mat4_from_mat2d(dst: mat4, m: mat2d): void {
     dst[15] = 1;
 }
 
-export const enum SM64DSPass {
-    MAIN = 0x01,
-    SKYBOX = 0x02,
-}
-
 class BatchData {
     public vertexData: VertexData;
 
@@ -246,6 +276,11 @@ class MaterialInstance {
     private texCoordMode: BMD.TexCoordMode;
     private megaStateFlags: Partial<GfxMegaStateDescriptor>;
     private program: NITRO_Program;
+    public lightMask = 0x0F;
+    public diffuseColor = colorNewCopy(White);
+    public ambientColor = colorNewCopy(White);
+    public specularColor = colorNewCopy(White);
+    public emissionColor = colorNewCopy(White);
 
     private texturesEnabled: boolean = true;
     private vertexColorsEnabled: boolean = true;
@@ -338,10 +373,13 @@ class MaterialInstance {
             }
         }
 
-        let offs = template.allocateUniformBuffer(NITRO_Program.ub_MaterialParams, 8+4);
+        let offs = template.allocateUniformBuffer(NITRO_Program.ub_MaterialParams, 8+16);
         const materialParamsMapped = template.mapUniformBufferF32(NITRO_Program.ub_MaterialParams);
         offs += fillMatrix4x2(materialParamsMapped, offs, scratchMatrix);
-        offs += fillVec4(materialParamsMapped, offs, this.texCoordMode);
+        offs += fillColor(materialParamsMapped, offs, this.diffuseColor, this.texCoordMode);
+        offs += fillColor(materialParamsMapped, offs, this.ambientColor, this.lightMask);
+        offs += fillColor(materialParamsMapped, offs, this.specularColor);
+        offs += fillColor(materialParamsMapped, offs, this.emissionColor);
 
         template.setSamplerBindingsFromTextureMappings(this.materialData.textureMapping);
     }
@@ -360,12 +398,12 @@ class ShapeInstance {
 
         const vertexData = this.batchData.vertexData;
 
-        const template = renderInstManager.pushTemplateRenderInst();
-        template.setVertexInput(vertexData.inputLayout, vertexData.vertexBufferDescriptors, vertexData.indexBufferDescriptor);
-        this.materialInstance.prepareToRender(device, renderInstManager, template, viewerInput, normalMatrix, extraTexCoordMat);
+        const renderInst = renderInstManager.newRenderInst();
+        renderInst.setVertexInput(vertexData.inputLayout, vertexData.vertexBufferDescriptors, vertexData.indexBufferDescriptor);
+        this.materialInstance.prepareToRender(device, renderInstManager, renderInst, viewerInput, normalMatrix, extraTexCoordMat);
 
-        let offs = template.allocateUniformBuffer(NITRO_Program.ub_DrawParams, 12*32);
-        const d = template.mapUniformBufferF32(NITRO_Program.ub_DrawParams);
+        let offs = renderInst.allocateUniformBuffer(NITRO_Program.ub_DrawParams, 12*32);
+        const d = renderInst.mapUniformBufferF32(NITRO_Program.ub_DrawParams);
         const rootJoint = this.batchData.rootJoint;
         for (let i = 0; i < this.batchData.batch.matrixTable.length; i++) {
             const matrixId = this.batchData.batch.matrixTable[i];
@@ -373,14 +411,9 @@ class ShapeInstance {
             offs += fillMatrix4x3(d, offs, scratchMatrix);
         }
 
-        const nitroData = vertexData.nitroVertexData;
-        for (let i = 0; i < nitroData.drawCalls.length; i++) {
-            const renderInst = renderInstManager.newRenderInst();
-            renderInst.drawIndexes(nitroData.drawCalls[i].numIndices, nitroData.drawCalls[i].startIndex);
-            renderInstManager.submitRenderInst(renderInst);
-        }
-
-        renderInstManager.popTemplateRenderInst();
+        const drawCall = vertexData.nitroVertexData.drawCall;
+        renderInst.setDrawCount(drawCall.numIndices, drawCall.startIndex);
+        renderInstManager.submitRenderInst(renderInst);
     }
 }
 
@@ -452,12 +485,9 @@ export class BMDModelInstance {
 
         this.computeJointMatrices();
 
-        const template = renderInstManager.pushTemplateRenderInst();
-        template.filterKey = this.isSkybox ? SM64DSPass.SKYBOX : SM64DSPass.MAIN;
         this.computeNormalMatrix(scratchNormalMatrix, viewerInput);
         for (let i = 0; i < this.shapeInstances.length; i++)
             this.shapeInstances[i].prepareToRender(device, renderInstManager, viewerInput, scratchNormalMatrix, this.extraTexCoordMat, this);
-        renderInstManager.popTemplateRenderInst();
     }
 
     public computeViewMatrix(dst: mat4, viewerInput: Viewer.ViewerRenderInput): void {

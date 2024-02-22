@@ -7,7 +7,7 @@ import { readTexture, getFormatName, Texture, textureFormatIsTranslucent } from 
 import { NITRO_Program, VertexData } from '../SuperMario64DS/render.js';
 import { GfxRenderInstManager, GfxRenderInst, GfxRendererLayer, makeSortKeyOpaque } from "../gfx/render/GfxRenderInstManager.js";
 import { TextureMapping } from "../TextureHolder.js";
-import { fillMatrix4x3, fillMatrix4x4, fillMatrix3x2, fillVec4 } from "../gfx/helpers/UniformBufferHelpers.js";
+import { fillMatrix4x3, fillMatrix4x4, fillMatrix3x2, fillVec4, fillColor } from "../gfx/helpers/UniformBufferHelpers.js";
 import { computeViewMatrix } from "../Camera.js";
 import AnimationController from "../AnimationController.js";
 import { nArray, assertExists } from "../util.js";
@@ -18,6 +18,7 @@ import { CalcBillboardFlags, calcBillboardMatrix } from "../MathHelpers.js";
 import { convertToCanvas } from "../gfx/helpers/TextureConversionHelpers.js";
 import ArrayBufferSlice from "../ArrayBufferSlice.js";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache.js";
+import { White, colorNewCopy } from "../Color.js";
 
 function textureToCanvas(bmdTex: TEX0Texture, pixels: Uint8Array, name: string): Viewer.Texture {
     const canvas = convertToCanvas(ArrayBufferSlice.fromView(pixels), bmdTex.width, bmdTex.height);
@@ -63,6 +64,11 @@ class MaterialInstance {
     public pat0Animator: PAT0TexAnimator | null = null;
     private sortKey: number;
     private megaStateFlags: Partial<GfxMegaStateDescriptor>;
+    public lightMask = 0x0F;
+    public diffuseColor = colorNewCopy(White);
+    public ambientColor = colorNewCopy(White);
+    public specularColor = colorNewCopy(White);
+    public emissionColor = colorNewCopy(White);
 
     constructor(cache: GfxRenderCache, tex0: TEX0, private model: MDL0Model, public material: MDL0Material) {
         function expand5to8(n: number): number {
@@ -73,7 +79,7 @@ class MaterialInstance {
         const texData = tex0.textures.find((t) => t.name === this.material.textureName);
         this.texture = texData !== undefined ? texData: null;
         this.translateTexture(device, tex0, this.material.textureName, this.material.paletteName);
-        this.baseCtx = { color: { r: 0xFF, g: 0xFF, b: 0xFF }, alpha: expand5to8(this.material.alpha) };
+        this.baseCtx = { color: White, alpha: expand5to8(this.material.alpha) };
 
         if (this.gfxTextures.length > 0) {
             this.gfxSampler = cache.createSampler({
@@ -152,10 +158,13 @@ class MaterialInstance {
 
         template.setSamplerBindingsFromTextureMappings(this.textureMappings);
 
-        let offs = template.allocateUniformBuffer(NITRO_Program.ub_MaterialParams, 12);
+        let offs = template.allocateUniformBuffer(NITRO_Program.ub_MaterialParams, 8+16);
         const materialParamsMapped = template.mapUniformBufferF32(NITRO_Program.ub_MaterialParams);
         offs += fillMatrix3x2(materialParamsMapped, offs, scratchTexMatrix);
-        offs += fillVec4(materialParamsMapped, offs, 0);
+        offs += fillColor(materialParamsMapped, offs, this.diffuseColor, 0);
+        offs += fillColor(materialParamsMapped, offs, this.ambientColor, this.lightMask);
+        offs += fillColor(materialParamsMapped, offs, this.specularColor);
+        offs += fillColor(materialParamsMapped, offs, this.emissionColor);
     }
 
     public destroy(device: GfxDevice): void {
@@ -198,35 +207,25 @@ class ShapeInstance {
     }
 
     public prepareToRender(renderInstManager: GfxRenderInstManager, viewerInput: Viewer.ViewerRenderInput): void {
-        const template = renderInstManager.pushTemplateRenderInst();
-        template.setVertexInput(this.vertexData.inputLayout, this.vertexData.vertexBufferDescriptors, this.vertexData.indexBufferDescriptor);
+        const renderInst = renderInstManager.newRenderInst();
+        renderInst.setVertexInput(this.vertexData.inputLayout, this.vertexData.vertexBufferDescriptors, this.vertexData.indexBufferDescriptor);
 
-        let offs = template.allocateUniformBuffer(NITRO_Program.ub_DrawParams, 12*32);
-        const drawParamsMapped = template.mapUniformBufferF32(NITRO_Program.ub_DrawParams);
+        let offs = renderInst.allocateUniformBuffer(NITRO_Program.ub_DrawParams, 12*32);
+        const drawParamsMapped = renderInst.mapUniformBufferF32(NITRO_Program.ub_DrawParams);
 
         this.computeModelView(scratchMat4, viewerInput);
         offs += fillMatrix4x3(drawParamsMapped, offs, scratchMat4);
 
-        this.materialInstance.setOnRenderInst(template, viewerInput);
+        this.materialInstance.setOnRenderInst(renderInst, viewerInput);
 
-        for (let i = 0; i < this.vertexData.nitroVertexData.drawCalls.length; i++) {
-            const drawCall = this.vertexData.nitroVertexData.drawCalls[i];
-            const renderInst = renderInstManager.newRenderInst();
-            renderInst.drawIndexes(drawCall.numIndices, drawCall.startIndex);
-            renderInstManager.submitRenderInst(renderInst);
-        }
-
-        renderInstManager.popTemplateRenderInst();
+        const drawCall = this.vertexData.nitroVertexData.drawCall;
+        renderInst.setDrawCount(drawCall.numIndices, drawCall.startIndex);
+        renderInstManager.submitRenderInst(renderInst);
     }
 
     public destroy(device: GfxDevice): void {
         this.vertexData.destroy(device);
     }
-}
-
-export const enum G3DPass {
-    MAIN = 0x01,
-    SKYBOX = 0x02,
 }
 
 const bindingLayouts: GfxBindingLayoutDescriptor[] = [{ numUniformBuffers: 3, numSamplers: 1 }];
@@ -300,10 +299,9 @@ export class MPHRenderer {
 
         const template = renderInstManager.pushTemplateRenderInst();
         template.setBindingLayouts(bindingLayouts);
-        template.filterKey = G3DPass.MAIN;
         template.setGfxProgram(this.gfxProgram);
 
-        let offs = template.allocateUniformBuffer(NITRO_Program.ub_SceneParams, 16);
+        let offs = template.allocateUniformBuffer(NITRO_Program.ub_SceneParams, 16+32);
         const sceneParamsMapped = template.mapUniformBufferF32(NITRO_Program.ub_SceneParams);
         offs += fillMatrix4x4(sceneParamsMapped, offs, viewerInput.camera.projectionMatrix);
 

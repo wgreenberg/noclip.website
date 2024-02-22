@@ -17,7 +17,7 @@ import { GfxDevice, GfxFrontFaceMode } from '../gfx/platform/GfxPlatform.js';
 import { computeModelMatrixSRT, computeModelMatrixS, MathConstants, scaleMatrix } from '../MathHelpers.js';
 import { SceneContext, GraphObjBase } from '../SceneBase.js';
 import { EggLightManager, parseBLIGHT } from '../rres/Egg.js';
-import { GfxRendererLayer, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
+import { GfxRendererLayer, GfxRenderInstList, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
 import { CameraController } from '../Camera.js';
 import { makeBackbufferDescSimple, pushAntialiasingPostProcessPass, standardFullClearRenderPassDescriptor } from '../gfx/helpers/RenderGraphHelpers.js';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
@@ -105,6 +105,7 @@ function getModelInstance(baseObj: BaseObject): MDL0ModelInstance {
 
 class MarioKartWiiRenderer {
     public renderHelper: GXRenderHelperGfx;
+    private renderInstListMain = new GfxRenderInstList();
     public clearRenderPassDescriptor = standardFullClearRenderPassDescriptor;
     public enablePostProcessing = true;
     public wireframe = false;
@@ -198,6 +199,7 @@ class MarioKartWiiRenderer {
         fillSceneParamsDataOnTemplate(template, viewerInput);
         if (this.wireframe)
             template.setMegaStateFlags({ wireframe: true });
+        this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
         for (let i = 0; i < this.baseObjects.length; i++)
             this.baseObjects[i].prepareToRender(device, this.renderHelper.renderInstManager, viewerInput);
         this.renderHelper.prepareToRender();
@@ -221,7 +223,7 @@ class MarioKartWiiRenderer {
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
             pass.exec((passRenderer) => {
-                renderInstManager.drawOnPassRenderer(passRenderer);
+                this.renderInstListMain.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
             });
         });
 
@@ -243,6 +245,7 @@ class MarioKartWiiRenderer {
 
         this.prepareToRender(device, viewerInput);
         this.renderHelper.renderGraph.execute(builder);
+        this.renderInstListMain.reset();
         renderInstManager.resetRenderInsts();
     }
 
@@ -916,7 +919,9 @@ class MarioKartWiiSceneDesc implements Viewer.SceneDesc {
         } else if (objName === `MiiStatueL3`) {
             spawnSimpleObject(`MiiStatueL3`);
         } else if (objName === `MiiSignWario`) {
-            spawnSimpleObject(`MiiSignWario`);
+            const b = spawnSimpleObject(`MiiSignWario`);
+            const rres = getRRES(`MiiSignWario`);
+            b.modelInstance.bindPAT0(animFrame(0), rres.pat0[0]);
         } else if (objName === `MiiStatueBL1`) {
             spawnSimpleObject(`MiiStatueBL1`);
         } else if (objName === `MiiStatueBD1`) {

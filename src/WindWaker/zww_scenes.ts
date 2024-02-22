@@ -536,7 +536,6 @@ export class WindWakerRenderer implements Viewer.SceneGfx {
 
     constructor(public device: GfxDevice, public globals: dGlobals) {
         this.renderHelper = new GXRenderHelperGfx(device);
-        this.renderHelper.renderInstManager.disableSimpleMode();
 
         this.renderCache = this.renderHelper.renderInstManager.gfxRenderCache;
     }
@@ -933,7 +932,7 @@ export class ModelCache {
     }
 }
 
-export const pathBase = `j3d/ww`;
+export const pathBase = `ZeldaWindWaker`;
 
 class d_s_play extends fopScn {
     public bgS = new dBgS();

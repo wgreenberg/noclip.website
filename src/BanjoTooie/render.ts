@@ -296,7 +296,7 @@ class DrawCallInstance {
             renderInst.sortKey = setSortKeyDepthKey(renderInst.sortKey, depthKey);
         renderInst.setSamplerBindingsFromTextureMappings(this.textureMappings);
         renderInst.setMegaStateFlags(this.megaStateFlags);
-        renderInst.drawIndexes(this.drawCall.indexCount, this.drawCall.firstIndex);
+        renderInst.setDrawCount(this.drawCall.indexCount, this.drawCall.firstIndex);
 
         let offs = renderInst.allocateUniformBuffer(F3DEX_Program.ub_DrawParams, 12 * this.drawMatrix.length + 8 * 2);
         const mappedF32 = renderInst.mapUniformBufferF32(F3DEX_Program.ub_DrawParams);
@@ -372,11 +372,6 @@ function sampleAnimationTrackLinear(track: AnimationTrack, frame: number): numbe
 
     const t = (frame - k0.time) / (k1.time - k0.time);
     return lerp(k0.value, k1.value, t);
-}
-
-export const enum BKPass {
-    MAIN = 0x01,
-    SKYBOX = 0x02,
 }
 
 const bindingLayouts: GfxBindingLayoutDescriptor[] = [
@@ -844,8 +839,6 @@ export class GeometryRenderer {
         template.setBindingLayouts(bindingLayouts);
         template.setVertexInput(this.geometryData.renderData.inputLayout, this.vertexBufferDescriptors, this.geometryData.renderData.indexBufferDescriptor);
         template.setMegaStateFlags(this.megaStateFlags);
-
-        template.filterKey = this.isSkybox ? BKPass.SKYBOX : BKPass.MAIN;
 
         mat4.getTranslation(depthScratch, viewerInput.camera.worldMatrix);
         mat4.getTranslation(lookatScratch[0], this.modelMatrix);

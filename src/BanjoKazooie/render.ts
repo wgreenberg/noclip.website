@@ -641,7 +641,7 @@ class DrawCallInstance {
             renderInst.sortKey = setSortKeyDepthKey(renderInst.sortKey, depthKey)
         renderInst.setSamplerBindingsFromTextureMappings(this.textureMappings);
         renderInst.setMegaStateFlags(this.megaStateFlags);
-        renderInst.drawIndexes(this.drawCall.indexCount, this.drawCall.firstIndex);
+        renderInst.setDrawCount(this.drawCall.indexCount, this.drawCall.firstIndex);
 
         let offs = renderInst.allocateUniformBuffer(F3DEX_Program.ub_DrawParams, 12*2 + 8*2);
         const mappedF32 = renderInst.mapUniformBufferF32(F3DEX_Program.ub_DrawParams);
@@ -788,11 +788,6 @@ export class BoneAnimator {
         vec3.negate(scratchVec3, bone.offset);
         mat4.translate(dst, dst, scratchVec3);
     }
-}
-
-export const enum BKPass {
-    MAIN = 0x01,
-    SKYBOX = 0x02,
 }
 
 const bindingLayouts: GfxBindingLayoutDescriptor[] = [
@@ -1377,8 +1372,6 @@ export class GeometryRenderer {
         template.setVertexInput(this.geometryData.renderData.inputLayout, this.vertexBufferDescriptors, this.geometryData.renderData.indexBufferDescriptor);
         template.setMegaStateFlags(this.megaStateFlags);
 
-        template.filterKey = this.isSkybox ? BKPass.SKYBOX : BKPass.MAIN;
-
         mat4.getTranslation(depthScratch, viewerInput.camera.worldMatrix);
         mat4.getTranslation(lookatScratch, this.modelMatrix);
         template.sortKey = setSortKeyDepth(this.sortKeyBase, vec3.distance(depthScratch, lookatScratch));
@@ -1644,7 +1637,6 @@ export class FlipbookRenderer {
         mat4.getTranslation(flipbookScratch[1], this.modelMatrix);
         vec3.sub(flipbookScratch[0], flipbookScratch[0], flipbookScratch[1]);
         renderInst.sortKey = setSortKeyDepth(this.sortKeyBase, vec3.len(flipbookScratch[0]));
-        renderInst.filterKey = BKPass.MAIN;
 
         let offs = renderInst.allocateUniformBuffer(F3DEX_Program.ub_SceneParams, 16);
         const scene = renderInst.mapUniformBufferF32(F3DEX_Program.ub_SceneParams);
@@ -1652,7 +1644,7 @@ export class FlipbookRenderer {
 
         renderInst.setGfxProgram(this.gfxProgram);
         renderInst.setSamplerBindingsFromTextureMappings(texMappingScratch);
-        renderInst.drawIndexes(6);
+        renderInst.setDrawCount(6);
 
         offs = renderInst.allocateUniformBuffer(F3DEX_Program.ub_DrawParams, 12 + 8 * 2);
         const draw = renderInst.mapUniformBufferF32(F3DEX_Program.ub_DrawParams);

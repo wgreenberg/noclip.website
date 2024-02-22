@@ -8,7 +8,7 @@ import { colorNewFromRGBA } from "../Color.js";
 import * as JPA from '../Common/JSYSTEM/JPA.js';
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache.js";
 import { mat4, ReadonlyMat4, vec3 } from "gl-matrix";
-import { GfxRenderInstList, GfxRenderInstManager, executeOnPass } from "../gfx/render/GfxRenderInstManager.js";
+import { GfxRenderInstList, GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager.js";
 import { assertExists, hexzero, assert, mod } from "../util.js";
 import { SceneContext } from "../SceneBase.js";
 import { LAYER_ICON, HIGHLIGHT_COLOR, Checkbox, TextField } from "../ui.js";
@@ -227,7 +227,6 @@ export class Explorer implements SceneGfx {
         this.uiContainer = context.uiContainer;
 
         this.renderHelper = new GfxRenderHelper(device);
-        this.renderHelper.renderInstManager.disableSimpleMode();
         this.effectSystem = new BasicEffectSystem(this.renderHelper.renderCache, this.jpac);
 
         this.gridPlane = new GridPlane(device, this.renderHelper.renderCache);

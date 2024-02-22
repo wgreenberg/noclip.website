@@ -14,7 +14,7 @@ import { GfxFormat } from "../gfx/platform/GfxPlatformFormat.js";
 import { GfxRenderCache } from '../gfx/render/GfxRenderCache.js';
 import { GfxrAttachmentSlot, GfxrGraphBuilder, GfxrRenderTargetDescription } from '../gfx/render/GfxRenderGraph.js';
 import { GfxRenderHelper } from '../gfx/render/GfxRenderHelper.js';
-import { GfxRendererLayer, GfxRenderInst, GfxRenderInstManager, makeSortKeyOpaque, makeSortKeyTranslucent, setSortKeyDepth, setSortKeyLayer } from '../gfx/render/GfxRenderInstManager.js';
+import { GfxRendererLayer, GfxRenderInst, GfxRenderInstList, GfxRenderInstManager, makeSortKeyOpaque, makeSortKeyTranslucent, setSortKeyDepth, setSortKeyLayer } from '../gfx/render/GfxRenderInstManager.js';
 import { computeModelMatrixS, computeModelMatrixSRT, getMatrixTranslation, setMatrixTranslation } from '../MathHelpers.js';
 import { DeviceProgram } from '../Program.js';
 import { rust } from '../rustlib.js';
@@ -980,7 +980,7 @@ class MaterialRender_TransparencyWater {
         template.setGfxProgram(this.rippleCompositeProgram);
         template.setMegaStateFlags(fullscreenMegaState);
         template.setSamplerBindingsFromTextureMappings(this.rippleCompositeMapping);
-        template.drawPrimitives(3);
+        template.setDrawCount(3);
 
         for (let i = 0; i < this.shader.ripple_mipmap_levels; i++) {
             builder.pushPass((pass) => {
@@ -1552,7 +1552,7 @@ class LightmapModelData {
         offs += fillMatrix4x4(mapped, offs, this.modelMatrix);
 
         renderInst.setVertexInput(this.inputLayout, this.vertexBufferDescriptors, this.indexBufferDescriptor);
-        renderInst.drawIndexes(this.indexCount, this.indexOffset);
+        renderInst.setDrawCount(this.indexCount, this.indexOffset);
     }
 
     public destroy(device: GfxDevice) {
@@ -1676,7 +1676,7 @@ class ModelPartData {
     }
 
     public setOnRenderInst(renderInst: GfxRenderInst): void {
-        renderInst.drawIndexes(this.indexCount, this.indexStart);
+        renderInst.setDrawCount(this.indexCount, this.indexStart);
     }
 
     public destroy(device: GfxDevice): void {
@@ -1903,6 +1903,7 @@ class View {
 
 class HaloScene implements Viewer.SceneGfx {
     private renderHelper: GfxRenderHelper;
+    private renderInstListMain = new GfxRenderInstList();
     public textureCache: TextureCache;
     public bspRenderers: BSPRenderer[];
     public sceneryRenderers: SceneryRenderer[];
@@ -1979,6 +1980,8 @@ class HaloScene implements Viewer.SceneGfx {
         offs += fillVec4v(mapped, offs, this.fogColor);
         offs += fillVec4v(mapped, offs, this.fogDistances);
 
+        this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
+
         this.bspRenderers.forEach((r, i) => {
             r.prepareToRender(this.renderHelper.renderInstManager, this.mainView);
         });
@@ -2018,7 +2021,7 @@ class HaloScene implements Viewer.SceneGfx {
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
             pass.exec((passRenderer) => {
-                renderInstManager.drawOnPassRenderer(passRenderer);
+                this.renderInstListMain.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
             });
         });
         pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
@@ -2026,6 +2029,7 @@ class HaloScene implements Viewer.SceneGfx {
 
         this.prepareToRender(device, viewerInput);
         this.renderHelper.renderGraph.execute(builder);
+        this.renderInstListMain.reset();
         renderInstManager.resetRenderInsts();
     }
 

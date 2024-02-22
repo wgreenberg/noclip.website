@@ -93,11 +93,9 @@ class PlaneShape {
     public prepareToRender(renderHelper: GXRenderHelperGfx): void {
         const renderInstManager = renderHelper.renderInstManager;
         const renderInst = renderInstManager.newRenderInst();
-        // Force this so it renders after the skybox.
-        renderInst.filterKey = SMSPass.OPAQUE;
         renderInst.sortKey = makeSortKey((GfxRendererLayer.TRANSLUCENT | GfxRendererLayer.OPAQUE) + 10);
         renderInst.setVertexInput(this.inputLayout, this.vertexBufferDescriptors, this.indexBufferDescriptor);
-        renderInst.drawIndexes(6);
+        renderInst.setDrawCount(6);
         renderInstManager.submitRenderInst(renderInst);
     }
 
@@ -220,6 +218,7 @@ class SeaRenderer extends SunshineRenderer {
 
     protected override prepareToRender(device: GfxDevice, viewerInput: ViewerRenderInput): void {
         this.renderHelper.pushTemplateRenderInst();
+        this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
         this.sunshineWaterModel.prepareToRender(device, this.renderHelper, viewerInput);
         this.renderHelper.renderInstManager.popTemplateRenderInst();
         super.prepareToRender(device, viewerInput);

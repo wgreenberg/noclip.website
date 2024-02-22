@@ -11,7 +11,7 @@ import { vec3, vec2, mat4, quat } from 'gl-matrix';
 import { colorNewCopy, White, colorNewFromRGBA, Color, colorCopy, TransparentBlack } from '../Color.js';
 import { filterDegenerateTriangleIndexBuffer, convertToTriangleIndexBuffer, GfxTopology } from '../gfx/helpers/TopologyHelpers.js';
 import { DeviceProgram } from '../Program.js';
-import { GfxRenderInstManager, setSortKeyDepth, GfxRendererLayer, makeSortKey, executeOnPass } from '../gfx/render/GfxRenderInstManager.js';
+import { GfxRenderInstManager, setSortKeyDepth, GfxRendererLayer, makeSortKey, GfxRenderInstList } from '../gfx/render/GfxRenderInstManager.js';
 import { AABB, squaredDistanceFromPointToAABB } from '../Geometry.js';
 import { GfxRenderCache } from '../gfx/render/GfxRenderCache.js';
 import { assert, nArray } from '../util.js';
@@ -391,11 +391,6 @@ export interface Fog {
     fogColor: Color;
 }
 
-const enum BFBBPass {
-    MAIN,
-    SKYDOME,
-}
-
 const LIGHTKIT_LIGHT_COUNT = 8;
 const LIGHTKIT_LIGHT_SIZE = 4*4;
 const LIGHTKIT_SIZE = LIGHTKIT_LIGHT_COUNT * LIGHTKIT_LIGHT_SIZE;
@@ -437,6 +432,8 @@ interface RenderState {
     cameraPosition: vec3;
     drawDistance: number;
     hacks: RenderHacks;
+    renderInstListSky: GfxRenderInstList;
+    renderInstListMain: GfxRenderInstList;
 }
 
 export class BaseRenderer {
@@ -476,8 +473,10 @@ export class BaseRenderer {
 
         const drawDistance = this.drawDistance != -1 ? this.drawDistance : renderState.drawDistance;
 
-        if (Math.sqrt(squaredDistanceFromPointToAABB(renderState.cameraPosition, this.bboxModel)) >= drawDistance)
+        if (Math.sqrt(squaredDistanceFromPointToAABB(renderState.cameraPosition, this.bboxModel)) >= drawDistance) {
             this.isCulled = true;
+            return;
+        }
     }
 
     public destroy(device: GfxDevice) {
@@ -526,7 +525,6 @@ export class FragRenderer extends BaseRenderer {
     private program: DeviceProgram;
     private gfxProgram: GfxProgram;
     private sortKey: number;
-    private filterKey: number;
 
     private indices: number;
 
@@ -649,8 +647,7 @@ export class FragRenderer extends BaseRenderer {
             renderLayer = GfxRendererLayer.TRANSLUCENT;
             if (!this.megaStateFlags.depthWrite)
                 renderLayer++;
-        }
-        else if (defines.SKY) {
+        } else if (defines.SKY) {
             renderLayer = GfxRendererLayer.BACKGROUND;
         } else {
             renderLayer = GfxRendererLayer.OPAQUE;
@@ -660,13 +657,13 @@ export class FragRenderer extends BaseRenderer {
         this.gfxProgram = cache.createProgram(this.program);
 
         this.sortKey = makeSortKey(renderLayer);
-        this.filterKey = defines.SKY ? BFBBPass.SKYDOME : BFBBPass.MAIN;
     }
 
-    public prepareRenderInst(renderInstManager: GfxRenderInstManager, viewSpaceDepth: number, secondPass: boolean) {
+    public prepareRenderInst(renderState: RenderState, viewSpaceDepth: number, secondPass: boolean) {
+        const renderInstManager = renderState.instManager;
         const renderInst = renderInstManager.newRenderInst();
         renderInst.setVertexInput(this.inputLayout, this.vertexBufferDescriptors, this.indexBufferDescriptor);
-        renderInst.drawIndexes(this.indices);
+        renderInst.setDrawCount(this.indices);
         renderInst.setGfxProgram(this.gfxProgram);
 
         const oldCullMode = this.megaStateFlags.cullMode;
@@ -686,7 +683,6 @@ export class FragRenderer extends BaseRenderer {
             renderInst.setSamplerBindingsFromTextureMappings(this.frag.textureData.textureMapping);
         
         renderInst.sortKey = setSortKeyDepth(this.sortKey, viewSpaceDepth);
-        renderInst.filterKey = this.filterKey;
         renderInstManager.submitRenderInst(renderInst);
     }
 
@@ -695,10 +691,10 @@ export class FragRenderer extends BaseRenderer {
         if (this.isCulled) return;
 
         const depth = computeViewSpaceDepthFromWorldSpaceAABB(renderState.viewerInput.camera.viewMatrix, this.bboxModel);
-        this.prepareRenderInst(renderState.instManager, depth, false);
+        this.prepareRenderInst(renderState, depth, false);
 
         if (this.dualCull || this.dualZWrite)
-            this.prepareRenderInst(renderState.instManager, depth, true);
+            this.prepareRenderInst(renderState, depth, true);
     }
 
     public override destroy(device: GfxDevice) {
@@ -855,13 +851,18 @@ export class EntRenderer extends BaseRenderer {
         if (this.color.a === 0) return;
 
         super.prepareToRender(renderState);
-        if (this.isCulled || (!this.visible && !renderState.hacks.invisibleEntities)) return;
+        if (this.isCulled || (!this.visible && !renderState.hacks.invisibleEntities) || (this.isSkydome && !renderState.hacks.skydome)) return;
+
+        if (this.isSkydome)
+            renderState.instManager.setCurrentRenderInstList(renderState.renderInstListSky);
 
         for (let i = 0; i < this.renderers.length; i++) {
             const modelRenderer = this.renderers[i] as ModelRenderer;
             modelRenderer.color = this.color;
             modelRenderer.prepareToRender(renderState);
         }
+
+        renderState.instManager.setCurrentRenderInstList(renderState.renderInstListMain);
     }
 
     public override destroy(device: GfxDevice) {
@@ -989,6 +990,8 @@ export class BFBBRenderer implements Viewer.SceneGfx {
     public playerLightKit?: Assets.LightKit;
 
     public renderHelper: GfxRenderHelper;
+    private renderInstListSky = new GfxRenderInstList();
+    private renderInstListMain = new GfxRenderInstList();
 
     private clearColor: Color;
 
@@ -1032,12 +1035,13 @@ export class BFBBRenderer implements Viewer.SceneGfx {
             cameraPosition: this.scratchVec3,
             hacks: this.renderHacks,
             drawDistance: fogStop ? Math.min(fogStop, MAX_DRAW_DISTANCE) : MAX_DRAW_DISTANCE,
-        }
+            renderInstListMain: this.renderInstListMain,
+            renderInstListSky: this.renderInstListSky,
+        };
 
         this.update(renderState);
 
-        this.renderHelper.pushTemplateRenderInst();
-        const template = this.renderHelper.renderInstManager.pushTemplateRenderInst();
+        const template = this.renderHelper.pushTemplateRenderInst();
         template.setBindingLayouts(bindingLayouts);
 
         let offs = template.allocateUniformBuffer(BFBBProgram.ub_SceneParams, 16 + 12 + 2*4 + LIGHTKIT_SIZE*2);
@@ -1057,10 +1061,11 @@ export class BFBBRenderer implements Viewer.SceneGfx {
         else
             offs += fillConstant(mapped, offs, 0, LIGHTKIT_SIZE);
 
+        renderState.instManager.setCurrentRenderInstList(renderState.renderInstListMain);
+        
         for (let i = 0; i < this.renderers.length; i++)
             this.renderers[i].prepareToRender(renderState);
 
-        this.renderHelper.renderInstManager.popTemplateRenderInst();
         this.renderHelper.renderInstManager.popTemplateRenderInst();
         this.renderHelper.prepareToRender();
     }
@@ -1083,7 +1088,7 @@ export class BFBBRenderer implements Viewer.SceneGfx {
             const skyboxDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Skybox Depth');
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, skyboxDepthTargetID);
             pass.exec((passRenderer) => {
-                executeOnPass(renderInstManager, passRenderer, BFBBPass.SKYDOME);
+                this.renderInstListSky.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
             });
         });
         const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
@@ -1092,7 +1097,7 @@ export class BFBBRenderer implements Viewer.SceneGfx {
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
             pass.exec((passRenderer) => {
-                executeOnPass(renderInstManager, passRenderer, BFBBPass.MAIN);
+                this.renderInstListMain.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
             });
         });
         pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
@@ -1100,6 +1105,8 @@ export class BFBBRenderer implements Viewer.SceneGfx {
 
         this.prepareToRender(device, viewerInput);
         this.renderHelper.renderGraph.execute(builder);
+        this.renderInstListSky.reset();
+        this.renderInstListMain.reset();
         renderInstManager.resetRenderInsts();
     }
 
