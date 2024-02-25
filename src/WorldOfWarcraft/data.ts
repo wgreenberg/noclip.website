@@ -190,7 +190,7 @@ export class ModelData {
 
   public updateAnimation(deltaTime: number) {
     this.animationManager.update_animations(
-      deltaTime / 10,
+      deltaTime,
       this.textureWeights,
       this.textureTranslations,
       this.textureRotations,

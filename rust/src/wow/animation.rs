@@ -577,7 +577,7 @@ impl AnimationManager {
         self.calculated_texture_translations.clear();
         let default_translation = Vec3::new(0.0);
         self.calculated_texture_rotations.clear();
-        let default_rotation = Quat { x: 1.0, y: 0.0, z: 0.0, w: 0.0 };
+        let default_rotation = Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
         self.calculated_texture_scalings.clear();
         let default_scaling = Vec3::new(1.0);
         for transform in &self.texture_transforms {
@@ -589,7 +589,7 @@ impl AnimationManager {
         self.calculated_bone_translations.clear();
         let default_translation = Vec3::new(0.0);
         self.calculated_bone_rotations.clear();
-        let default_rotation = Quat { x: 1.0, y: 0.0, z: 0.0, w: 0.0 };
+        let default_rotation = Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
         self.calculated_bone_scalings.clear();
         let default_scaling = Vec3::new(1.0);
         for bone in &self.bones {

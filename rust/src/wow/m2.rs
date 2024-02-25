@@ -214,11 +214,6 @@ impl M2 {
             match &chunk.magic {
                 b"TXID" => txid = Some(chunk.parse_array(&chunk_data, 4)?),
                 b"SFID" => sfid = Some(chunk.parse_array(&chunk_data, 4)?),
-                b"SKID" => skid = Some(chunk.parse(&chunk_data)?),
-                b"SKS1" => panic!("SKS1"),
-                b"SKB1" => panic!("SKB1"),
-                b"SKA1" => panic!("SKA1"),
-                b"BFID" => panic!("BFID"),
                 _ => {},
             }
         }
