@@ -1,3 +1,4 @@
+use byteorder::ReadBytesExt;
 use deku::prelude::*;
 use deku::ctx::ByteSize;
 use js_sys::{Array, Float32Array, Uint8Array};
@@ -109,9 +110,24 @@ impl M2Header {
 
         let mut result = Vec::with_capacity(bones.len());
         for bone in bones {
+            let rotation16 = bone.rotation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?;
+            let mut quat_values = Vec::new();
+            for quats in rotation16.values {
+                let mut values = Vec::new();
+                for quat16 in quats {
+                    values.push(Quat::from(quat16));
+                }
+                quat_values.push(values);
+            }
+            let rotation: M2Track<Quat> = M2Track {
+                interpolation_type: rotation16.interpolation_type,
+                global_sequence: rotation16.global_sequence,
+                timestamps: rotation16.timestamps,
+                values: quat_values,
+            };
             result.push(M2CompBone {
                 translation: bone.translation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
-                rotation: bone.rotation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
+                rotation: rotation,
                 scaling: bone.scaling.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
                 key_bone_id: bone.key_bone_id,
                 flags: bone.flags,
@@ -148,6 +164,11 @@ impl M2Header {
             .map_err(|e| format!("{:?}", e))
     }
 
+    fn get_bone_lookup_table(&self, m2_data: &[u8]) -> Result<Vec<u16>, String> {
+        self.bone_lookup_table.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))
+    }
+
     fn get_texture_transforms_lookup_table(&self, m2_data: &[u8]) -> Result<Vec<u16>, String> {
         self.texture_transforms_lookup_table.to_vec(m2_data)
             .map_err(|e| format!("{:?}", e))
@@ -165,10 +186,12 @@ pub struct M2 {
     header: M2Header,
     pub texture_ids: Vec<u32>,
     pub skin_ids: Vec<u32>,
+    pub skeleton_file_id: Option<u32>,
     pub name: String,
     pub materials: Vec<M2Material>,
     vertex_data: Option<Vec<u8>>,
     texture_lookup_table: Option<Vec<u16>>,
+    bone_lookup_table: Option<Vec<u16>>,
     texture_transforms_lookup_table: Option<Vec<u16>>,
     transparency_lookup_table: Option<Vec<u16>>,
     animation_manager: Option<AnimationManager>,
@@ -186,10 +209,16 @@ impl M2 {
 
         let mut txid: Option<Vec<u32>> = None;
         let mut sfid: Option<Vec<u32>> = None;
+        let mut skid: Option<u32> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"TXID" => txid = Some(chunk.parse_array(&chunk_data, 4)?),
                 b"SFID" => sfid = Some(chunk.parse_array(&chunk_data, 4)?),
+                b"SKID" => skid = Some(chunk.parse(&chunk_data)?),
+                b"SKS1" => panic!("SKS1"),
+                b"SKB1" => panic!("SKB1"),
+                b"SKA1" => panic!("SKA1"),
+                b"BFID" => panic!("BFID"),
                 _ => {},
             }
         }
@@ -208,12 +237,14 @@ impl M2 {
 
         Ok(M2 {
             texture_ids: txid.unwrap_or(vec![]),
-            skin_ids: sfid.ok_or("M2 didn't have SKID chunk!".to_string())?,
+            skin_ids: sfid.ok_or("M2 didn't have SFID chunk!".to_string())?,
+            skeleton_file_id: skid,
             animation_manager,
             name: header.get_name(m2_data)?,
             materials: header.get_materials(m2_data)?,
             vertex_data: Some(header.get_vertex_data(m2_data)?),
             texture_lookup_table: Some(header.get_texture_lookup_table(m2_data)?),
+            bone_lookup_table: Some(header.get_bone_lookup_table(m2_data)?),
             texture_transforms_lookup_table: Some(header.get_texture_transforms_lookup_table(m2_data)?),
             transparency_lookup_table: Some(header.get_transparency_lookup_table(m2_data)?),
             header,
@@ -230,6 +261,10 @@ impl M2 {
 
     pub fn take_texture_lookup(&mut self) -> Vec<u16> {
         self.texture_lookup_table.take().expect("M2 texture lookup table already taken")
+    }
+
+    pub fn take_bone_lookup(&mut self) -> Vec<u16> {
+        self.bone_lookup_table.take().expect("M2 bone lookup table already taken")
     }
 
     pub fn take_texture_transform_lookup(&mut self) -> Vec<u16> {

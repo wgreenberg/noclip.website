@@ -636,12 +636,15 @@ void mainPS() {
 }
 
 export const MAX_DOODAD_INSTANCES = 32;
+export const MAX_BONE_TRANSFORMS = 128;
 
 export class ModelProgram extends BaseProgram {
   public static a_Position = 0;
-  public static a_Normal = 1;
-  public static a_TexCoord0 = 2;
-  public static a_TexCoord1 = 3;
+  public static a_BoneWeights = 1;
+  public static a_BoneIndices = 2;
+  public static a_Normal = 3;
+  public static a_TexCoord0 = 4;
+  public static a_TexCoord1 = 5;
 
   public static ub_DoodadParams = 1;
   public static ub_MaterialParams = 2;
@@ -685,6 +688,7 @@ struct DoodadInstance {
 
 layout(std140) uniform ub_DoodadParams {
     DoodadInstance instances[${MAX_DOODAD_INSTANCES}];
+    Mat4x4 boneTransforms[${MAX_BONE_TRANSFORMS}];
 };
 
 layout(std140) uniform ub_MaterialParams {
@@ -712,6 +716,8 @@ varying float v_InstanceID;
 
 #ifdef VERT
 layout(location = ${ModelProgram.a_Position}) attribute vec3 a_Position;
+layout(location = ${ModelProgram.a_BoneWeights}) attribute vec4 a_BoneWeights;
+layout(location = ${ModelProgram.a_BoneIndices}) attribute vec4 a_BoneIndices;
 layout(location = ${ModelProgram.a_Normal}) attribute vec3 a_Normal;
 layout(location = ${ModelProgram.a_TexCoord0}) attribute vec2 a_TexCoord0;
 layout(location = ${ModelProgram.a_TexCoord1}) attribute vec2 a_TexCoord1;
@@ -721,9 +727,30 @@ float edgeScan(vec3 position, vec3 normal){
     return clamp(2.7* dotProductClamped * dotProductClamped - 0.4, 0.0, 1.0);
 }
 
+void ScaledAddMat(out Mat4x4 self, float t, Mat4x4 other) {
+  self.mx += t * other.mx;
+  self.my += t * other.my;
+  self.mz += t * other.mz;
+  self.mw += t * other.mw;
+}
+
+Mat4x4 getCombinedBoneMat() {
+  Mat4x4 result;
+  result.mx = vec4(0.0);
+  result.my = vec4(0.0);
+  result.mz = vec4(0.0);
+  result.mw = vec4(0.0);
+  ScaledAddMat(result, a_BoneWeights.x, boneTransforms[int(a_BoneIndices.x)]);
+  ScaledAddMat(result, a_BoneWeights.y, boneTransforms[int(a_BoneIndices.y)]);
+  ScaledAddMat(result, a_BoneWeights.z, boneTransforms[int(a_BoneIndices.z)]);
+  ScaledAddMat(result, a_BoneWeights.w, boneTransforms[int(a_BoneIndices.w)]);
+  return result;
+}
+
 void mainVS() {
     DoodadInstance params = instances[gl_InstanceID];
-    v_Position = Mul(params.transform, vec4(a_Position, 1.0)).xyz;
+    Mat4x4 boneTransform = getCombinedBoneMat();
+    v_Position = Mul(params.transform, Mul(boneTransform, vec4(a_Position, 1.0))).xyz;
     gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(v_Position, 1.0)));
     v_InstanceID = float(gl_InstanceID); // FIXME: hack until we get flat variables working
     v_Normal = normalize(Mul(params.transform, vec4(a_Normal, 0.0)).xyz);

@@ -12,7 +12,7 @@ import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager.js";
 import { rust } from "../rustlib.js";
 import { ViewerRenderInput } from "../viewer.js";
 import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData } from "./data.js";
-import { MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WmoProgram } from "./program.js";
+import { MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
 import { adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, placementSpaceFromModelSpace } from "./scenes.js";
@@ -32,6 +32,8 @@ export class ModelRenderer {
   constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: ModelProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+      { location: ModelProgram.a_BoneWeights, bufferIndex: 0, bufferByteOffset: 12, format: GfxFormat.U8_RGBA_NORM, },
+      { location: ModelProgram.a_BoneIndices, bufferIndex: 0, bufferByteOffset: 16, format: GfxFormat.U8_RGBA, },
       { location: ModelProgram.a_Normal,   bufferIndex: 0, bufferByteOffset: 20, format: GfxFormat.F32_RGB, },
       { location: ModelProgram.a_TexCoord0, bufferIndex: 0, bufferByteOffset: 32, format: GfxFormat.F32_RG, },
       { location: ModelProgram.a_TexCoord1, bufferIndex: 0, bufferByteOffset: 40, format: GfxFormat.F32_RG, },
@@ -88,7 +90,9 @@ export class ModelRenderer {
       const template = renderInstManager.pushTemplateRenderInst();
       const numMat4s = 2;
       const numVec4s = 3;
-      let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, (16 * numMat4s + 4 * numVec4s) * MAX_DOODAD_INSTANCES);
+      const doodadParamsSize = (16 * numMat4s + 4 * numVec4s)
+      const baseOffs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, doodadParamsSize * MAX_DOODAD_INSTANCES + 16 * MAX_BONE_TRANSFORMS);
+      let offs = baseOffs;
       const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
       for (let doodad of doodadChunk) {
         offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
@@ -101,6 +105,16 @@ export class ModelRenderer {
           doodad.applyInteriorLighting ? 1.0 : 0.0,
           0
         );
+      }
+      offs = baseOffs + doodadParamsSize * MAX_DOODAD_INSTANCES;
+      assert(this.model.boneTransforms.length < MAX_BONE_TRANSFORMS, "model got too many bones");
+      const identity = mat4.identity(mat4.create());
+      for (let i=0; i<MAX_BONE_TRANSFORMS; i++) {
+        if (i < this.model.boneTransforms.length) {
+          offs += fillMatrix4x4(mapped, offs, this.model.boneTransforms[i]);
+        } else {
+          offs += fillMatrix4x4(mapped, offs, identity);
+        }
       }
 
       for (let i=0; i<this.skinData.length; i++) {

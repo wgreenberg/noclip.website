@@ -107,6 +107,27 @@ pub struct Quat {
     pub w: f32,
 }
 
+impl Quat {
+    pub fn normalize(&mut self) {
+        let l = 1.0 / self.dot(&self).sqrt();
+        self.x *= l;
+        self.y *= l;
+        self.z *= l;
+        self.w *= l;
+    }
+
+    pub fn negate(&mut self) {
+        self.x *= -1.0;
+        self.y *= -1.0;
+        self.z *= -1.0;
+        self.w *= -1.0;
+    }
+
+    pub fn dot(&self, other: &Quat) -> f32 {
+        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+    }
+}
+
 #[wasm_bindgen(js_name = "WowQuat16")]
 #[derive(DekuRead, Debug, Clone, Copy)]
 pub struct Quat16 {
@@ -219,6 +240,37 @@ impl Lerp for f32 {
     }
 }
 
+impl Lerp for Quat16 {
+    fn lerp(self, other: Self, t: f32) -> Self {
+        Self {
+            x: ((self.x as f32) * (1.0 - t) + (other.x as f32) * t) as i16,
+            y: ((self.y as f32) * (1.0 - t) + (other.y as f32) * t) as i16,
+            z: ((self.z as f32) * (1.0 - t) + (other.z as f32) * t) as i16,
+            w: ((self.w as f32) * (1.0 - t) + (other.w as f32) * t) as i16,
+        }
+    }
+}
+
+impl From<Quat16> for Quat {
+    fn from(value: Quat16) -> Self {
+        let components = [value.x, value.y, value.z, value.w].map(|c| {
+            if c < 0 {
+                (c as i32 + 32768) as f32 / 32767.0
+            } else {
+                (c as i32 - 32767) as f32 / 32767.0
+            }
+        });
+        let mut result = Quat {
+            x: components[0],
+            y: components[1],
+            z: components[2],
+            w: components[3],
+        };
+        result.normalize();
+        result
+    }
+}
+
 impl Lerp for u16 {
     fn lerp(self, other: Self, t: f32) -> Self {
         ((self as f32) * (1.0 - t) + (other as f32) * t) as u16
@@ -256,12 +308,17 @@ impl Mul<f32> for Vec3 {
 }
 
 impl Lerp for Quat {
-    fn lerp(self, other: Self, t: f32) -> Self {
-        Quat {
+    fn lerp(self, mut other: Self, t: f32) -> Self {
+        if self.dot(&other) < 0.0 {
+            other.negate();
+        }
+        let mut result = Quat {
             x: self.x * (1.0 - t) + other.x * t,
             y: self.y * (1.0 - t) + other.y * t,
             z: self.z * (1.0 - t) + other.z * t,
             w: self.w * (1.0 - t) + other.w * t,
-        }
+        };
+        result.normalize();
+        result
     }
 }

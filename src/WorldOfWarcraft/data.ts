@@ -99,10 +99,18 @@ export class ModelData {
   public textureRotations: Float32Array;
   public textureScalings: Float32Array;
   public textureTranslations: Float32Array;
+  public boneRotations: Float32Array;
+  public boneScalings: Float32Array;
+  public boneTranslations: Float32Array;
   public textureTransforms: mat4[] = [];
+  public boneTransforms: mat4[] = [];
+  public bonePivots: vec3[] = [];
+  public boneAntipivots: vec3[] = [];
+  public boneParents: Int16Array;
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
   public animationManager: WowM2AnimationManager;
   public textureLookupTable: Uint16Array;
+  public boneLookupTable: Uint16Array;
   public textureTransparencyLookupTable: Uint16Array;
   public textureTransformLookupTable: Uint16Array;
   public modelAABB: AABB;
@@ -112,6 +120,9 @@ export class ModelData {
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     const m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
+    if (m2.skeleton_file_id !== undefined) {
+      console.log(m2);
+    }
     for (let txid of m2.texture_ids) {
       if (txid === 0) continue;
       try {
@@ -138,6 +149,7 @@ export class ModelData {
     max.free();
 
     this.textureLookupTable = m2.take_texture_lookup();
+    this.boneLookupTable = m2.take_bone_lookup();
     this.textureTransformLookupTable = m2.take_texture_transform_lookup();
     this.textureTransparencyLookupTable = m2.take_texture_transparency_lookup();
 
@@ -152,10 +164,27 @@ export class ModelData {
     }
     this.animationManager = m2.take_animation_manager();
     this.textureWeights = new Float32Array(this.animationManager.get_num_texture_weights());
-    this.textureTranslations = new Float32Array(this.animationManager.get_num_transformations() * 3);
-    this.textureRotations = new Float32Array(this.animationManager.get_num_transformations() * 4);
-    this.textureScalings = new Float32Array(this.animationManager.get_num_transformations() * 3);
+    const numTransformations = this.animationManager.get_num_transformations();
+    this.textureTranslations = new Float32Array(numTransformations * 3);
+    this.textureRotations = new Float32Array(numTransformations * 4);
+    this.textureScalings = new Float32Array(numTransformations * 3);
+    const numBones = this.animationManager.get_num_bones();
+    this.boneTranslations = new Float32Array(numBones * 3);
+    this.boneRotations = new Float32Array(numBones * 4);
+    this.boneScalings = new Float32Array(numBones * 3);
     this.vertexColors = new Float32Array(this.animationManager.get_num_colors() * 3);
+    for (let i=0; i<numTransformations; i++) {
+      this.textureTransforms.push(mat4.create());
+    }
+    for (let i=0; i<numBones; i++) {
+      this.boneTransforms.push(mat4.create());
+    }
+    this.boneParents = this.animationManager.get_bone_parents();
+    for (let pivot of this.animationManager.get_bone_pivots()) {
+      this.bonePivots.push([pivot.x, pivot.y, pivot.z])
+      this.boneAntipivots.push([-pivot.x, -pivot.y, -pivot.z])
+      pivot.free();
+    }
     m2.free();
   }
 
@@ -166,14 +195,11 @@ export class ModelData {
       this.textureTranslations,
       this.textureRotations,
       this.textureScalings,
+      this.boneTranslations,
+      this.boneRotations,
+      this.boneScalings,
       this.vertexColors
     );
-
-    if (this.textureTransforms.length === 0) {
-      for (let i=0; i<this.textureRotations.length; i++) {
-        this.textureTransforms.push(mat4.create());
-      }
-    }
 
     const pivot: vec3 = [0.5, 0.5, 0];
     const antiPivot: vec3 = [-0.5, -0.5, 0];
@@ -193,6 +219,26 @@ export class ModelData {
 
       const translation: vec3 = this.textureTranslations.slice(i * 3, (i + 1) * 3);
       mat4.translate(this.textureTransforms[i], this.textureTransforms[i], translation);
+    }
+
+    const numBones = this.animationManager.get_num_bones();
+    for (let i = 0; i < numBones; i++) {
+      const pivot = mat4.fromTranslation(mat4.create(), this.bonePivots[i]);
+      const antiPivot = mat4.fromTranslation(mat4.create(), this.boneAntipivots[i]);
+      const translationMtx = mat4.fromTranslation(mat4.create(), this.boneTranslations.slice(i * 3, (i + 1) * 3));
+      const rotationMtx = mat4.fromQuat(mat4.create(), this.boneRotations.slice(i * 4, (i + 1) * 4));
+      const scaleMtx = mat4.fromScaling(mat4.create(), this.boneScalings.slice(i * 3, (i + 1) * 3));
+      const parentId = this.boneParents[i];
+      assert(parentId < i, "bone parent > bone");
+      mat4.identity(this.boneTransforms[i]);
+      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], pivot);
+      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], translationMtx);
+      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], rotationMtx);
+      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], scaleMtx);
+      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], antiPivot);
+      if (parentId >= 0) {
+        mat4.mul(this.boneTransforms[i], this.boneTransforms[parentId], this.boneTransforms[i]);
+      }
     }
   }
 

@@ -45,7 +45,7 @@ pub struct M2CompBone {
     pub parent_bone: i16,
     pub submesh_id: u16,
     pub translation: M2Track<Vec3>,
-    pub rotation: M2Track<Quat16>,
+    pub rotation: M2Track<Quat>,
     pub scaling: M2Track<Vec3>,
     pub pivot: Vec3,
 }
@@ -223,6 +223,9 @@ pub struct AnimationManager {
     calculated_texture_rotations: Vec<Quat>,
     calculated_texture_scalings: Vec<Vec3>,
     calculated_colors: Vec<Vec4>,
+    calculated_bone_translations: Vec<Vec3>,
+    calculated_bone_rotations: Vec<Quat>,
+    calculated_bone_scalings: Vec<Vec3>,
 }
 
 #[wasm_bindgen(js_class = "WowM2AnimationManager")]
@@ -233,6 +236,9 @@ impl AnimationManager {
         texture_translations: &Float32Array,
         texture_rotations: &Float32Array,
         texture_scalings: &Float32Array,
+        bone_translations: &Float32Array,
+        bone_rotations: &Float32Array,
+        bone_scalings: &Float32Array,
         colors: &Float32Array
     ) {
         self.update(delta_time);
@@ -257,6 +263,26 @@ impl AnimationManager {
             texture_scalings.set_index(scaling_index + 1, scaling.y);
             texture_scalings.set_index(scaling_index + 2, scaling.z);
         }
+        for i in 0..self.bones.len() {
+            let translation_index = i as u32 * 3;
+            let translation = &self.calculated_bone_translations[i];
+            bone_translations.set_index(translation_index + 0, translation.x);
+            bone_translations.set_index(translation_index + 1, translation.y);
+            bone_translations.set_index(translation_index + 2, translation.z);
+
+            let rotation_index = i as u32 * 4;
+            let rotation = &self.calculated_bone_rotations[i];
+            bone_rotations.set_index(rotation_index + 0, rotation.x);
+            bone_rotations.set_index(rotation_index + 1, rotation.y);
+            bone_rotations.set_index(rotation_index + 2, rotation.z);
+            bone_rotations.set_index(rotation_index + 3, rotation.w);
+
+            let scaling_index = i as u32 * 3;
+            let scaling = &self.calculated_bone_scalings[i];
+            bone_scalings.set_index(scaling_index + 0, scaling.x);
+            bone_scalings.set_index(scaling_index + 1, scaling.y);
+            bone_scalings.set_index(scaling_index + 2, scaling.z);
+        }
         for i in 0..self.colors.len() {
             let color_index = i as u32 * 4;
             let color = &self.calculated_colors[i];
@@ -269,6 +295,18 @@ impl AnimationManager {
 
     pub fn get_num_colors(&self) -> usize {
         self.colors.len()
+    }
+
+    pub fn get_num_bones(&self) -> usize {
+        self.bones.len()
+    }
+
+    pub fn get_bone_pivots(&self) -> Vec<Vec3> {
+        self.bones.iter().map(|bone| bone.pivot.clone()).collect()
+    }
+
+    pub fn get_bone_parents(&self) -> Vec<i16> {
+        self.bones.iter().map(|bone| bone.parent_bone).collect()
     }
 
     pub fn get_num_transformations(&self) -> usize {
@@ -302,6 +340,10 @@ impl AnimationManager {
         let calculated_texture_scalings: Vec<Vec3> = Vec::with_capacity(texture_transforms.len());
         let calculated_colors: Vec<Vec4> = Vec::with_capacity(colors.len());
 
+        let calculated_bone_translations: Vec<Vec3> = Vec::with_capacity(bones.len());
+        let calculated_bone_rotations: Vec<Quat> = Vec::with_capacity(bones.len());
+        let calculated_bone_scalings: Vec<Vec3> = Vec::with_capacity(bones.len());
+
         AnimationManager {
             global_sequence_durations,
             current_animation,
@@ -319,6 +361,9 @@ impl AnimationManager {
             calculated_texture_rotations,
             calculated_texture_scalings,
             calculated_colors,
+            calculated_bone_translations,
+            calculated_bone_rotations,
+            calculated_bone_scalings,
         }
     }
 
@@ -539,6 +584,18 @@ impl AnimationManager {
             self.calculated_texture_translations.push(self.get_current_value_with_blend(&transform.translation, default_translation));
             self.calculated_texture_rotations.push(self.get_current_value_with_blend(&transform.rotation, default_rotation));
             self.calculated_texture_scalings.push(self.get_current_value_with_blend(&transform.scaling, default_scaling));
+        }
+
+        self.calculated_bone_translations.clear();
+        let default_translation = Vec3::new(0.0);
+        self.calculated_bone_rotations.clear();
+        let default_rotation = Quat { x: 1.0, y: 0.0, z: 0.0, w: 0.0 };
+        self.calculated_bone_scalings.clear();
+        let default_scaling = Vec3::new(1.0);
+        for bone in &self.bones {
+            self.calculated_bone_translations.push(self.get_current_value_with_blend(&bone.translation, default_translation));
+            self.calculated_bone_rotations.push(self.get_current_value_with_blend(&bone.rotation, default_rotation));
+            self.calculated_bone_scalings.push(self.get_current_value_with_blend(&bone.scaling, default_scaling));
         }
     }
 }
