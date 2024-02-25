@@ -589,6 +589,9 @@ impl LightDatabase {
             result.add_scaled(outer_result, alpha);
             total_alpha += alpha;
         }
+        if total_alpha < 1.0 {
+            result.add_scaled(&default_light, 1.0 - total_alpha);
+        }
 
         result
     }

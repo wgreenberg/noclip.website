@@ -131,7 +131,6 @@ impl Adt {
             },
             (None, None) => {},
             (_, _) => return Err("lod adt was missing some lod components".to_string()),
-            _ => {},
         }
         Ok(())
     }
@@ -218,15 +217,14 @@ impl Adt {
                     Some(mccv) => &mccv.vertex_colors[j*4..],
                     None => &[127, 127, 127, 127],
                 };
-                let mccv_norm = 0x7f as f32;
-                result.push(vertex_colors[2] as f32 / mccv_norm); // r
-                result.push(vertex_colors[1] as f32 / mccv_norm); // g
-                result.push(vertex_colors[0] as f32 / mccv_norm); // b
-                result.push(vertex_colors[3] as f32 / mccv_norm); // a
+                result.push(vertex_colors[2] as f32 / 255.0); // r
+                result.push(vertex_colors[1] as f32 / 255.0); // g
+                result.push(vertex_colors[0] as f32 / 255.0); // b
+                result.push(vertex_colors[3] as f32 / 255.0); // a
 
                 let vertex_lighting = match mcnk.vertex_lighting.as_ref() {
                     Some(mclv) => &mclv.vertex_lighting[j*4..],
-                    None => &[127, 127, 127, 127],
+                    None => &[0, 0, 0, 0],
                 };
                 result.push(vertex_lighting[2] as f32 / 255.0); // r
                 result.push(vertex_lighting[1] as f32 / 255.0); // g

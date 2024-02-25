@@ -219,7 +219,6 @@ export class WmoBatchData {
   public pixelShader: WowWmoMaterialPixelShader;
   public textures: (BlpData | null)[] = [];
   public megaStateFlags: Partial<GfxMegaStateDescriptor>;
-  public normalMat: mat4;
   public visible = true;
 
   constructor(batch: WowWmoMaterialBatch, wmo: WmoData) {
@@ -245,9 +244,6 @@ export class WmoBatchData {
       cullMode: this.materialFlags.unculled ? GfxCullMode.None : GfxCullMode.Back,
       depthWrite: this.material.blend_mode <= 1,
     };
-
-    this.normalMat = mat4.create();
-    mat4.identity(this.normalMat);
   }
 
   public setMegaStateFlags(renderInst: GfxRenderInst) {
@@ -507,7 +503,6 @@ export class ModelRenderPass {
   public tex1: BlpData | null;
   public tex2: BlpData | null;
   public tex3: BlpData | null;
-  public normalMat: mat4;
 
   constructor(public batch: WowModelBatch, public skin: WowSkin, public model: ModelData) {
     this.fragmentShaderId = batch.get_pixel_shader();
@@ -518,7 +513,6 @@ export class ModelRenderPass {
     this.tex1 = this.getBlp(1);
     this.tex2 = this.getBlp(2);
     this.tex3 = this.getBlp(3);
-    this.normalMat = this.createNormalMat();
   }
 
   public setMegaStateFlags(renderInst: GfxRenderInst) {
@@ -589,12 +583,6 @@ export class ModelRenderPass {
         break;
     }
     renderInst.setMegaStateFlags(settings);
-  }
-
-  private createNormalMat(): mat4 {
-    const result = mat4.create();
-    mat4.identity(result);// TODO
-    return result;
   }
 
   private getBlp(n: number): BlpData | null {
@@ -673,7 +661,6 @@ export class ModelRenderPass {
       this.getTextureWeight(3),
     ];
     offset += fillVec4v(uniformBuf, offset, textureWeight);
-    offset += fillMatrix4x4(uniformBuf, offset, this.normalMat);
   }
 }
 
@@ -772,7 +759,7 @@ export class WmoDefinition {
     return new WmoDefinition(fileId, wmo, uniqueId, doodadSet, scale, position, rotation, aabb);
   }
 
-  // AABB should be in placement space
+  // `extents` should be in placement space
   constructor(public wmoId: number, wmo: WmoData, public uniqueId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3, extents: AABB) {
     setMatrixTranslation(this.modelMatrix, position);
     mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
@@ -949,12 +936,25 @@ export class AdtData {
     this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
     this.vertexBuffer = renderResult.take_vertex_buffer();
     this.indexBuffer = renderResult.take_index_buffer();
+    let i = 0;
+    const worldSpaceChunkWidth = 100 / 3;
     for (let chunk of renderResult.chunks) {
+      const x = 15 - i % 16;
+      const y = 15 - Math.floor(i / 16);
+      const chunkWorldSpaceAABB = new AABB();
+      chunkWorldSpaceAABB.minX = this.worldSpaceAABB.minX + y * worldSpaceChunkWidth;
+      chunkWorldSpaceAABB.minY = this.worldSpaceAABB.minY + x * worldSpaceChunkWidth;
+      chunkWorldSpaceAABB.minZ = this.worldSpaceAABB.minZ;
+
+      chunkWorldSpaceAABB.maxX = this.worldSpaceAABB.minX + (y + 1) * worldSpaceChunkWidth;
+      chunkWorldSpaceAABB.maxY = this.worldSpaceAABB.minY + (x + 1) * worldSpaceChunkWidth;
+      chunkWorldSpaceAABB.maxZ = this.worldSpaceAABB.maxZ;
       const textures = [];
       for (let blpId of chunk.texture_layers) {
         textures.push(this.blps.get(blpId)!);
       }
-      this.chunkData.push(new ChunkData(chunk, textures));
+      this.chunkData.push(new ChunkData(chunk, textures, chunkWorldSpaceAABB));
+      i += 1;
     }
     renderResult.free();
     this.inner!.free();
@@ -986,24 +986,34 @@ export class ChunkData {
   public alphaTexture: Uint8Array | undefined;
   public indexCount: number;
   public indexOffset: number;
+  public visible = true;
 
-  constructor(chunk: WowAdtChunkDescriptor, public textures: BlpData[]) {
+  constructor(chunk: WowAdtChunkDescriptor, public textures: BlpData[], public worldSpaceAABB: AABB) {
     this.alphaTexture = chunk.alpha_texture;
     this.indexCount = chunk.index_count;
     this.indexOffset = chunk.index_offset;
     chunk.free();
+  }
+
+  public setVisible(visible: boolean) {
+    this.visible = visible;
   }
 }
 
 export class DoodadData {
   public visible = true;
   public worldAABB = new AABB();
+  public normalMatrix = mat4.create();
   public ambientColor: vec4 = [0, 0, 0, 0];
   public applyInteriorLighting = false;
   public applyExteriorLighting = false;
   public interiorExteriorBlend = 0;
 
   constructor(public modelId: number, public modelMatrix: mat4, public color: number[] | null) {
+    mat4.mul(this.normalMatrix, this.modelMatrix, placementSpaceFromModelSpace);
+    mat4.mul(this.normalMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
+    mat4.invert(this.normalMatrix, this.normalMatrix);
+    mat4.transpose(this.normalMatrix, this.normalMatrix);
   }
 
   public setVisible(visible: boolean) {

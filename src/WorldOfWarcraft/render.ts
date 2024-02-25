@@ -86,10 +86,13 @@ export class ModelRenderer {
 
     for (let doodadChunk of chunk(visibleDoodads, MAX_DOODAD_INSTANCES)) {
       const template = renderInstManager.pushTemplateRenderInst();
-      let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, (16 + 4 * 3) * MAX_DOODAD_INSTANCES);
+      const numMat4s = 2;
+      const numVec4s = 3;
+      let offs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, (16 * numMat4s + 4 * numVec4s) * MAX_DOODAD_INSTANCES);
       const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
       for (let doodad of doodadChunk) {
         offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
+        offs += fillMatrix4x4(mapped, offs, doodad.normalMatrix);
         offs += fillVec4v(mapped, offs, doodad.ambientColor);
         offs += fillVec4v(mapped, offs, [0, 0, 0, 0]);
         offs += fillVec4(mapped, offs,
@@ -108,7 +111,7 @@ export class ModelRenderer {
           let renderInst = renderInstManager.newRenderInst();
           renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
           renderPass.setMegaStateFlags(renderInst);
-          renderInst.drawIndexesInstanced(renderPass.submesh.index_count, doodadChunk.length, renderPass.submesh.index_start);
+          renderInst.setDrawCount(renderPass.submesh.index_count, renderPass.submesh.index_start, doodadChunk.length);
           const mappings = this.skinPassTextures[i][j];
           renderInst.setAllowSkippingIfPipelineNotReady(false);
           renderInst.setSamplerBindingsFromTextureMappings(mappings);
@@ -214,7 +217,7 @@ export class WmoRenderer {
           offset += fillVec4v(uniformBuf, offset, [0, 0, 0, 0]);
           batch.setMegaStateFlags(renderInst);
           renderInst.setSamplerBindingsFromTextureMappings(this.groupBatchTextureMappings[i][j]);
-          renderInst.drawIndexes(batch.indexCount, batch.indexStart);
+          renderInst.setDrawCount(batch.indexCount, batch.indexStart);
           renderInstManager.submitRenderInst(renderInst);
         }
       }
@@ -259,10 +262,11 @@ export class TerrainRenderer {
 
       if (chunk.alphaTexture) {
         const alphaMapping = textureCache.getAlphaTextureMapping(device, chunk.alphaTexture);
+        chunk.alphaTexture = undefined;
         this.alphaTextureMappings.push(alphaMapping)
         this.chunkTextureMappings[i].push(alphaMapping);
       } else {
-        this.chunkTextureMappings[i].push(textureCache.getAllBlackTextureMapping());
+        this.chunkTextureMappings[i].push(textureCache.getDefaultAlphaTextureMapping());
       }
     }
   }
@@ -280,10 +284,10 @@ export class TerrainRenderer {
     const template = renderInstManager.pushTemplateRenderInst();
     template.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
     this.adt.chunkData.forEach((chunk, i) => {
-      if (chunk.indexCount > 0) {
+      if (chunk.indexCount > 0 && chunk.visible) {
         const renderInst = renderInstManager.newRenderInst();
         renderInst.setSamplerBindingsFromTextureMappings(this.chunkTextureMappings[i]);
-        renderInst.drawIndexes(chunk.indexCount, chunk.indexOffset);
+        renderInst.setDrawCount(chunk.indexCount, chunk.indexOffset);
         renderInstManager.submitRenderInst(renderInst);
       }
     })
@@ -341,7 +345,7 @@ export class SkyboxRenderer {
     renderInst.setGfxProgram(this.skyboxProgram);
     renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
     renderInst.setBindingLayouts(SkyboxProgram.bindingLayouts);
-    renderInst.drawIndexes(this.numIndices, 0);
+    renderInst.setDrawCount(this.numIndices, 0);
     renderInstManager.submitRenderInst(renderInst);
   }
 

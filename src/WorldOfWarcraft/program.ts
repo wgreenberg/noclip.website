@@ -3,9 +3,10 @@ import { rust } from "../rustlib.js";
 import { GfxBindingLayoutDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { DeviceProgram } from "../Program.js";
 import { SkyboxColor } from './skybox.js';
-import { mat4, vec4 } from "gl-matrix";
+import { mat4, vec4, vec3 } from "gl-matrix";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
 import { GfxRenderInst } from "../gfx/render/GfxRenderInstManager.js";
+import { GfxShaderLibrary } from "../gfx/helpers/GfxShaderLibrary.js";
 
 export class BaseProgram extends DeviceProgram {
   public static numUniformBuffers = 1;
@@ -72,6 +73,12 @@ vec3 calcLight(
     return sqrt(gammaDiffTerm*gammaDiffTerm + linearDiffTerm) + specTerm + emTerm;
 }
 
+vec3 calcFog(vec3 inColor, vec3 worldPosition) {
+  float dist = distance(u_CameraPos.xyz, worldPosition);
+  float t = saturate(invlerp(fogParams.x, fogParams.y, dist));
+  return mix(inColor, skyFogColor.rgb, t);
+}
+
 vec2 posToTexCoord(const vec3 vertexPosInView, const vec3 normal){
     //Blizz seems to have vertex in view space as vector from "vertex to eye", while in this implementation, it's
     //vector from "eye to vertex". So the minus here is not needed
@@ -89,6 +96,7 @@ precision mediump float;
 layout(std140) uniform ub_SceneParams {
     Mat4x4 u_Projection;
     Mat4x4 u_ModelView;
+    vec4 u_CameraPos;
 
     // lighting
     vec4 interiorSunDir;
@@ -111,23 +119,26 @@ layout(std140) uniform ub_SceneParams {
     vec4 riverCloseColor;
     vec4 riverFarColor;
     vec4 shadowOpacity;
-    vec4 fogParams; // fogEnd, fogScaler
+    vec4 fogParams; // fogStart, fogEnd
     vec4 waterAlphas; // waterShallow, waterDeep, oceanShallow, oceanDeep
     vec4 glow; // glow, highlightSky, _, _
 };
 
+${GfxShaderLibrary.saturate}
+${GfxShaderLibrary.invlerp}
 ${BaseProgram.utils}
   `;
 
-  public static layoutUniformBufs(renderInst: GfxRenderInst, projectionMatrix: mat4, modelView: mat4, interiorSunDir: vec4, exteriorDirectColorDir: vec4, lightingData: WowLightResult) {
+  public static layoutUniformBufs(renderInst: GfxRenderInst, projectionMatrix: mat4, modelView: mat4, interiorSunDir: vec4, exteriorDirectColorDir: vec4, lightingData: WowLightResult, cameraPos: vec3, farPlaneDistance: number) {
     const numMat4s = 2;
-    const numVec4s = 23;
+    const numVec4s = 24;
     const totalSize = numMat4s * 16 + numVec4s * 4;
     let offset = renderInst.allocateUniformBuffer(BaseProgram.ub_SceneParams, totalSize);
     const uniformBuf = renderInst.mapUniformBufferF32(BaseProgram.ub_SceneParams);
 
     offset += fillMatrix4x4(uniformBuf, offset, projectionMatrix);
     offset += fillMatrix4x4(uniformBuf, offset, modelView);
+    offset += fillVec4(uniformBuf, offset, cameraPos[0], cameraPos[1], cameraPos[2], 0.0);
 
     // lighting
     offset += fillVec4v(uniformBuf, offset, interiorSunDir);
@@ -150,9 +161,11 @@ ${BaseProgram.utils}
     offset += fillColor(uniformBuf, offset, lightingData.river_close_color);
     offset += fillColor(uniformBuf, offset, lightingData.river_far_color);
     offset += fillColor(uniformBuf, offset, lightingData.shadow_opacity);
+    const fogEnd = farPlaneDistance;
+    const fogStart = Math.max(lightingData.fog_scaler * fogEnd, 0);
     offset += fillVec4(uniformBuf, offset,
-      lightingData.fog_end,
-      lightingData.fog_scaler,
+      fogStart,
+      fogEnd,
       0,
       0
     );
@@ -272,7 +285,7 @@ varying vec2 v_UV3;
 varying vec4 v_Color0;
 varying vec4 v_Color1;
 varying vec3 v_Normal;
-varying vec4 v_Position;
+varying vec3 v_Position;
 
 #ifdef VERT
 layout(location = ${WmoProgram.a_Position}) attribute vec3 a_Position;
@@ -285,13 +298,10 @@ layout(location = ${WmoProgram.a_TexCoord2}) attribute vec2 a_TexCoord2;
 layout(location = ${WmoProgram.a_TexCoord3}) attribute vec2 a_TexCoord3;
 
 void mainVS() {
-    vec4 worldPoint = Mul(u_Transform, vec4(a_Position, 1.0));
-    vec4 cameraPoint = Mul(u_ModelView, worldPoint);
-    v_Position = vec4(cameraPoint.xyz, 0.0);
-    vec4 normal = vec4(a_Normal.x, a_Normal.y, a_Normal.z, 0.0);
-    v_Normal = normalize(Mul(u_Transform, normal)).xyz;
+    v_Position = Mul(u_Transform, vec4(a_Position, 1.0)).xyz;
+    v_Normal = normalize(Mul(u_Transform, vec4(a_Normal, 0.0))).xyz;
 
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_Transform, vec4(a_Position, 1.0))));
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(v_Position, 1.0)));
     v_Color0 = a_Color0.bgra / 255.0;
     v_Color1 = a_Color1.rgba / 255.0;
 
@@ -525,6 +535,8 @@ void mainPS() {
         finalOpacity
     );
 
+    finalColor.rgb = calcFog(finalColor.rgb, v_Position.xyz);
+
     gl_FragColor = finalColor;
 }
 #endif
@@ -579,8 +591,8 @@ void mainVS() {
     v_Color = a_Color;
     v_Lighting = a_Lighting;
     v_Normal = a_Normal;
-    v_Position = a_Position;
     gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
+    v_Position = a_Position.xyz;
 }
 #endif
 
@@ -593,7 +605,7 @@ void mainPS() {
     vec4 tex2 = texture(SAMPLER_2D(u_Texture2), v_ChunkCoords);
     vec4 tex3 = texture(SAMPLER_3D(u_Texture3), v_ChunkCoords);
     vec4 tex = mix(mix(mix(tex0, tex1, alphaBlend.g), tex2, alphaBlend.b), tex3, alphaBlend.a);
-    vec4 diffuse = tex * v_Color;
+    vec4 diffuse = 2.0 * tex * v_Color;
     vec4 finalColor = vec4(calcLight(
       diffuse.rgb,
       v_Normal,
@@ -614,6 +626,8 @@ void mainPS() {
     float adtSpecMult = 1.0;
     vec3 specTerm = vec3(specBlend) * lSpecular * adtSpecMult;
     finalColor.rgb += specTerm;
+
+    finalColor.rgb = calcFog(finalColor.rgb, v_Position);
 
     gl_FragColor = finalColor;
 }
@@ -663,6 +677,7 @@ ${BaseProgram.commonDeclarations}
 
 struct DoodadInstance {
     Mat4x4 transform;
+    Mat4x4 normalMat;
     vec4 interiorAmbientColor;
     vec4 interiorDirectColor;
     vec4 lightingParams; // [applyInteriorLighting, applyExteriorLighting, interiorExteriorBlend, _]
@@ -679,7 +694,6 @@ layout(std140) uniform ub_MaterialParams {
     Mat4x4 texMat0;
     Mat4x4 texMat1;
     vec4 textureWeight;
-    Mat4x4 normalMat;
 };
 
 layout(binding = 0) uniform sampler2D u_Texture0;
@@ -693,6 +707,7 @@ varying vec2 v_UV2;
 varying vec2 v_UV3;
 varying vec4 v_DiffuseColor;
 varying vec3 v_Normal;
+varying vec3 v_Position;
 varying float v_InstanceID;
 
 #ifdef VERT
@@ -708,20 +723,20 @@ float edgeScan(vec3 position, vec3 normal){
 
 void mainVS() {
     DoodadInstance params = instances[gl_InstanceID];
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(params.transform, vec4(a_Position, 1.0))));
+    v_Position = Mul(params.transform, vec4(a_Position, 1.0)).xyz;
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(v_Position, 1.0)));
     v_InstanceID = float(gl_InstanceID); // FIXME: hack until we get flat variables working
-    vec3 normal = normalize(Mul(normalMat, vec4(a_Normal, 0.0)).xyz);
+    v_Normal = normalize(Mul(params.transform, vec4(a_Normal, 0.0)).xyz);
     vec4 combinedColor = clamp(meshColor, 0.0, 1.0);
     vec4 combinedColorHalved = combinedColor * 0.5;
-    vec2 envCoord = posToTexCoord(gl_Position.xyz, normal);
-    float edgeScanVal = edgeScan(gl_Position.xyz, normal);
+    vec2 envCoord = posToTexCoord(gl_Position.xyz, v_Normal);
+    float edgeScanVal = edgeScan(gl_Position.xyz, v_Normal);
     int vertexShader = int(shaderTypes.g);
 
     v_UV0 = a_TexCoord0;
     v_UV1 = a_TexCoord1;
     v_UV2 = vec2(0.0);
     v_UV3 = vec2(0.0);
-    v_Normal = a_Normal;
 
     if (vertexShader == ${rust.WowVertexShader.DiffuseT1}) {
       ${ModelProgram.buildVertexShaderBlock('diffuse', ['t1'])}
@@ -954,8 +969,10 @@ void mainPS() {
       specular,
       vec3(0.0) // emissive
    ), finalOpacity);
+
+   finalColor.rgb = calcFog(finalColor.rgb, v_Position.xyz);
     
-    gl_FragColor = finalColor;
+   gl_FragColor = finalColor;
 }
 #endif
 `;

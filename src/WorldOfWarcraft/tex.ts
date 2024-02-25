@@ -17,7 +17,7 @@ function getTextureType(blpFile: WowBlp): GfxFormat | undefined {
             if (blpFile.header.alpha_bit_depth > 0) {
                 return GfxFormat.BC1;
             } else {
-                return GfxFormat.BC1_SRGB;
+                return GfxFormat.BC1;
             }
         case rust.WowPixelFormat.Dxt3:
             return GfxFormat.BC2;
@@ -33,7 +33,8 @@ function getTextureType(blpFile: WowBlp): GfxFormat | undefined {
         case rust.WowPixelFormat.Dxt5:
           return GfxFormat.BC3;
         case rust.WowPixelFormat.Argb2565:
-            return GfxFormat.U8_RGBA_SRGB; // this seems wrong?
+            console.log("uhhhh argb2565")
+            return undefined;
         default:
             break;
     }
@@ -78,7 +79,7 @@ function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
 export class TextureCache {
     public textures: Map<number, GfxTexture>;
     public default2DTexture: GfxTexture;
-    public allBlackTexture: GfxTexture;
+    public allZeroTexture: GfxTexture;
     public allWhiteTexture: GfxTexture;
 
     constructor(private renderCache: GfxRenderCache) {
@@ -89,11 +90,11 @@ export class TextureCache {
         b: 0.5,
         a: 1.0,
       });
-      this.allBlackTexture = makeSolidColorTexture2D(renderCache.device, {
+      this.allZeroTexture = makeSolidColorTexture2D(renderCache.device, {
         r: 0.0,
         g: 0.0,
         b: 0.0,
-        a: 1.0,
+        a: 0.0,
       });
       this.allWhiteTexture = makeSolidColorTexture2D(renderCache.device, {
         r: 1.0,
@@ -103,9 +104,9 @@ export class TextureCache {
       });
     }
 
-    public getAllBlackTextureMapping(): TextureMapping {
+    public getDefaultAlphaTextureMapping(): TextureMapping {
       const mapping = new TextureMapping();
-      mapping.gfxTexture = this.allBlackTexture;
+      mapping.gfxTexture = this.allZeroTexture;
       mapping.gfxSampler = this.getSampler({ wrap: false });
       return mapping;
     }
@@ -172,7 +173,7 @@ export class TextureCache {
 
     public destroy(device: GfxDevice) {
       device.destroyTexture(this.default2DTexture);
-      device.destroyTexture(this.allBlackTexture);
+      device.destroyTexture(this.allZeroTexture);
       device.destroyTexture(this.allWhiteTexture);
       for (let tex of this.textures.values()) {
         if (tex)

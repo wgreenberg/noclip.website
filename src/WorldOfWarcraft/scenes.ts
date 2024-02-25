@@ -7,7 +7,7 @@ import { DeviceProgram } from '../Program.js';
 import { GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxVertexBufferDescriptor, GfxBindingLayoutDescriptor, GfxCullMode, GfxIndexBufferDescriptor, makeTextureDescriptor2D, GfxMipFilterMode, GfxTexFilterMode, GfxWrapMode, GfxTextureDimension, GfxTextureUsage, GfxInputLayoutDescriptor, GfxClipSpaceNearZ } from '../gfx/platform/GfxPlatform.js';
 import { GfxFormat } from '../gfx/platform/GfxPlatformFormat.js';
 import { GfxBuffer, GfxInputLayout, GfxProgram } from '../gfx/platform/GfxPlatformImpl.js';
-import { GfxRenderInst, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
+import { GfxRenderInst, GfxRenderInstList, GfxRenderInstManager } from '../gfx/render/GfxRenderInstManager.js';
 import { makeStaticDataBuffer } from '../gfx/helpers/BufferHelpers.js';
 import { makeBackbufferDescSimple, standardFullClearRenderPassDescriptor, pushAntialiasingPostProcessPass } from '../gfx/helpers/RenderGraphHelpers.js';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
@@ -18,7 +18,7 @@ import { DebugTex, TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3, vec4 } from 'gl-matrix';
 import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase, WmoGroupData } from './data.js';
-import { getMatrixTranslation, lerp } from "../MathHelpers.js";
+import { getMatrixTranslation, lerp, projectionMatrixForFrustum } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
@@ -82,6 +82,7 @@ class View {
     public cameraPos = vec3.create();
     public frustum: Frustum = new Frustum();
     public time: number;
+    public farPlane = 1000;
     public timeOffset = 1440;
     public secondsPerGameDay = 60;
 
@@ -119,7 +120,15 @@ class View {
     public setupFromViewerInput(viewerInput: Viewer.ViewerRenderInput): void {
       this.clipSpaceNearZ = viewerInput.camera.clipSpaceNearZ;
       mat4.mul(this.viewFromWorldMatrix, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
-      mat4.copy(this.clipFromViewMatrix, viewerInput.camera.projectionMatrix);
+      // mat4.copy(this.clipFromViewMatrix, viewerInput.camera.projectionMatrix);
+      projectionMatrixForFrustum(this.clipFromViewMatrix,
+        viewerInput.camera.left,
+        viewerInput.camera.right,
+        viewerInput.camera.bottom,
+        viewerInput.camera.top,
+        viewerInput.camera.near,
+        this.farPlane
+      );
       this.time = (viewerInput.time / this.secondsPerGameDay + this.timeOffset) % 2880;
       this.calculateSunDirection();
       this.finishSetup();
@@ -180,10 +189,10 @@ export class WdtScene implements Viewer.SceneGfx {
   private modelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
+  private renderInstListMain = new GfxRenderInstList();
 
   public MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
   public MAX_INTERIOR_WMO_RENDER_DIST = 500;
-  public MAX_ADT_RENDER_DISTANCE = 5000;
   public ADT_LOD0_DISTANCE = 1000;
 
   private terrainProgram: GfxProgram;
@@ -328,9 +337,7 @@ export class WdtScene implements Viewer.SceneGfx {
         drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, groupAABB);
       }
     }
-    const closeEnough = this.mainView.cameraDistanceToWorldSpaceAABB(def.worldSpaceAABB) < this.MAX_EXTERIOR_WMO_RENDER_DIST;
-    const wmoVisible = closeEnough && this.mainView.frustum.contains(def.worldSpaceAABB);
-    def.setVisible(wmoVisible);
+    def.setVisible(this.mainView.frustum.contains(def.worldSpaceAABB));
     if (!def.visible) {
       return;
     }
@@ -354,15 +361,16 @@ export class WdtScene implements Viewer.SceneGfx {
     if (DEBUG_DRAW_ADT_BOUNDING_BOXES) {
       drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, adt.worldSpaceAABB);
     }
-    const inFrustum = this.mainView.frustum.contains(adt.worldSpaceAABB);
-    const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
-    adt.setVisible(inFrustum && distance < this.MAX_ADT_RENDER_DISTANCE);
-    // FIXME: some WMOs seem to have AABBs fully disjoint from their parent
-    // ADTs, so this may give us some disappearing WMOs
-    if (!adt.visible) {
-      return;
+    if (this.mainView.frustum.contains(adt.worldSpaceAABB)) {
+      adt.setVisible(true);
+      for (let chunk of adt.chunkData) {
+        chunk.setVisible(this.mainView.frustum.contains(chunk.worldSpaceAABB));
+      }
+      const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
+      adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
+    } else {
+      adt.setVisible(false);
     }
-    adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
     for (let def of adt.lodWmoDefs()) {
       const wmo = adt.wmos.get(def.wmoId)!;
       this.cullWmoDef(def, wmo);
@@ -385,8 +393,11 @@ export class WdtScene implements Viewer.SceneGfx {
       viewMat,
       this.mainView.interiorSunDirection,
       this.mainView.exteriorDirectColorDirection,
-      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.mainView.time)
+      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.mainView.time),
+      this.mainView.cameraPos,
+      this.mainView.farPlane,
     );
+    this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
 
     if (this.shouldCull()) {
@@ -465,7 +476,7 @@ export class WdtScene implements Viewer.SceneGfx {
       pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
       pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
       pass.exec((passRenderer) => {
-        renderInstManager.drawOnPassRenderer(passRenderer);
+        this.renderInstListMain.drawOnPassRenderer(this.renderHelper.renderCache, passRenderer);
       });
     });
     pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
@@ -473,6 +484,7 @@ export class WdtScene implements Viewer.SceneGfx {
 
     this.prepareToRender(device, viewerInput);
     this.renderHelper.renderGraph.execute(builder);
+    this.renderInstListMain.reset();
     renderInstManager.resetRenderInsts();
   }
 
@@ -528,7 +540,7 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 4, dataFetcher, cache);
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache);
     console.time('loading wdt')
     await wdt.load();
     console.timeEnd('loading wdt')
