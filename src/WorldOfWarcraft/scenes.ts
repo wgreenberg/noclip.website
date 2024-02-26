@@ -68,7 +68,7 @@ mat4.mul(placementSpaceFromModelSpace, placementSpaceFromModelSpace, noclipSpace
 
 export const modelSpaceFromAdtSpace: mat4 = mat4.invert(mat4.create(), adtSpaceFromModelSpace);
 
-class View {
+export class View {
     // aka viewMatrix
     public viewFromWorldMatrix = mat4.create();
     // aka worldMatrix
@@ -82,15 +82,16 @@ class View {
     public cameraPos = vec3.create();
     public frustum: Frustum = new Frustum();
     public time: number;
+    public deltaTime: number;
     public farPlane = 1000;
     public timeOffset = 1440;
     public secondsPerGameDay = 60;
 
     public finishSetup(): void {
-        mat4.invert(this.worldFromViewMatrix, this.viewFromWorldMatrix);
-        mat4.mul(this.clipFromWorldMatrix, this.clipFromViewMatrix, this.viewFromWorldMatrix);
-        getMatrixTranslation(this.cameraPos, this.worldFromViewMatrix);
-        this.frustum.updateClipFrustum(this.clipFromWorldMatrix, this.clipSpaceNearZ);
+      mat4.invert(this.worldFromViewMatrix, this.viewFromWorldMatrix);
+      mat4.mul(this.clipFromWorldMatrix, this.clipFromViewMatrix, this.viewFromWorldMatrix);
+      getMatrixTranslation(this.cameraPos, this.worldFromViewMatrix);
+      this.frustum.updateClipFrustum(this.clipFromWorldMatrix, this.clipSpaceNearZ);
     }
 
     private calculateSunDirection(): void {
@@ -120,7 +121,6 @@ class View {
     public setupFromViewerInput(viewerInput: Viewer.ViewerRenderInput): void {
       this.clipSpaceNearZ = viewerInput.camera.clipSpaceNearZ;
       mat4.mul(this.viewFromWorldMatrix, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
-      // mat4.copy(this.clipFromViewMatrix, viewerInput.camera.projectionMatrix);
       projectionMatrixForFrustum(this.clipFromViewMatrix,
         viewerInput.camera.left,
         viewerInput.camera.right,
@@ -130,6 +130,7 @@ class View {
         this.farPlane
       );
       this.time = (viewerInput.time / this.secondsPerGameDay + this.timeOffset) % 2880;
+      this.deltaTime = viewerInput.deltaTime;
       this.calculateSunDirection();
       this.finishSetup();
     }
@@ -385,17 +386,11 @@ export class WdtScene implements Viewer.SceneGfx {
     template.setGfxProgram(this.skyboxProgram);
     template.setBindingLayouts(SkyboxProgram.bindingLayouts);
 
-    const viewMat = mat4.create();
-    mat4.mul(viewMat, viewerInput.camera.viewMatrix, noclipSpaceFromAdtSpace);
     BaseProgram.layoutUniformBufs(
       template,
       viewerInput.camera.projectionMatrix,
-      viewMat,
-      this.mainView.interiorSunDirection,
-      this.mainView.exteriorDirectColorDirection,
-      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.mainView.time),
-      this.mainView.cameraPos,
-      this.mainView.farPlane,
+      this.mainView,
+      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.mainView.time)
     );
     this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
@@ -423,7 +418,7 @@ export class WdtScene implements Viewer.SceneGfx {
       const doodads = this.modelIdToDoodads.get(modelId)!;
       const visibleDoodads = doodads.filter(doodad => doodad.visible);
       if (visibleDoodads.length === 0) continue;
-      renderer.update(viewerInput);
+      renderer.update(this.mainView);
       renderer.prepareToRenderModel(this.renderHelper.renderInstManager, visibleDoodads);
     }
 

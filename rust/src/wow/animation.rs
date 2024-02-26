@@ -283,6 +283,10 @@ impl AnimationManager {
         self.bones.iter().map(|bone| bone.parent_bone).collect()
     }
 
+    pub fn get_bone_flags(&self) -> Vec<M2BoneFlags> {
+        self.bones.iter().map(|bone| M2BoneFlags::new(bone.flags)).collect()
+    }
+
     pub fn get_num_transformations(&self) -> usize {
         self.texture_transforms.len()
     }

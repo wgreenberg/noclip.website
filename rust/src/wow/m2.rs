@@ -186,7 +186,6 @@ pub struct M2 {
     header: M2Header,
     pub texture_ids: Vec<u32>,
     pub skin_ids: Vec<u32>,
-    pub skeleton_file_id: Option<u32>,
     pub name: String,
     pub materials: Vec<M2Material>,
     vertex_data: Option<Vec<u8>>,
@@ -209,7 +208,6 @@ impl M2 {
 
         let mut txid: Option<Vec<u32>> = None;
         let mut sfid: Option<Vec<u32>> = None;
-        let mut skid: Option<u32> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"TXID" => txid = Some(chunk.parse_array(&chunk_data, 4)?),
@@ -233,7 +231,6 @@ impl M2 {
         Ok(M2 {
             texture_ids: txid.unwrap_or(vec![]),
             skin_ids: sfid.ok_or("M2 didn't have SFID chunk!".to_string())?,
-            skeleton_file_id: skid,
             animation_manager,
             name: header.get_name(m2_data)?,
             materials: header.get_materials(m2_data)?,
@@ -299,6 +296,32 @@ pub enum M2BlendingMode {
     Mod = 5,
     Mod2x = 6,
     BlendAdd = 7, // unused
+}
+
+#[wasm_bindgen(js_name = "WowM2BoneFlags")]
+pub struct M2BoneFlags {
+    pub ignore_parent_translate: bool,
+    pub ignore_parent_scale: bool,
+    pub ignore_parent_rotation: bool,
+    pub spherical_billboard: bool,
+    pub cylindrical_billboard_lock_x: bool,
+    pub cylindrical_billboard_lock_y: bool,
+    pub cylindrical_billboard_lock_z: bool,
+}
+
+#[wasm_bindgen(js_class = "WowM2BoneFlags")]
+impl M2BoneFlags {
+    pub fn new(x: u32) -> Self {
+        Self {
+            ignore_parent_translate:      (x & 0x01) > 0,
+            ignore_parent_scale:          (x & 0x02) > 0,
+            ignore_parent_rotation:       (x & 0x04) > 0,
+            spherical_billboard:          (x & 0x08) > 0,
+            cylindrical_billboard_lock_x: (x & 0x10) > 0,
+            cylindrical_billboard_lock_y: (x & 0x20) > 0,
+            cylindrical_billboard_lock_z: (x & 0x40) > 0,
+        }
+    }
 }
 
 #[wasm_bindgen(js_name = "WowM2MaterialFlags")]

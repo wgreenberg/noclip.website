@@ -15,7 +15,7 @@ import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData
 import { MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
-import { adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, placementSpaceFromModelSpace } from "./scenes.js";
+import { View, adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, placementSpaceFromModelSpace } from "./scenes.js";
 import { convertToTriangleIndexBuffer, GfxTopology } from "../gfx/helpers/TopologyHelpers.js";
 import { skyboxVertices, skyboxIndices } from "./skybox.js";
 import { assert } from "../util.js";
@@ -64,8 +64,8 @@ export class ModelRenderer {
     }
   }
 
-  public update(viewer: ViewerRenderInput) {
-    this.model.updateAnimation(viewer.deltaTime);
+  public update(view: View) {
+    this.model.updateAnimation(view);
   }
 
   public isDrawable(): boolean {
@@ -90,8 +90,10 @@ export class ModelRenderer {
       const template = renderInstManager.pushTemplateRenderInst();
       const numMat4s = 2;
       const numVec4s = 3;
-      const doodadParamsSize = (16 * numMat4s + 4 * numVec4s)
-      const baseOffs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams, doodadParamsSize * MAX_DOODAD_INSTANCES + 16 * MAX_BONE_TRANSFORMS);
+      const instanceParamsSize = (16 * numMat4s + 4 * numVec4s);
+      const boneParamsSize = (16 * 1 + 4 * 1);
+      const baseOffs = template.allocateUniformBuffer(ModelProgram.ub_DoodadParams,
+        instanceParamsSize * MAX_DOODAD_INSTANCES + boneParamsSize * MAX_BONE_TRANSFORMS);
       let offs = baseOffs;
       const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
       for (let doodad of doodadChunk) {
@@ -106,14 +108,16 @@ export class ModelRenderer {
           0
         );
       }
-      offs = baseOffs + doodadParamsSize * MAX_DOODAD_INSTANCES;
+      offs = baseOffs + instanceParamsSize * MAX_DOODAD_INSTANCES;
       assert(this.model.boneTransforms.length < MAX_BONE_TRANSFORMS, `model got too many bones (${this.model.boneTransforms.length})`);
       const identity = mat4.identity(mat4.create());
       for (let i=0; i<MAX_BONE_TRANSFORMS; i++) {
         if (i < this.model.boneTransforms.length) {
           offs += fillMatrix4x4(mapped, offs, this.model.boneTransforms[i]);
+          offs += fillVec4(mapped, offs, this.model.boneFlags[i].spherical_billboard ? 1 : 0);
         } else {
           offs += fillMatrix4x4(mapped, offs, identity);
+          offs += fillVec4(mapped, offs, 0);
         }
       }
 

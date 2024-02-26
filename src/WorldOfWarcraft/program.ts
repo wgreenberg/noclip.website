@@ -7,6 +7,7 @@ import { mat4, vec4, vec3 } from "gl-matrix";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
 import { GfxRenderInst } from "../gfx/render/GfxRenderInstManager.js";
 import { GfxShaderLibrary } from "../gfx/helpers/GfxShaderLibrary.js";
+import { View } from "./scenes.js";
 
 export class BaseProgram extends DeviceProgram {
   public static numUniformBuffers = 1;
@@ -129,7 +130,7 @@ ${GfxShaderLibrary.invlerp}
 ${BaseProgram.utils}
   `;
 
-  public static layoutUniformBufs(renderInst: GfxRenderInst, projectionMatrix: mat4, modelView: mat4, interiorSunDir: vec4, exteriorDirectColorDir: vec4, lightingData: WowLightResult, cameraPos: vec3, farPlaneDistance: number) {
+  public static layoutUniformBufs(renderInst: GfxRenderInst, projectionMatrix: mat4, view: View, lightingData: WowLightResult) {
     const numMat4s = 2;
     const numVec4s = 24;
     const totalSize = numMat4s * 16 + numVec4s * 4;
@@ -137,12 +138,12 @@ ${BaseProgram.utils}
     const uniformBuf = renderInst.mapUniformBufferF32(BaseProgram.ub_SceneParams);
 
     offset += fillMatrix4x4(uniformBuf, offset, projectionMatrix);
-    offset += fillMatrix4x4(uniformBuf, offset, modelView);
-    offset += fillVec4(uniformBuf, offset, cameraPos[0], cameraPos[1], cameraPos[2], 0.0);
+    offset += fillMatrix4x4(uniformBuf, offset, view.viewFromWorldMatrix);
+    offset += fillVec4(uniformBuf, offset, view.cameraPos[0], view.cameraPos[1], view.cameraPos[2], 0.0);
 
     // lighting
-    offset += fillVec4v(uniformBuf, offset, interiorSunDir);
-    offset += fillVec4v(uniformBuf, offset, exteriorDirectColorDir);
+    offset += fillVec4v(uniformBuf, offset, view.interiorSunDirection);
+    offset += fillVec4v(uniformBuf, offset, view.exteriorDirectColorDirection);
     offset += fillColor(uniformBuf, offset, lightingData.direct_color);
     offset += fillColor(uniformBuf, offset, lightingData.ambient_color);
     offset += fillColor(uniformBuf, offset, lightingData.sky_top_color);
@@ -161,7 +162,7 @@ ${BaseProgram.utils}
     offset += fillColor(uniformBuf, offset, lightingData.river_close_color);
     offset += fillColor(uniformBuf, offset, lightingData.river_far_color);
     offset += fillColor(uniformBuf, offset, lightingData.shadow_opacity);
-    const fogEnd = farPlaneDistance;
+    const fogEnd = view.farPlane;
     const fogStart = Math.max(lightingData.fog_scaler * fogEnd, 0);
     offset += fillVec4(uniformBuf, offset,
       fogStart,
@@ -686,9 +687,14 @@ struct DoodadInstance {
     vec4 lightingParams; // [applyInteriorLighting, applyExteriorLighting, interiorExteriorBlend, _]
 };
 
+struct BoneParams {
+  Mat4x4 transform;
+  vec4 params; // isSphericalBillboard, _, _, _
+};
+
 layout(std140) uniform ub_DoodadParams {
     DoodadInstance instances[${MAX_DOODAD_INSTANCES}];
-    Mat4x4 boneTransforms[${MAX_BONE_TRANSFORMS}];
+    BoneParams bones[${MAX_BONE_TRANSFORMS}];
 };
 
 layout(std140) uniform ub_MaterialParams {
@@ -728,32 +734,52 @@ float edgeScan(vec3 position, vec3 normal){
 }
 
 void ScaledAddMat(out Mat4x4 self, float t, Mat4x4 other) {
-  self.mx += t * other.mx;
-  self.my += t * other.my;
-  self.mz += t * other.mz;
-  self.mw += t * other.mw;
+    self.mx += t * other.mx;
+    self.my += t * other.my;
+    self.mz += t * other.mz;
+    self.mw += t * other.mw;
 }
 
 Mat4x4 getCombinedBoneMat() {
-  Mat4x4 result;
-  result.mx = vec4(0.0);
-  result.my = vec4(0.0);
-  result.mz = vec4(0.0);
-  result.mw = vec4(0.0);
-  ScaledAddMat(result, a_BoneWeights.x, boneTransforms[int(a_BoneIndices.x)]);
-  ScaledAddMat(result, a_BoneWeights.y, boneTransforms[int(a_BoneIndices.y)]);
-  ScaledAddMat(result, a_BoneWeights.z, boneTransforms[int(a_BoneIndices.z)]);
-  ScaledAddMat(result, a_BoneWeights.w, boneTransforms[int(a_BoneIndices.w)]);
-  return result;
+    Mat4x4 result;
+    result.mx = vec4(0.0);
+    result.my = vec4(0.0);
+    result.mz = vec4(0.0);
+    result.mw = vec4(0.0);
+    ScaledAddMat(result, a_BoneWeights.x, bones[int(a_BoneIndices.x)].transform);
+    ScaledAddMat(result, a_BoneWeights.y, bones[int(a_BoneIndices.y)].transform);
+    ScaledAddMat(result, a_BoneWeights.z, bones[int(a_BoneIndices.z)].transform);
+    ScaledAddMat(result, a_BoneWeights.w, bones[int(a_BoneIndices.w)].transform);
+    return result;
+}
+
+mat4 convertMat4x4(Mat4x4 m) {
+  return transpose(mat4(m.mx, m.my, m.mz, m.mw));
+}
+
+void CalcBillboardMat(inout mat4 m) {
+  // extract scale from column vectors
+  mat4 colMat = transpose(m);
+  m[0] = vec4(0.0, 0.0, -length(colMat[2].xyz), 0.0);
+  m[1] = vec4(length(colMat[0].xyz), 0.0, 0.0, 0.0);
+  m[2] = vec4(0.0, length(colMat[1].xyz), 0.0, 0.0);
 }
 
 void mainVS() {
     DoodadInstance params = instances[gl_InstanceID];
     Mat4x4 boneTransform = getCombinedBoneMat();
     v_Position = Mul(params.transform, Mul(boneTransform, vec4(a_Position, 1.0))).xyz;
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(v_Position, 1.0)));
+    bool isSphericalBone = bones[int(a_BoneIndices.x)].params.x > 0.0;
+    if (isSphericalBone) {
+      mat4 combinedModelMat = convertMat4x4(u_ModelView) * convertMat4x4(params.transform) * convertMat4x4(boneTransform);
+      CalcBillboardMat(combinedModelMat);
+      gl_Position = convertMat4x4(u_Projection) * combinedModelMat * vec4(a_Position, 1.0);
+    } else {
+      gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(v_Position, 1.0)));
+    }
+
     v_InstanceID = float(gl_InstanceID); // FIXME: hack until we get flat variables working
-    v_Normal = normalize(Mul(params.transform, vec4(a_Normal, 0.0)).xyz);
+    v_Normal = normalize(Mul(params.transform, Mul(boneTransform, vec4(a_Normal, 0.0))).xyz);
     vec4 combinedColor = clamp(meshColor, 0.0, 1.0);
     vec4 combinedColorHalved = combinedColor * 0.5;
     vec2 envCoord = posToTexCoord(gl_Position.xyz, v_Normal);

@@ -1,12 +1,12 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID, getFilePath } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
-import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene } from "./scenes.js";
+import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene, View } from "./scenes.js";
 import { AABB } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
 import { BaseProgram, ModelProgram, WmoProgram } from "./program.js";
@@ -90,6 +90,23 @@ export class WowCache {
   }
 }
 
+function convertWowAABB(aabb: WowAABBox): AABB {
+    const min = aabb.min;
+    const max = aabb.max;
+    const result = new AABB(
+      min.x,
+      min.y,
+      min.z,
+      max.x,
+      max.y,
+      max.z,
+    );
+    aabb.free();
+    min.free();
+    max.free();
+    return result;
+}
+
 export class ModelData {
   public skins: WowSkin[] = [];
   public blps: BlpData[] = [];
@@ -107,6 +124,7 @@ export class ModelData {
   public bonePivots: mat4[] = [];
   public boneAntipivots: mat4[] = [];
   public boneParents: Int16Array;
+  public boneFlags: WowM2BoneFlags[] = [];
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
   public animationManager: WowM2AnimationManager;
   public textureLookupTable: Uint16Array;
@@ -120,9 +138,6 @@ export class ModelData {
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     const m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
-    if (m2.skeleton_file_id !== undefined) {
-      console.log(m2);
-    }
     for (let txid of m2.texture_ids) {
       if (txid === 0) continue;
       try {
@@ -132,21 +147,7 @@ export class ModelData {
       }
     }
     this.vertexBuffer = m2.take_vertex_data();
-
-    const aabb = m2.get_bounding_box();
-    const min = aabb.min;
-    const max = aabb.max;
-    this.modelAABB = new AABB(
-      min.x,
-      min.y,
-      min.z,
-      max.x,
-      max.y,
-      max.z,
-    );
-    aabb.free();
-    min.free();
-    max.free();
+    this.modelAABB = convertWowAABB(m2.get_bounding_box());
 
     this.textureLookupTable = m2.take_texture_lookup();
     this.boneLookupTable = m2.take_bone_lookup();
@@ -180,6 +181,7 @@ export class ModelData {
       this.boneTransforms.push(mat4.create());
     }
     this.boneParents = this.animationManager.get_bone_parents();
+    this.boneFlags = this.animationManager.get_bone_flags();
     for (let pivot of this.animationManager.get_bone_pivots()) {
       this.bonePivots.push(mat4.fromTranslation(mat4.create(), [pivot.x, pivot.y, pivot.z]));
       this.boneAntipivots.push(mat4.fromTranslation(mat4.create(), [-pivot.x, -pivot.y, -pivot.z]));
@@ -188,9 +190,9 @@ export class ModelData {
     m2.free();
   }
 
-  public updateAnimation(deltaTime: number) {
+  public updateAnimation(view: View) {
     this.animationManager.update_animations(
-      deltaTime,
+      view.deltaTime,
       this.textureWeights,
       this.textureTranslations,
       this.textureRotations,
@@ -239,6 +241,11 @@ export class ModelData {
       return this.vertexColors.slice(index * 4, (index + 1) * 4);
     }
     return [1, 1, 1, 1];
+  }
+
+  public destroy() {
+    this.animationManager.free();
+    this.boneFlags.forEach(flags => flags.free());
   }
 }
 
@@ -504,15 +511,7 @@ export class WmoData {
       const gfid = this.wmo.group_file_ids[i];
       this.groups.push(await cache.loadWmoGroup(gfid));
       const groupInfo = this.groupInfos[i];
-      const wowAABB = groupInfo.bounding_box;
-      this.groupAABBs.push(new AABB(
-        wowAABB.min.x,
-        wowAABB.min.y,
-        wowAABB.min.z,
-        wowAABB.max.x,
-        wowAABB.max.y,
-        wowAABB.max.z,
-      ));
+      this.groupAABBs.push(convertWowAABB(groupInfo.bounding_box));
     }
   }
 }
@@ -739,20 +738,11 @@ export class WmoDefinition {
       defRot.z,
     ];
     defRot.free();
-    const extents = def.extents;
-    const min = extents.min;
-    const max = extents.max;
-    const aabb = new AABB(
-      min.x - MAP_SIZE,
-      min.y,
-      min.z - MAP_SIZE,
-      max.x - MAP_SIZE,
-      max.y,
-      max.z - MAP_SIZE,
-    )
-    extents.free();
-    min.free();
-    max.free();
+    const aabb = convertWowAABB(def.extents);
+    aabb.minX -= MAP_SIZE;
+    aabb.minZ -= MAP_SIZE;
+    aabb.maxX -= MAP_SIZE;
+    aabb.maxZ -= MAP_SIZE;
     const fileId = def.name_id;
     const uniqueId = def.unique_id;
     const doodadSet = def.doodad_set;
@@ -776,20 +766,11 @@ export class WmoDefinition {
       defRot.z,
     ];
     defRot.free();
-    const extents = def.extents;
-    const min = extents.min;
-    const max = extents.max;
-    const aabb = new AABB(
-      min.x - MAP_SIZE,
-      min.y,
-      min.z - MAP_SIZE,
-      max.x - MAP_SIZE,
-      max.y,
-      max.z - MAP_SIZE,
-    )
-    extents.free();
-    min.free();
-    max.free();
+    const aabb = convertWowAABB(def.extents);
+    aabb.minX -= MAP_SIZE;
+    aabb.minZ -= MAP_SIZE;
+    aabb.maxX -= MAP_SIZE;
+    aabb.maxZ -= MAP_SIZE;
     const fileId = def.name_id;
     const uniqueId = def.unique_id;
     const doodadSet = def.doodad_set;
