@@ -104,8 +104,8 @@ export class ModelData {
   public boneTranslations: Float32Array;
   public textureTransforms: mat4[] = [];
   public boneTransforms: mat4[] = [];
-  public bonePivots: vec3[] = [];
-  public boneAntipivots: vec3[] = [];
+  public bonePivots: mat4[] = [];
+  public boneAntipivots: mat4[] = [];
   public boneParents: Int16Array;
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
   public animationManager: WowM2AnimationManager;
@@ -181,8 +181,8 @@ export class ModelData {
     }
     this.boneParents = this.animationManager.get_bone_parents();
     for (let pivot of this.animationManager.get_bone_pivots()) {
-      this.bonePivots.push([pivot.x, pivot.y, pivot.z])
-      this.boneAntipivots.push([-pivot.x, -pivot.y, -pivot.z])
+      this.bonePivots.push(mat4.fromTranslation(mat4.create(), [pivot.x, pivot.y, pivot.z]));
+      this.boneAntipivots.push(mat4.fromTranslation(mat4.create(), [-pivot.x, -pivot.y, -pivot.z]));
       pivot.free();
     }
     m2.free();
@@ -206,13 +206,9 @@ export class ModelData {
     const numTransforms = this.animationManager.get_num_transformations();
     for (let i = 0; i < numTransforms; i++) {
       mat4.identity(this.textureTransforms[i]);
-
       mat4.translate(this.textureTransforms[i], this.textureTransforms[i], pivot);
       const rotation: vec4 = this.textureRotations.slice(i * 4, (i + 1) * 4);
       mat4.fromQuat(this.textureTransforms[i], rotation);
-      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], antiPivot);
-
-      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], pivot);
       const scaling: vec3 = this.textureScalings.slice(i * 3, (i + 1) * 3);
       mat4.scale(this.textureTransforms[i], this.textureTransforms[i], scaling);
       mat4.translate(this.textureTransforms[i], this.textureTransforms[i], antiPivot);
@@ -223,19 +219,15 @@ export class ModelData {
 
     const numBones = this.animationManager.get_num_bones();
     for (let i = 0; i < numBones; i++) {
-      const pivot = mat4.fromTranslation(mat4.create(), this.bonePivots[i]);
-      const antiPivot = mat4.fromTranslation(mat4.create(), this.boneAntipivots[i]);
-      const translationMtx = mat4.fromTranslation(mat4.create(), this.boneTranslations.slice(i * 3, (i + 1) * 3));
-      const rotationMtx = mat4.fromQuat(mat4.create(), this.boneRotations.slice(i * 4, (i + 1) * 4));
-      const scaleMtx = mat4.fromScaling(mat4.create(), this.boneScalings.slice(i * 3, (i + 1) * 3));
       const parentId = this.boneParents[i];
       assert(parentId < i, "bone parent > bone");
-      mat4.identity(this.boneTransforms[i]);
-      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], pivot);
-      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], translationMtx);
-      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], rotationMtx);
-      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], scaleMtx);
-      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], antiPivot);
+      mat4.fromRotationTranslationScale(this.boneTransforms[i],
+        this.boneRotations.slice(i * 4, (i + 1) * 4),
+        this.boneTranslations.slice(i * 3, (i + 1) * 3),
+        this.boneScalings.slice(i * 3, (i + 1) * 3),
+      );
+      mat4.mul(this.boneTransforms[i], this.bonePivots[i], this.boneTransforms[i]);
+      mat4.mul(this.boneTransforms[i], this.boneTransforms[i], this.boneAntipivots[i]);
       if (parentId >= 0) {
         mat4.mul(this.boneTransforms[i], this.boneTransforms[parentId], this.boneTransforms[i]);
       }

@@ -1,6 +1,6 @@
 use deku::prelude::*;
 use wasm_bindgen::prelude::*;
-use js_sys::{Float32Array, Uint8Array, Array};
+use js_sys::Float32Array;
 use crate::wow::m2::*;
 use crate::wow::common::*;
 
@@ -50,7 +50,6 @@ pub struct M2CompBone {
     pub pivot: Vec3,
 }
 
-#[wasm_bindgen(js_name = "WowM2Sequence")]
 #[derive(DekuRead, Debug, Clone)]
 pub struct M2Sequence {
     pub id: u16, // lookup table id?
@@ -132,35 +131,10 @@ pub struct M2TextureWeight {
     pub weights: M2Track<u16>,
 }
 
-// TODO: actually implement animation logic
-impl M2TextureTransform {
-    pub fn get_nth_translation(&self, anim_index: usize) -> Option<Vec3> {
-        self.translation.values.get(anim_index)?.get(0).copied()
-    }
-
-    pub fn get_nth_rotation(&self, anim_index: usize) -> Option<Quat> {
-        self.rotation.values.get(anim_index)?.get(0).copied()
-    }
-
-    pub fn get_nth_scaling(&self, anim_index: usize) -> Option<Vec3> {
-        self.scaling.values.get(anim_index)?.get(0).copied()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct M2Color {
     pub color: M2Track<Vec3>,
     pub alpha: M2Track<u16>,
-}
-
-impl M2Color {
-    pub fn get_nth_color(&self, n: usize) -> Option<Vec3> {
-        self.color.values.get(n)?.get(0).copied()
-    }
-
-    pub fn get_nth_alpha(&self, n: usize) -> Option<u16> {
-        self.alpha.values.get(n)?.get(0).copied()
-    }
 }
 
 #[derive(Debug, Clone)]

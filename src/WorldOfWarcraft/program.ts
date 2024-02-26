@@ -636,7 +636,7 @@ void mainPS() {
 }
 
 export const MAX_DOODAD_INSTANCES = 32;
-export const MAX_BONE_TRANSFORMS = 128;
+export const MAX_BONE_TRANSFORMS = 256;
 
 export class ModelProgram extends BaseProgram {
   public static a_Position = 0;

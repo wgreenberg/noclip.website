@@ -107,7 +107,7 @@ export class ModelRenderer {
         );
       }
       offs = baseOffs + doodadParamsSize * MAX_DOODAD_INSTANCES;
-      assert(this.model.boneTransforms.length < MAX_BONE_TRANSFORMS, "model got too many bones");
+      assert(this.model.boneTransforms.length < MAX_BONE_TRANSFORMS, `model got too many bones (${this.model.boneTransforms.length})`);
       const identity = mat4.identity(mat4.create());
       for (let i=0; i<MAX_BONE_TRANSFORMS; i++) {
         if (i < this.model.boneTransforms.length) {
