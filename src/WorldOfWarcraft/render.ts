@@ -28,6 +28,7 @@ export class ModelRenderer {
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
   private skinPassTextures: TextureMappingArray[][] = [];
   private inputLayout: GfxInputLayout;
+  public visible = true;
 
   constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
@@ -73,7 +74,7 @@ export class ModelRenderer {
     for (let skinData of this.skinData) {
       nBatches += skinData.batches.length;
     }
-    return nBatches > 0;
+    return nBatches > 0 && this.visible;
   }
 
   private getRenderPassTextures(renderPass: ModelRenderPass): TextureMappingArray {
@@ -292,7 +293,11 @@ export class TerrainRenderer {
   private getChunkTextureMapping(chunk: ChunkData): TextureMappingArray {
     let mapping: TextureMappingArray = [null, null, null, null];
     chunk.textures.forEach((blp, i) => {
-      mapping[i] = this.textureCache.getTextureMapping(blp.fileId, blp.inner);
+      if (blp) {
+        mapping[i] = this.textureCache.getTextureMapping(blp.fileId, blp.inner);
+      } else {
+        mapping[i] = null;
+      }
     })
     return mapping;
   }

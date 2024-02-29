@@ -158,11 +158,9 @@ impl Wdc4Db2File {
             },
             StorageType::CommonData { default_value, .. } => {
                 let default = from_u32(*default_value)?;
-                // TODO actually pull the value from common data
-                if self.field_storage_info[field_number].additional_data_size > 0 {
-                    todo!();
-                }
-                default
+                let index = bitslice_to_u32(&input, field_offset, field_size);
+                let common_element = self.get_common_data(field_number, index).unwrap_or(default);
+                from_u32(common_element)?
             },
             StorageType::BitpackedIndexed { offset_bits, size_bits, .. } => {
                 let index = bitslice_to_u32(&input, field_offset, field_size);
@@ -176,6 +174,36 @@ impl Wdc4Db2File {
             },
         };
         Ok((&input[field_offset + field_size..], result))
+    }
+
+    fn get_common_data(&self, field_number: usize, needle: u32) -> Option<u32> {
+        let mut offset = 0;
+        for field_number_i in 0..field_number {
+            match &self.field_storage_info[field_number_i].storage_type {
+                StorageType::CommonData {..}=> {
+                    offset += self.field_storage_info[field_number_i].additional_data_size as usize;
+                },
+                _ => {},
+            }
+        }
+        for item_idx in 0..self.field_storage_info[field_number].additional_data_size as usize / 8 {
+            let item_offset = offset + item_idx * 8;
+            let haystack = u32::from_le_bytes([
+                self.common_data[item_offset + 0],
+                self.common_data[item_offset + 1],
+                self.common_data[item_offset + 2],
+                self.common_data[item_offset + 3],
+            ]);
+            if needle == haystack {
+                return Some(u32::from_le_bytes([
+                    self.common_data[item_offset + 4],
+                    self.common_data[item_offset + 5],
+                    self.common_data[item_offset + 6],
+                    self.common_data[item_offset + 7],
+                ]));
+            }
+        }
+        None
     }
 
     fn get_palette_data(&self, field_number: usize, palette_index: usize) -> u32 {
@@ -215,15 +243,13 @@ impl<T> Database<T> {
         let bitvec = BitVec::from_slice(&data[db2.section_headers[0].file_offset as usize..]);
         let mut rest = bitvec.as_bitslice();
         let mut id = db2.header.min_id;
-        for _ in 0..db2.header.record_count {
-            let (new_rest, value) = T::read(rest, db2.clone())
+        for i in 0..db2.header.record_count as usize {
+            let offset = i * db2.header.record_size as usize;
+            let (_, value) = T::read(&rest[offset..], db2.clone())
                 .map_err(|e| format!("{:?}", e))?;
             records.push(value);
             ids.push(id);
             id += 1;
-            let bits_read = rest.len() - new_rest.len();
-            assert_eq!(db2.header.record_size as usize * 8, bits_read);
-            rest = new_rest;
         }
         Ok(Database {
             db2,

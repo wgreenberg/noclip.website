@@ -82,11 +82,12 @@ impl Blp {
         })
     }
 
-    pub fn get_texture_data(&self) -> Result<Vec<u8>, String> {
+    pub fn get_texture_data(&self, start: usize, size: usize) -> Result<Vec<u8>, String> {
+        let data = &self.texture_data[start..start+size];
         match (self.header.color_encoding, self.header.preferred_format) {
             (ColorEncoding::Uncompressed, _) => {
                 let mut result = Vec::with_capacity(self.texture_data.len() * 4);
-                for &idx in &self.texture_data {
+                for &idx in data.iter() {
                     let pixel: u32 = self.header.palette[idx as usize];
                     let [b, g, r, a] = pixel.to_le_bytes();
                     result.push(r);
@@ -96,15 +97,12 @@ impl Blp {
                 }
                 Ok(result)
             },
-            (ColorEncoding::Dxtc, _) => Ok(self.texture_data.clone()),
+            (ColorEncoding::Dxtc, _) => Ok(data.to_vec()),
             x => Err(format!("unsupported texture format combination: {:?}", x)),
         }
     }
 
     pub fn get_mip_data(&self, mip_level: usize) -> Result<Vec<u8>, String> {
-        if matches!(self.header.color_encoding, ColorEncoding::Uncompressed) {
-            panic!("uncompressed???");
-        }
         if mip_level > self.header.mip_offsets.len() {
             return Err("invalid mip level".to_string());
         }
@@ -120,7 +118,7 @@ impl Blp {
             },
             _ => self.header.mip_sizes[mip_level],
         };
-        Ok(self.texture_data[offset..offset+size as usize].to_vec())
+        self.get_texture_data(offset, size as usize)
     }
 
     pub fn get_num_mips(&self) -> usize {

@@ -43,12 +43,10 @@ function getTextureType(blpFile: WowBlp): GfxFormat | undefined {
 
 function makeTexture(device: GfxDevice, blp: WowBlp, level = 0): GfxTexture {
   if (blp === undefined) {
+    console.log(`handed null blp!`)
     return null!;
   }
   const format = getTextureType(blp)!;
-  if (format === GfxFormat.U8_RGBA_NORM) {
-    return null!;
-  }
   const mipmapCount = blp.get_num_mips();
 
   const textureDescriptor = {
@@ -180,68 +178,4 @@ export class TextureCache {
           device.destroyTexture(tex);
       }
     }
-}
-
-function getTextureFormat(format: WowPixelFormat): GfxFormat {
-  switch (format) {
-    case rust.WowPixelFormat.Dxt1: return GfxFormat.BC1;
-    case rust.WowPixelFormat.Dxt3: return GfxFormat.BC2;
-    case rust.WowPixelFormat.Dxt5: return GfxFormat.BC3;
-    case rust.WowPixelFormat.Rgb565: return GfxFormat.U16_RGB_565;
-    // the rest we convert to U8_RGBA_NORM
-    default:
-      return GfxFormat.U8_RGBA_NORM;
-  }
-}
-
-export interface DebugTex {
-  name: string;
-  width: number;
-  height: number;
-  blp: WowBlp;
-}
-
-export class DebugTexHolder extends TextureHolder<DebugTex> {
-  public loadTexture(device: GfxDevice, textureEntry: DebugTex): LoadedTexture | null {
-    const tex = textureEntry.blp.get_texture_data();
-    const canvases: HTMLCanvasElement[] = [];
-    let gfxTexture: GfxTexture = makeSolidColorTexture2D(device, {
-      r: 0.5,
-      g: 0.5,
-      b: 0.5,
-      a: 1.0,
-    });
-    if (textureEntry.blp.header.preferred_format === rust.WowPixelFormat.Dxt1) {
-      const decoded = decompressBC({
-        type: 'BC1',
-        width: textureEntry.blp.header.width,
-        height: textureEntry.blp.header.height,
-        depth: 1,
-        flag: 'SRGB',
-        pixels: tex,
-      })
-      const canvas = document.createElement('canvas');
-      gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.BC1_SRGB, textureEntry.width, textureEntry.height, 1));
-      surfaceToCanvas(canvas, decoded);
-      canvases.push(canvas);
-    } else if (textureEntry.blp.header.preferred_format == rust.WowPixelFormat.Dxt3) {
-      const decoded = decompressBC({
-        type: 'BC2',
-        width: textureEntry.blp.header.width,
-        height: textureEntry.blp.header.height,
-        depth: 1,
-        flag: 'SRGB',
-        pixels: tex,
-      })
-      const canvas = document.createElement('canvas');
-      surfaceToCanvas(canvas, decoded);
-      gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.BC2_SRGB, textureEntry.width, textureEntry.height, 1));
-      canvases.push(canvas);
-    } else {
-      console.log(`${textureEntry.name}: unknown texture ${textureEntry.blp.header.preferred_format}`)
-    }
-
-    const viewerTexture: Viewer.Texture = { name: textureEntry.name, surfaces: canvases };
-    return { viewerTexture, gfxTexture };
-  }
 }

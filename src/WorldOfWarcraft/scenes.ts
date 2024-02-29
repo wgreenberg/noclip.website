@@ -14,7 +14,7 @@ import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
 import { fillMatrix4x4, fillVec4, fillVec4v } from '../gfx/helpers/UniformBufferHelpers.js';
 import { DataFetcher, NamedArrayBufferSlice } from '../DataFetcher.js';
 import { nArray } from '../util.js';
-import { DebugTex, TextureCache } from './tex.js';
+import { TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3, vec4 } from 'gl-matrix';
 import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase, WmoGroupData } from './data.js';
@@ -320,7 +320,6 @@ export class WdtScene implements Viewer.SceneGfx {
     this.cullingState = CullingState.OneShot;
   }
 
-  // TODO
   public cull() {
     if (this.world.globalWmo) {
 
@@ -549,30 +548,66 @@ const sceneDescs = [
     "Instances",
     new WdtSceneDesc('Zul-Farak', 791169, 209),
     new WdtSceneDesc('Blackrock Depths', 780172, 230),
-    new WdtSceneDesc('Alterac Valley', 790112, 30),
-    new WdtSceneDesc('Warsong Gulch', 790291, 489),
-    new WdtSceneDesc('Arathi Basin', 790377, 529),
-    new WdtSceneDesc('pvp 5', 790469, 0),
     new WdtSceneDesc('Scholomance', 790713, 289),
-    new WdtSceneDesc("Stratholme", 827115, 329),
     new WdtSceneDesc("Naxxramas", 827115, 533),
     new WdtSceneDesc("Caverns of Time", 829736, 269),
     new WdtSceneDesc("Ruins of Ahn'qiraj", 775637, 509),
     new WdtSceneDesc("Deeprun Tram", 780788, 369),
-    new WdtSceneDesc("Blackrock Spire", 1101201, 229),
     new WdtSceneDesc("Deadmines", 780605, 36),
     new WdtSceneDesc("Shadowfang Keep", 790796, 33),
+    new WdtSceneDesc("Blackrock Spire", 780175, 229),
+    new WdtSceneDesc("Stratholme", 791063, 329),
+    new WdtSceneDesc('Mauradon', 788656, 349),
+    new WdtSceneDesc('Wailing Caverns', 791429, 43),
+    new WdtSceneDesc('Razorfen Kraul', 790640, 47),
+    new WdtSceneDesc('Razorfen Downs', 790517, 129),
+    new WdtSceneDesc('Blackfathom Deeps', 780169, 48),
+    new WdtSceneDesc('Uldaman', 791372, 70),
+    new WdtSceneDesc('Gnomeragon', 782773, 90),
+    new WdtSceneDesc('Sunken Temple', 791166, 109),
+    new WdtSceneDesc('Scarlet Monastery - Graveyard', 788662, 189),
+    new WdtSceneDesc('Scarlet Monastery - Cathedral', 788662, 189),
+    new WdtSceneDesc('Scarlet Monastery - Library', 788662, 189),
+    new WdtSceneDesc('Scarlet Monastery - Armory', 865519, 189),
+    new WdtSceneDesc("Onyxia's Lair", 789922, 249),
+    new WdtSceneDesc("Zul'gurub", 791432, 309),
+    new WdtSceneDesc("Ragefire Chasm", 789981, 389),
+    new WdtSceneDesc("Molten Core", 788659, 409),
+    new WdtSceneDesc("Dire Maul", 780814, 429),
+    new WdtSceneDesc("Blackwing Lair", 780178, 469),
+    new WdtSceneDesc("Ahn'Qiraj Temple", 775840, 531),
+
+    "PvP",
+    new WdtSceneDesc('Alterac Valley', 790112, 30), // AKA pvpzone01
+    new WdtSceneDesc('Warsong Gulch', 790291, 489), // AKA pvpzone03
+    new WdtSceneDesc('Arathi Basin', 790377, 529), // AKA pvpzone04
+
+    "Unreleased",
+    new WdtSceneDesc('Emerald Dream (classic)', 780817, 0),
+    new WdtSceneDesc('Developer Island', 857684, 0),
+    new WdtSceneDesc('Test 01', 2323096, 0),
+    new WdtSceneDesc('Scott Test', 863335, 0),
+    new WdtSceneDesc('Collin Test', 863984, 0),
+    new WdtSceneDesc('PvP Zone 02', 861092, 0),
 
     "Kalimdor",
     new ContinentSceneDesc("??", 782779, 35, 23, 1),
+    new ContinentSceneDesc("GM Island", 782779, 1, 1, 1),
     
     "Eastern Kingdoms",
     new ContinentSceneDesc("Undercity", 775971, 31, 28, 0),
     new ContinentSceneDesc("Stormwind", 775971, 31, 48, 0),
     new ContinentSceneDesc("Ironforge", 775971, 33, 40, 0),
     new ContinentSceneDesc("Dun Morogh", 775971, 31, 43, 0),
+    new ContinentSceneDesc("Redridge", 775971, 35, 50, 0),
     new ContinentSceneDesc("Blockrock Mountain", 775971, 34, 45, 0),
     new ContinentSceneDesc("Booty Bay", 775971, 31, 58, 0),
+
+    "Outland",
+    new ContinentSceneDesc("???", 828395, 31, 28, 530),
+
+    "Northrend",
+    new ContinentSceneDesc("???", 822688, 31, 28, 571),
 ];
 
 export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };

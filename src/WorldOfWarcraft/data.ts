@@ -1126,10 +1126,14 @@ export class LazyWorldData {
       console.log(`loading area around ${centerX}, ${centerY}`)
       for (let x = centerX - this.adtRadius; x <= centerX + this.adtRadius; x++) {
         for (let y = centerY - this.adtRadius; y <= centerY + this.adtRadius; y++) {
-          const maybeAdt = await this.ensureAdtLoaded(x, y);
-          if (maybeAdt) {
-            scene.setupAdt(maybeAdt);
-            this.adts.push(maybeAdt);
+          try {
+            const maybeAdt = await this.ensureAdtLoaded(x, y);
+            if (maybeAdt) {
+              scene.setupAdt(maybeAdt);
+              this.adts.push(maybeAdt);
+            }
+          } catch (e) {
+            console.log('failed to load ADT: ', e);
           }
         }
       }
@@ -1138,8 +1142,19 @@ export class LazyWorldData {
   }
 
   public async ensureAdtLoaded(x: number, y: number): Promise<AdtData | undefined> {
-    const fileIDs = this.adtFileIds[y * 64 + x];
-    if (this.loadedAdtFileIds.includes(fileIDs.root_adt)) {
+    let fileIDs: WowMapFileDataIDsLike | undefined;
+    // hardcode GM Island's ADT on Kalimdor
+    if (this.fileId === 782779 && x === 1 && y === 1) {
+      fileIDs = {
+        root_adt: 782825,
+        obj0_adt: 782826,
+        obj1_adt: 782827,
+        tex0_adt: 782828,
+      };
+    } else {
+      fileIDs = this.adtFileIds[y * 64 + x];
+    }
+    if (fileIDs === undefined || this.loadedAdtFileIds.includes(fileIDs.root_adt)) {
       return undefined;
     }
     console.log(`loading coords ${x}, ${y}`)
@@ -1175,6 +1190,13 @@ export class LazyWorldData {
     }
     return undefined;
   }
+}
+
+interface WowMapFileDataIDsLike {
+  root_adt: number,
+  obj0_adt: number,
+  obj1_adt: number,
+  tex0_adt: number,
 }
 
 export class WorldData {
