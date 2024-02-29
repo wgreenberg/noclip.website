@@ -151,6 +151,25 @@ impl Wmo {
     }
 }
 
+#[derive(DekuRead, Debug, Clone)]
+pub struct WmoLiquid {
+    pub x_verts: u32,
+    pub y_verts: u32,
+    pub x_tiles: u32,
+    pub y_tiles: u32,
+    pub base_position: Vec3,
+    pub material_id: u16,
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct SMOLVert {
+    pub flow1: u8,
+    pub flow2: u8,
+    #[deku(pad_bytes_after = "1")]
+    pub flow_pct: u8,
+    pub height: f32,
+}
+
 #[derive(DekuRead)]
 pub struct Mosi {
     pub skybox_file_id: u32,
