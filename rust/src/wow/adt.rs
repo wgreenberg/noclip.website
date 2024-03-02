@@ -60,6 +60,9 @@ impl Adt {
         })
     }
 
+    pub fn take_liquids(&mut self) -> Option<Vec<Option<LiquidData>>> {
+    }
+
     pub fn get_texture_file_ids(&self) -> Vec<u32> {
         let mut ids = Vec::new();
         self.height_tex_ids.as_ref().map(|tex| ids.extend(&tex.file_data_ids));

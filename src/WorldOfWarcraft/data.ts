@@ -883,13 +883,14 @@ export class AdtData {
   public blps: Map<number, BlpData> = new Map();
   public models: Map<number, ModelData> = new Map();
   public wmos: Map<number, WmoData> = new Map();
-  public worldSpaceAABB: AABB;
+  public worldSpaceAABB: AABB = new AABB();
   public hasBigAlpha: boolean;
   public hasHeightTexturing: boolean;
   public lodLevel = 0;
   public lodData: AdtLodData[] = [];
   public visible = true;
   public chunkData: ChunkData[] = [];
+  public chunkLiquids: MapArray<number, LiquidLayerData[]> = new MapArray();
   private vertexBuffer: Float32Array;
   private indexBuffer: Uint16Array;
   private inner: WowAdt | null = null;
@@ -956,21 +957,7 @@ export class AdtData {
     }
 
     const renderResult = this.inner!.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
-    const extents = renderResult.extents;
-    const min = extents.min;
-    const max = extents.max;
-    this.worldSpaceAABB = new AABB(
-      min.x,
-      min.y,
-      min.z,
-      max.x,
-      max.y,
-      max.z,
-    );
-    extents.free();
-    min.free();
-    max.free();
-    this.worldSpaceAABB.transform(this.worldSpaceAABB, noclipSpaceFromAdtSpace);
+    this.worldSpaceAABB.transform(convertWowAABB(renderResult.extents), noclipSpaceFromAdtSpace);
     this.worldSpaceAABB.transform(this.worldSpaceAABB, adtSpaceFromPlacementSpace);
     this.vertexBuffer = renderResult.take_vertex_buffer();
     this.indexBuffer = renderResult.take_index_buffer();
@@ -993,6 +980,10 @@ export class AdtData {
       }
 
       this.chunkData.push(new ChunkData(chunk, textures, chunkWorldSpaceAABB));
+      if (chunk.liquid_data_index !== undefined) {
+        const layers = 
+        this.chunkLiquids.append()
+      }
       i += 1;
     }
     renderResult.free();
