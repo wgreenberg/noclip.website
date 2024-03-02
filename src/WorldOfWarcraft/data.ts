@@ -1,5 +1,5 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox, WowAdtLiquidLayer } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
@@ -800,8 +800,11 @@ export class WmoDefinition {
       this.groupAmbientColors.set(group.fileId, group.getAmbientColor(wmo, doodadSet));
     }
 
-    for (let wmoDoodad of wmo.wmo.get_doodad_set(this.doodadSet)!) {
-      this.doodads.push(DoodadData.fromWmoDoodad(wmoDoodad, wmo.modelIds, this.modelMatrix));
+    const doodads = wmo.wmo.get_doodad_set(this.doodadSet);
+    if (doodads) {
+      for (let wmoDoodad of doodads) {
+        this.doodads.push(DoodadData.fromWmoDoodad(wmoDoodad, wmo.modelIds, this.modelMatrix));
+      }
     }
 
     // keep track of which doodads belong in which group for culling purposes
@@ -857,6 +860,22 @@ export class AdtLodData {
     for (let doodad of this.doodads) {
       doodad.setVisible(visible);
     }
+  }
+}
+
+export class LiquidLayerData {
+  private vertices: Float32Array | undefined;
+  private indices: Uint16Array | undefined;
+  public worldSpaceAABB: AABB;
+  public liquidType: number;
+  public liquidObjectId: number;
+
+  constructor(layer: WowAdtLiquidLayer, adtModelMatrix: mat4) {
+    this.vertices = layer.take_vertices();
+    this.indices = layer.take_indices();
+    this.liquidType = layer.get_liquid_type();
+    this.liquidObjectId = layer.get_liquid_object_id();
+    this.worldSpaceAABB.transform(convertWowAABB(layer.extents), adtModelMatrix)
   }
 }
 
@@ -972,6 +991,7 @@ export class AdtData {
       for (let blpId of chunk.texture_layers) {
         textures.push(this.blps.get(blpId)!);
       }
+
       this.chunkData.push(new ChunkData(chunk, textures, chunkWorldSpaceAABB));
       i += 1;
     }

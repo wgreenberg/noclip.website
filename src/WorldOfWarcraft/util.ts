@@ -51,6 +51,6 @@ export async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher,
 
 export async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
   const filePath = getFilePath(fileId);
-  const buf = await dataFetcher.fetchData(`/wow/${filePath}`);
+  const buf = await dataFetcher.fetchData(`/wotlk/${filePath}`);
   return buf.createTypedArray(Uint8Array);
 }

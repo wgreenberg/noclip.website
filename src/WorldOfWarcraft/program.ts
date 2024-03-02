@@ -544,6 +544,36 @@ void mainPS() {
 `;
 }
 
+export class WaterProgram extends BaseProgram {
+  public static a_Position = 0;
+
+  public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
+      { numUniformBuffers: super.numUniformBuffers, numSamplers: super.numSamplers },
+  ];
+
+  public override both = `
+${BaseProgram.commonDeclarations}
+
+varying vec4 v_Color;
+varying vec4 v_Position;
+
+#ifdef VERT
+layout(location = ${TerrainProgram.a_Position}) attribute vec3 a_Position;
+
+void mainVS() {
+    v_Position = a_Position;
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
+}
+#endif
+
+#ifdef FRAG
+void mainPS() {
+    gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
+}
+#endif
+`;
+}
+
 export class TerrainProgram extends BaseProgram {
   public static a_Position = 0;
   public static a_Normal = 1;

@@ -3,10 +3,11 @@ use deku::prelude::*;
 use deku::ctx::ByteSize;
 use js_sys::{Array, Float32Array, Uint8Array};
 use wasm_bindgen::prelude::*;
-use crate::wow::common::ChunkedData;
 use crate::wow::animation::*;
 
 use super::common::{
+    parse_array,
+    ChunkedData,
     WowArray,
     WowCharArray,
     AABBox,
@@ -188,6 +189,7 @@ pub struct M2 {
     pub skin_ids: Vec<u32>,
     pub name: String,
     pub materials: Vec<M2Material>,
+    pub emits_particles: bool,
     vertex_data: Option<Vec<u8>>,
     texture_lookup_table: Option<Vec<u16>>,
     bone_lookup_table: Option<Vec<u16>>,
@@ -210,8 +212,8 @@ impl M2 {
         let mut sfid: Option<Vec<u32>> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"TXID" => txid = Some(chunk.parse_array(&chunk_data, 4)?),
-                b"SFID" => sfid = Some(chunk.parse_array(&chunk_data, 4)?),
+                b"TXID" => txid = Some(parse_array(&chunk_data, 4)?),
+                b"SFID" => sfid = Some(parse_array(&chunk_data, 4)?),
                 _ => {},
             }
         }
@@ -232,6 +234,7 @@ impl M2 {
             texture_ids: txid.unwrap_or(vec![]),
             skin_ids: sfid.ok_or("M2 didn't have SFID chunk!".to_string())?,
             animation_manager,
+            emits_particles: header.particle_emitters.count > 0,
             name: header.get_name(m2_data)?,
             materials: header.get_materials(m2_data)?,
             vertex_data: Some(header.get_vertex_data(m2_data)?),
@@ -384,9 +387,9 @@ mod tests {
     fn test() {
         //let data = std::fs::read("../data/wow/world/critter/birds/bird02.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/generic/nightelf/passive doodads/magicalimplements/nemagicimplement06.m2").unwrap();
-        //let data = std::fs::read("../data/wow/world/generic/passivedoodads/particleemitters/druidwisp01.m2").unwrap();
-        let data = std::fs::read("../data/wow/world/kalimdor/barrens/passivedoodads/waterwheel/orc_waterwheel.m2").unwrap();
+        let data = std::fs::read("../data/wow/world/kalimdor/orgrimmar/passivedoodads/orgrimmarbonfire/orgrimmarsmokeemitter.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
         let mut m2 = M2::new(&data).unwrap();
+        dbg!(m2.header.particle_emitters);
     }
 }

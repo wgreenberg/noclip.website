@@ -1,7 +1,7 @@
 use deku::{prelude::*, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
 
-use crate::wow::common::ChunkedData;
+use crate::wow::common::{parse, parse_array, ChunkedData};
 
 use super::common::{Argb, AABBox, Vec3, Quat};
 
@@ -74,7 +74,7 @@ impl Wmo {
         assert_eq!(mver.magic_str(), "REVM");
         let (mhdr, mhdr_data) = chunked_data.next().unwrap();
         assert_eq!(mhdr.magic_str(), "DHOM");
-        let header: WmoHeader = mhdr.parse(mhdr_data)?;
+        let header: WmoHeader = parse(mhdr_data)?;
         let mut momt: Option<Vec<WmoMaterial>> = None;
         let mut mogi: Option<Vec<GroupInfo>> = None;
         let mut modd: Option<Vec<DoodadDef>> = None;
@@ -87,16 +87,16 @@ impl Wmo {
         let mut mosi: Option<Mosi> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"TMOM" => momt = Some(chunk.parse_array(chunk_data, 0x40)?),
-                b"IGOM" => mogi = Some(chunk.parse_array(chunk_data, 0x20)?),
-                b"DDOM" => modd = Some(chunk.parse_array(chunk_data, 40)?),
-                b"GOFM" => mfog = Some(chunk.parse_array(chunk_data, 48)?),
-                b"IDOM" => modi = Some(chunk.parse_array(chunk_data, 4)?),
-                b"DIFG" => gfid = Some(chunk.parse_array(chunk_data, 4)?),
-                b"DVAM" => mavd = chunk.parse_array(chunk_data, 0x30)?,
-                b"GVAM" => mavg = chunk.parse_array(chunk_data, 0x30)?,
-                b"ISOM" => mosi = Some(chunk.parse(chunk_data)?),
-                b"SDOM" => mods = chunk.parse_array(chunk_data, 0x20)?,
+                b"TMOM" => momt = Some(parse_array(chunk_data, 0x40)?),
+                b"IGOM" => mogi = Some(parse_array(chunk_data, 0x20)?),
+                b"DDOM" => modd = Some(parse_array(chunk_data, 40)?),
+                b"GOFM" => mfog = Some(parse_array(chunk_data, 48)?),
+                b"IDOM" => modi = Some(parse_array(chunk_data, 4)?),
+                b"DIFG" => gfid = Some(parse_array(chunk_data, 4)?),
+                b"DVAM" => mavd = parse_array(chunk_data, 0x30)?,
+                b"GVAM" => mavg = parse_array(chunk_data, 0x30)?,
+                b"ISOM" => mosi = Some(parse(chunk_data)?),
+                b"SDOM" => mods = parse_array(chunk_data, 0x20)?,
                 _ => println!("skipping {} chunk", chunk.magic_str()),
             }
         }
@@ -122,8 +122,11 @@ impl Wmo {
         }
     }
 
-    pub fn get_doodad_set_refs(&self, doodad_set_id: usize) -> Vec<u32> {
+    pub fn get_doodad_set_refs(&self, mut doodad_set_id: usize) -> Vec<u32> {
         let default_set = &self.doodad_sets[0];
+        if doodad_set_id as usize >= self.doodad_sets.len() {
+            doodad_set_id = 0;
+        }
         let mut refs: Vec<u32> = (default_set.start_index..default_set.start_index + default_set.count).collect();
         if doodad_set_id != 0 {
             let set = &self.doodad_sets[doodad_set_id];
@@ -132,15 +135,18 @@ impl Wmo {
         refs
     }
 
-    pub fn get_doodad_set(&self, doodad_set_id: u16) -> Option<Vec<DoodadDef>> {
+    pub fn get_doodad_set(&self, mut doodad_set_id: u16) -> Vec<DoodadDef> {
         let mut doodads = self.get_default_doodad_set();
+        if doodad_set_id as usize >= self.doodad_sets.len() {
+            doodad_set_id = 0;
+        }
         if doodad_set_id != 0 {
-            let set = self.doodad_sets.get(doodad_set_id as usize)?;
+            let set = &self.doodad_sets[doodad_set_id as usize];
             let start = set.start_index as usize;
             let end = start + set.count as usize;
             doodads.extend(self.doodad_defs[start..end].to_vec());
         }
-        Some(doodads)
+        doodads
     }
 
     pub fn get_default_doodad_set(&self) -> Vec<DoodadDef> {
@@ -200,8 +206,8 @@ impl WmoGroup {
         let mut chunked_data = ChunkedData::new(data);
         let (mver, _) = chunked_data.next().unwrap();
         assert_eq!(mver.magic_str(), "REVM");
-        let (mhdr, mhdr_data) = chunked_data.next().unwrap();
-        let header: WmoGroupHeader = mhdr.parse(mhdr_data)?;
+        let (_, mhdr_data) = chunked_data.next().unwrap();
+        let header: WmoGroupHeader = parse(mhdr_data)?;
         let mut mopy: Option<Vec<MaterialInfo>> = None;
         let mut indices: Option<Vec<u8>> = None;
         let mut vertices: Option<Vec<u8>> = None;
@@ -218,9 +224,9 @@ impl WmoGroup {
         let mut chunked_data = ChunkedData::new(&data[0x58..]);
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"YPOM" => mopy = Some(chunk.parse_array(chunk_data, 2)?),
+                b"YPOM" => mopy = Some(parse_array(chunk_data, 2)?),
                 b"IVOM" => indices = Some(chunk_data.to_vec()),
-                b"LADM" => replacement_for_header_color = Some(chunk.parse(chunk_data)?),
+                b"LADM" => replacement_for_header_color = Some(parse(chunk_data)?),
                 b"TVOM" => {
                     num_vertices = chunk_data.len();
                     vertices = Some(chunk_data.to_vec());
@@ -237,8 +243,8 @@ impl WmoGroup {
                     }
                     num_color_bufs += 1;
                 },
-                b"ABOM" => batches = Some(chunk.parse_array(chunk_data, 24)?),
-                b"RDOM" => doodad_refs = Some(chunk.parse_array(chunk_data, 2)?),
+                b"ABOM" => batches = Some(parse_array(chunk_data, 24)?),
+                b"RDOM" => doodad_refs = Some(parse_array(chunk_data, 2)?),
                 _ => println!("skipping {}", chunk.magic_str()),
             }
         }

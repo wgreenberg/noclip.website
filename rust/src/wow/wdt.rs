@@ -1,7 +1,7 @@
 use deku::{prelude::*, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
 
-use super::common::{ChunkedData, AABBox, Vec3};
+use super::common::{ChunkedData, AABBox, Vec3, parse};
 
 #[wasm_bindgen(js_name = "WowWdt", getter_with_clone)]
 pub struct Wdt {
@@ -24,17 +24,17 @@ impl Wdt {
                 b"NIAM" => {
                     let size = 2 * 4;
                     for i in 0..4096 {
-                        area_infos.push(chunk.parse(&chunk_data[i*size..(i+1)*size])?)
+                        area_infos.push(parse(&chunk_data[i*size..(i+1)*size])?)
                     }
                 },
                 b"DIAM" => {
                     let size = 8 * 4;
                     for i in 0..4096 {
-                        map_filedata_ids.push(chunk.parse(&chunk_data[i*size..(i+1)*size])?)
+                        map_filedata_ids.push(parse(&chunk_data[i*size..(i+1)*size])?)
                     }
                 },
-                b"DHPM" => header = Some(chunk.parse(&chunk_data)?),
-                b"FDOM" => global_wmo = Some(chunk.parse(&chunk_data)?),
+                b"DHPM" => header = Some(parse(&chunk_data)?),
+                b"FDOM" => global_wmo = Some(parse(&chunk_data)?),
                 _ => println!("skipping {}", chunk.magic_str()),
             }
         }
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test() {
-        let data = std::fs::read("../data/wow/world/maps/blackrockdepths/blackrockdepths.wdt").unwrap();
+        let data = std::fs::read("../data/wotlk/world/maps/tanarisinstance/tanarisinstance.wdt").unwrap();
         dbg!(Wdt::new(&data).unwrap().header.flags);
     }
 }

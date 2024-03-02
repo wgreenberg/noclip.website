@@ -2,7 +2,10 @@ use deku::prelude::*;
 use deku::ctx::ByteSize;
 use wasm_bindgen::prelude::*;
 
-use super::common::{Chunk, ChunkedData, Vec3, AABBox};
+use super::common::{Chunk, parse, parse_array, parse_with_byte_size, ChunkedData, Vec3, AABBox};
+
+const CHUNK_SIZE: f32 = (1600.0 / 3.0) / 16.0;
+const UNIT_SIZE: f32 = CHUNK_SIZE / 8.0;
 
 #[wasm_bindgen(js_name = "WowAdt", getter_with_clone)]
 #[derive(Debug, Clone)]
@@ -16,6 +19,7 @@ pub struct Adt {
     lod_doodad_extents: Vec<LodExtent>,
     lod_map_object_defs: Vec<WmoDefinition>,
     lod_levels: Option<LodLevels>,
+    liquids: Option<Vec<Option<LiquidData>>>,
 }
 
 #[wasm_bindgen(js_class = "WowAdt")]
@@ -23,9 +27,22 @@ impl Adt {
     pub fn new(data: &[u8]) -> Result<Adt, String> {
         let mut chunked_data = ChunkedData::new(data);
         let mut map_chunks: Vec<MapChunk> = Vec::with_capacity(256);
+        let mut maybe_liquids: Option<Vec<Option<LiquidData>>> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"KNCM" => map_chunks.push(MapChunk::new(chunk, &chunk_data)?),
+                b"O2HM" => {
+                    let header: LiquidHeader = parse(chunk_data)?;
+                    let mut liquids: Vec<Option<LiquidData>> = Vec::new();
+                    for (i, instance_header) in header.chunks.iter().enumerate() {
+                        let x = i % 16;
+                        let y = i / 16;
+                        let liquid = LiquidData::parse(instance_header, x, y, chunk_data)?;
+                        println!("INSTANCE {}", i);
+                        liquids.push(liquid);
+                    }
+                    maybe_liquids = Some(liquids);
+                },
                 _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
             }
         }
@@ -39,6 +56,7 @@ impl Adt {
             height_tex_ids: None,
             diffuse_tex_ids: None,
             lod_levels: None,
+            liquids: maybe_liquids,
         })
     }
 
@@ -103,11 +121,11 @@ impl Adt {
         let mut lod_wmo_extents: Option<Vec<LodExtent>> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"DFLM" => self.lod_levels = Some(chunk.parse(chunk_data)?),
-                b"DDLM" => self.lod_doodads = chunk.parse_array(chunk_data, 0x24)?,
-                b"XDLM" => self.lod_doodad_extents = chunk.parse_array(chunk_data, 0x1c)?,
-                b"DMLM" => lod_wmos = Some(chunk.parse_array(chunk_data, 0x28)?),
-                b"XMLM" => lod_wmo_extents = Some(chunk.parse_array(chunk_data, 0x1c)?),
+                b"DFLM" => self.lod_levels = Some(parse(chunk_data)?),
+                b"DDLM" => self.lod_doodads = parse_array(chunk_data, 0x24)?,
+                b"XDLM" => self.lod_doodad_extents = parse_array(chunk_data, 0x1c)?,
+                b"DMLM" => lod_wmos = Some(parse_array(chunk_data, 0x28)?),
+                b"XMLM" => lod_wmo_extents = Some(parse_array(chunk_data, 0x1c)?),
                 _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
             }
         }
@@ -141,14 +159,14 @@ impl Adt {
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"FDDM" => {
-                    let mddf: DoodadChunk = chunk.parse_with_byte_size(chunk_data)?;
+                    let mddf: DoodadChunk = parse_with_byte_size(chunk_data)?;
                     self.doodads = mddf.doodads;
                 },
                 b"KNCM" => {
                     self.map_chunks[map_chunk_idx].append_obj_chunk(chunk, chunk_data)?;
                     map_chunk_idx += 1;
                 }
-                b"FDOM" => self.map_object_defs = chunk.parse_array(chunk_data, 0x40)?,
+                b"FDOM" => self.map_object_defs = parse_array(chunk_data, 0x40)?,
                 _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
             }
         }
@@ -164,8 +182,8 @@ impl Adt {
                     self.map_chunks[map_chunk_idx].append_tex_chunk(chunk, chunk_data)?;
                     map_chunk_idx += 1;
                 }
-                b"DIHM" => self.height_tex_ids = Some(chunk.parse_with_byte_size(chunk_data)?),
-                b"DIDM" => self.diffuse_tex_ids = Some(chunk.parse_with_byte_size(chunk_data)?),
+                b"DIHM" => self.height_tex_ids = Some(parse_with_byte_size(chunk_data)?),
+                b"DIDM" => self.diffuse_tex_ids = Some(parse_with_byte_size(chunk_data)?),
                 _ => println!("skipping {}", std::str::from_utf8(&chunk.magic).unwrap()),
             }
         }
@@ -190,15 +208,14 @@ impl Adt {
             min: Vec3 { x: f32::INFINITY, y: f32::INFINITY, z: f32::INFINITY },
             max: Vec3 { x: f32::NEG_INFINITY, y: f32::NEG_INFINITY, z: f32::NEG_INFINITY },
         };
-        let unit_size: f32 = (1600.0 / 3.0) / 16.0 / 8.0;
         for mcnk in &self.map_chunks {
             for j in 0..(9*9 + 8*8) {
                 result.push(j as f32); // add the chunk index
 
                 // position
                 let (x, y) = Adt::chunk_index_to_coords(j);
-                let x_coord = mcnk.header.position.x - (y * unit_size); 
-                let y_coord = mcnk.header.position.y - (x * unit_size);
+                let x_coord = mcnk.header.position.x - (y * UNIT_SIZE); 
+                let y_coord = mcnk.header.position.y - (x * UNIT_SIZE);
                 let z_coord = mcnk.header.position.z + mcnk.heightmap.heightmap[j];
                 result.push(x_coord);
                 result.push(y_coord);
@@ -260,11 +277,18 @@ impl Adt {
                 }
             }
             let alpha_texture = mcnk.build_alpha_texture(adt_has_big_alpha, adt_has_height_texturing);
+            let mut liquid_data_index: Option<usize> = None;
+            if let Some(liquids) = self.liquids.as_ref() {
+                if liquids[i].is_some() {
+                    liquid_data_index = Some(i);
+                }
+            }
             descriptors.push(ChunkDescriptor {
                 texture_layers,
                 index_offset,
                 alpha_texture,
                 index_count,
+                liquid_data_index,
             });
         }
         (index_buffer, descriptors)
@@ -320,6 +344,7 @@ pub struct ChunkDescriptor {
     pub alpha_texture: Option<Vec<u8>>,
     pub index_offset: usize,
     pub index_count: usize,
+    pub liquid_data_index: Option<usize>,
 }
 
 static SQUARE_INDICES_TRIANGLE: &[u16] = &[9, 0, 17, 9, 1, 0, 9, 18, 1, 9, 17, 18];
@@ -415,7 +440,7 @@ pub struct MapChunk {
 
 impl MapChunk {
     pub fn new(chunk: Chunk, chunk_data: &[u8]) -> Result<Self, String> {
-        let header = chunk.parse(chunk_data)?;
+        let header = parse(chunk_data)?;
 
         let mut mcvt: Option<HeightmapChunk> = None;
         let mut mcnr: Option<NormalChunk> = None;
@@ -423,9 +448,9 @@ impl MapChunk {
         let mut chunked_data = ChunkedData::new(&chunk_data[0x80..]);
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
-                b"TVCM" => mcvt = Some(subchunk.parse(subchunk_data)?),
-                b"RNCM" => mcnr = Some(subchunk.parse(subchunk_data)?),
-                b"HSMC" => mcsh = Some(subchunk.parse(subchunk_data)?),
+                b"TVCM" => mcvt = Some(parse(subchunk_data)?),
+                b"RNCM" => mcnr = Some(parse(subchunk_data)?),
+                b"HSMC" => mcsh = Some(parse(subchunk_data)?),
                 //_ => println!("skipping subchunk {}", subchunk.magic_str()),
                 _ => {},
             }
@@ -509,8 +534,8 @@ impl MapChunk {
         let mut chunked_data = ChunkedData::new(&chunk_data);
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
-                b"VCCM" => self.vertex_colors = Some(subchunk.parse(subchunk_data)?),
-                b"VLCM" => self.vertex_lighting = Some(subchunk.parse(subchunk_data)?),
+                b"VCCM" => self.vertex_colors = Some(parse(subchunk_data)?),
+                b"VLCM" => self.vertex_lighting = Some(parse(subchunk_data)?),
                 _ => {},
             }
         }
@@ -521,8 +546,8 @@ impl MapChunk {
         let mut chunked_data = ChunkedData::new(&chunk_data);
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
-                b"YLCM" => self.texture_layers = subchunk.parse_array(subchunk_data, 16)?,
-                b"LACM" => self.alpha_map = subchunk.parse_with_byte_size(subchunk_data)?,
+                b"YLCM" => self.texture_layers = parse_array(subchunk_data, 16)?,
+                b"LACM" => self.alpha_map = parse_with_byte_size(subchunk_data)?,
                 _ => {},
             }
         }
@@ -647,6 +672,157 @@ pub struct WmoDefinition {
     pub scale: u16,
 }
 
+#[derive(Debug, Clone)]
+pub struct LiquidData {
+    layers: Vec<LiquidLayer>,
+}
+
+impl LiquidData {
+    pub fn parse(instance_header: &LiquidHeaderChunk, x: usize, y: usize, data: &[u8]) -> Result<Option<Self>, String> {
+        if instance_header.layer_count == 0 {
+            return Ok(None);
+        }
+        let mut layers: Vec<LiquidLayer> = Vec::with_capacity(instance_header.layer_count as usize);
+        let start = instance_header.instances_offset as usize;
+        let end = start + instance_header.layer_count as usize * 0x18;
+        let instances: Vec<LiquidInstance> = parse_array(&data[start..end], 0x18)?;
+
+        let chunk_x_pos = x as f32 * CHUNK_SIZE;
+        let chunk_y_pos = y as f32 * CHUNK_SIZE;
+        for instance in instances {
+            let liquid_mask: u64 = match instance.bitmap_exists_offset as usize {
+                0 => 0xFFFFFFFFFFFFFFFF, // all water
+                offset => {
+                    let num_mask_bytes = ((instance.height as f32 * instance.width as f32) / 8.0).ceil() as usize;
+                    assert!(num_mask_bytes <= 8);
+                    let mut mask_bytes = [0_u8; 8];
+                    for i in 0..num_mask_bytes {
+                        mask_bytes[i] = data[offset + i];
+                    }
+                    u64::from_le_bytes(mask_bytes)
+                }
+            };
+
+            let height = instance.height as usize + 1;
+            let width = instance.width as usize + 1;
+            let mut maybe_heightmap: Option<Vec<f32>> = None;
+            let uses_heightmap = !(instance.liquid_object_or_lvf == 42 && instance.liquid_type == 2)
+                                 && instance.liquid_object_or_lvf != 2;
+            if uses_heightmap && instance.vertex_data_offset != 0 {
+                let start = instance.vertex_data_offset as usize;
+                let end = start + 4 * width * height;
+                maybe_heightmap = Some(parse_array(&data[start..end], 4)?);
+            }
+
+            let mut extents = AABBox::default();
+            let mut vertices: Vec<f32> = Vec::with_capacity(3 * height * width);
+            for y in 0..height {
+                for x in 0..width {
+                    let y_pos = chunk_y_pos + y as f32 * instance.y_offset as f32 * UNIT_SIZE;
+                    let x_pos = chunk_x_pos + x as f32 * instance.x_offset as f32 * UNIT_SIZE;
+                    let mut z_pos = instance.min_height_level;
+
+                    if let Some(heights) = maybe_heightmap.as_ref() {
+                        z_pos = heights[y * width + x];
+                    }
+
+                    vertices.push(x_pos);
+                    vertices.push(y_pos);
+                    vertices.push(z_pos);
+                    extents.update(x_pos, y_pos, z_pos);
+                }
+            }
+
+            let mut bit_offset = 0;
+            let mut indices: Vec<u16> = Vec::new();
+            for y in 0..height - 1 {
+                for x in 0..width - 1 {
+                    if ((liquid_mask >> bit_offset) & 1) > 0 {
+                        let vert_indices = [
+                            y * width + x,
+                            y * width + x + 1,
+                            (y + 1) * width + x,
+                            (y + 1) * width + x + 1,
+                        ];
+                        indices.push(vert_indices[0] as u16);
+                        indices.push(vert_indices[1] as u16);
+                        indices.push(vert_indices[2] as u16);
+
+                        indices.push(vert_indices[1] as u16);
+                        indices.push(vert_indices[3] as u16);
+                        indices.push(vert_indices[2] as u16);
+                    }
+                    bit_offset += 1;
+                }
+            }
+            layers.push(LiquidLayer {
+                instance,
+                extents,
+                vertices: Some(vertices),
+                indices: Some(indices),
+            });
+        }
+        Ok(Some(LiquidData {
+            layers,
+        }))
+   }
+}
+
+#[wasm_bindgen(js_name = "WowAdtLiquidLayer", getter_with_clone)]
+#[derive(Debug, Clone)]
+pub struct LiquidLayer {
+    instance: LiquidInstance,
+    pub extents: AABBox,
+    vertices: Option<Vec<f32>>,
+    indices: Option<Vec<u16>>,
+}
+
+#[wasm_bindgen(js_class = "WowAdtLiquidLayer")]
+impl LiquidLayer {
+    pub fn get_liquid_type(&self) -> u16 {
+        self.instance.liquid_type
+    }
+
+    pub fn get_liquid_object_id(&self) -> u16 {
+        self.instance.liquid_object_or_lvf
+    }
+
+    pub fn take_vertices(&mut self) -> Vec<f32> {
+        self.vertices.take().expect("vertices already taken")
+    }
+
+    pub fn take_indices(&mut self) -> Vec<u16> {
+        self.indices.take().expect("indices already taken")
+    }
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct LiquidHeader {
+    #[deku(count = "256")]
+    pub chunks: Vec<LiquidHeaderChunk>,
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct LiquidHeaderChunk {
+    pub instances_offset: u32,
+    pub layer_count: u32,
+    pub _attributes_attributes: u32,
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct LiquidInstance {
+    pub liquid_type: u16,
+    pub liquid_object_or_lvf: u16,
+    pub min_height_level: f32,
+    pub max_height_level: f32,
+    pub x_offset: u8,
+    pub y_offset: u8,
+    pub width: u8,
+    pub height: u8,
+    pub bitmap_exists_offset: u32,
+    pub vertex_data_offset: u32,
+}
+
 #[derive(Debug, DekuRead, Clone)]
 pub struct LodWmoDefinition {
     pub name_id: u32,
@@ -688,9 +864,8 @@ mod tests {
 
     #[test]
     fn test() {
-        let data = std::fs::read("../data/wow/world/maps/azeroth/azeroth_34_46.adt").unwrap();
+        let data = std::fs::read("../data/wow/world/maps/tanarisinstance/tanarisinstance_29_27.adt").unwrap();
         let mut adt = Adt::new(&data).unwrap();
-        adt.append_lod_obj_adt(&std::fs::read("../data/wow/world/maps/azeroth/azeroth_34_46_obj1.adt").unwrap()).unwrap();
-        dbg!(adt.lod_levels);
+        // adt.append_lod_obj_adt(&std::fs::read("../data/wow/world/maps/azeroth/azeroth_34_46_obj1.adt").unwrap()).unwrap();
     }
 }

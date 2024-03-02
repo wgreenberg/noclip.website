@@ -545,7 +545,7 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
 }
 
 const sceneDescs = [
-    "Instances",
+    "Classic Instances",
     new WdtSceneDesc('Zul-Farak', 791169, 209),
     new WdtSceneDesc('Blackrock Depths', 780172, 230),
     new WdtSceneDesc('Scholomance', 790713, 289),
@@ -572,15 +572,44 @@ const sceneDescs = [
     new WdtSceneDesc("Onyxia's Lair", 789922, 249),
     new WdtSceneDesc("Zul'gurub", 791432, 309),
     new WdtSceneDesc("Ragefire Chasm", 789981, 389),
-    new WdtSceneDesc("Molten Core", 788659, 409),
     new WdtSceneDesc("Dire Maul", 780814, 429),
+    new WdtSceneDesc("Molten Core", 788659, 409),
     new WdtSceneDesc("Blackwing Lair", 780178, 469),
     new WdtSceneDesc("Ahn'Qiraj Temple", 775840, 531),
+
+    "Burning Crusade Instances",
+    new WdtSceneDesc("Hellfire Citadel: The Shattered Halls", 831277, 540),
+    new WdtSceneDesc("Hellfire Citadel: The Blood Furnace", 830642, 542),
+    new WdtSceneDesc("Hellfire Citadel: Ramparts", 832154, 543),
+    new WdtSceneDesc("Magtheridon's Lair", 833183, 544),
+    new WdtSceneDesc("Coilfang: The Steamvault", 828422, 545),
+    new WdtSceneDesc("Coilfang: The Underbog", 831262, 546),
+    new WdtSceneDesc("Coilfang: The Slave Pens", 830731, 547),
+    new WdtSceneDesc("Coilfang: Serpentshrine Cavern", 829900, 548),
+    new WdtSceneDesc("Karazahn", 834192, 532),
+    new WdtSceneDesc("Caverns of Time: Hyjal", 831824, 534),
+    new WdtSceneDesc("Caverns of Time: The Escape from Durnholde", 833998, 560),
+    new WdtSceneDesc("Tempest Keep (Raid)", 832484, 550),
+    new WdtSceneDesc("Tempest Keep: The Arcatraz", 832070, 552),
+    new WdtSceneDesc("Tempest Keep: The Botanica", 833950, 553),
+    new WdtSceneDesc("Tempest Keep: The Mechanar", 831974, 554),
+    new WdtSceneDesc("Auchindoun: Shadow Labyrinth", 828331, 555),
+    new WdtSceneDesc("Auchindoun: Sethekk Halls", 828811, 556),
+    new WdtSceneDesc("Auchindoun: Mana-Tombs", 830899, 557),
+    new WdtSceneDesc("Auchindoun: Auchenai Crypts", 830415, 558),
+    new WdtSceneDesc("Gruul's Lair", 833180, 565),
+    new WdtSceneDesc("Zul'Aman", 815727, 568),
+    new WdtSceneDesc("Black Temple", 829630, 565),
+    new WdtSceneDesc("The Sunwell: Magister's Terrace", 834223, 585),
+    new WdtSceneDesc("The Sunwell: Plateau", 832953, 580),
 
     "PvP",
     new WdtSceneDesc('Alterac Valley', 790112, 30), // AKA pvpzone01
     new WdtSceneDesc('Warsong Gulch', 790291, 489), // AKA pvpzone03
     new WdtSceneDesc('Arathi Basin', 790377, 529), // AKA pvpzone04
+    new WdtSceneDesc('Eye of the Storm', 788893, 566),
+    new WdtSceneDesc('Arena: Nagrand', 790469, 559),
+    new WdtSceneDesc("Arena: Blade's Edge", 780261, 562),
 
     "Unreleased",
     new WdtSceneDesc('Emerald Dream (classic)', 780817, 0),
@@ -604,7 +633,7 @@ const sceneDescs = [
     new ContinentSceneDesc("Booty Bay", 775971, 31, 58, 0),
 
     "Outland",
-    new ContinentSceneDesc("???", 828395, 31, 28, 530),
+    new ContinentSceneDesc("The Dark Portal", 828395, 29, 32, 530),
 
     "Northrend",
     new ContinentSceneDesc("???", 822688, 31, 28, 571),

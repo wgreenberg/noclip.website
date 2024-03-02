@@ -12,10 +12,10 @@ import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager.js";
 import { rust } from "../rustlib.js";
 import { ViewerRenderInput } from "../viewer.js";
 import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData } from "./data.js";
-import { MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WmoProgram } from "./program.js";
+import { MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WaterProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
-import { View, adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, placementSpaceFromModelSpace } from "./scenes.js";
+import { MapArray, View, adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, placementSpaceFromModelSpace } from "./scenes.js";
 import { convertToTriangleIndexBuffer, GfxTopology } from "../gfx/helpers/TopologyHelpers.js";
 import { skyboxVertices, skyboxIndices } from "./skybox.js";
 import { assert } from "../util.js";
@@ -318,6 +318,7 @@ export class TerrainRenderer {
   }
 
   public destroy(device: GfxDevice) {
+    device.destroyInputLayout(this.inputLayout);
     device.destroyBuffer(this.vertexBuffer.buffer);
     device.destroyBuffer(this.indexBuffer.buffer);
     for (let mapping of this.alphaTextureMappings) {
@@ -325,6 +326,28 @@ export class TerrainRenderer {
         destroyTextureMapping(device, mapping);
       }
     }
+  }
+}
+
+export class WaterRenderer {
+  private inputLayout: GfxInputLayout;
+  public chunkIndexBuffers: MapArray<number, GfxIndexBufferDescriptor[]> = new MapArray();
+  public chunkVertexBuffers: MapArray<number, GfxVertexAttributeDescriptor[]> = new MapArray();
+
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
+    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+      { location: WaterProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB },
+    ];
+    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex },
+    ];
+    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+    const cache = renderHelper.renderCache;
+    this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+  }
+
+  public destroy(device: GfxDevice) {
+    device.destroyInputLayout(this.inputLayout);
   }
 }
 

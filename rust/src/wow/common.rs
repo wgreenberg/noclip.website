@@ -8,53 +8,57 @@ pub struct Chunk {
     pub size: u32,
 }
 
-impl Chunk {
-    pub fn parse_with_byte_size<T>(&self, data: &[u8]) -> Result<T, String>
-        where for<'a> T: DekuRead<'a, ByteSize>
-    {
-        self.parse_inner(data, ByteSize(self.size as usize))
-    }
+pub fn parse_with_byte_size<T>(data: &[u8]) -> Result<T, String>
+    where for<'a> T: DekuRead<'a, ByteSize>
+{
+    parse_inner(data, ByteSize(data.len()))
+}
 
-    pub fn parse<T>(&self, data: &[u8]) -> Result<T, String>
-        where for<'a> T: DekuRead<'a, ()>
-    {
-        self.parse_inner(data, ())
-    }
+pub fn parse<T>(data: &[u8]) -> Result<T, String>
+    where for<'a> T: DekuRead<'a, ()>
+{
+    parse_inner(data, ())
+}
 
-    pub fn parse_array<T>(&self, data: &[u8], size_per_data: usize) -> Result<Vec<T>, String>
-        where for<'a> T: DekuRead<'a, ()>
-    {
-        if self.size as usize % size_per_data != 0 {
-            return Err(format!(
-                "chunk size {} not evenly divisible by element size {}",
-                self.size,
-                size_per_data
-            ));
-        }
-        let num_elements = self.size as usize / size_per_data;
-        let bitvec = BitVec::from_slice(&data[..]);
-        let mut result = Vec::with_capacity(num_elements);
-        let mut rest = bitvec.as_bitslice();
-        for _ in 0..num_elements {
-            let (new_rest, element) = T::read(rest, ())
-                .map_err(|e| format!("{:?}", e))?;
-            result.push(element);
-            rest = new_rest;
-        }
-        Ok(result)
+pub fn parse_array<T>(data: &[u8], size_per_data: usize) -> Result<Vec<T>, String>
+    where for<'a> T: DekuRead<'a, ()>
+{
+    if data.len() % size_per_data != 0 {
+        return Err(format!(
+            "chunk size {} not evenly divisible by element size {}",
+            data.len(),
+            size_per_data
+        ));
     }
-
-    fn parse_inner<T, V>(&self, data:&[u8], ctx: V) -> Result<T, String>
-        where for<'a> T: DekuRead<'a, V>
-    {
-        let bitvec = BitVec::from_slice(&data[..]);
-        let (_, element) = T::read(bitvec.as_bitslice(), ctx)
+    let num_elements = data.len() / size_per_data;
+    let bitvec = BitVec::from_slice(&data[..]);
+    let mut result = Vec::with_capacity(num_elements);
+    let mut rest = bitvec.as_bitslice();
+    for _ in 0..num_elements {
+        let (new_rest, element) = T::read(rest, ())
             .map_err(|e| format!("{:?}", e))?;
-        Ok(element)
+        result.push(element);
+        rest = new_rest;
     }
+    Ok(result)
+}
 
+fn parse_inner<T, V>(data: &[u8], ctx: V) -> Result<T, String>
+    where for<'a> T: DekuRead<'a, V>
+{
+    let bitvec = BitVec::from_slice(&data[..]);
+    let (_, element) = T::read(bitvec.as_bitslice(), ctx)
+        .map_err(|e| format!("{:?}", e))?;
+    Ok(element)
+}
+
+impl Chunk {
     pub fn magic_str(&self) -> &str {
         std::str::from_utf8(&self.magic).unwrap()
+    }
+
+    pub fn slice<'a>(&self, data: &'a [u8]) -> &'a [u8] {
+        &data[..self.size as usize]
     }
 }
 
@@ -175,7 +179,6 @@ pub struct Vec2 {
 
 #[wasm_bindgen(js_name = "WowArgb")]
 #[derive(DekuRead, Debug, Clone, Copy)]
-
 pub struct Argb {
     pub r: u8,
     pub g: u8,
@@ -191,14 +194,23 @@ pub struct AABBox {
     pub max: Vec3,
 }
 
+impl Default for AABBox {
+    fn default() -> Self {
+        Self {
+            min: Vec3 { x: f32::INFINITY, y: f32::INFINITY, z: f32::INFINITY },
+            max: Vec3 { x: f32::NEG_INFINITY, y: f32::NEG_INFINITY, z: f32::NEG_INFINITY },
+        }
+    }
+}
+
 impl AABBox {
     pub fn update(&mut self, x: f32, y: f32, z: f32) {
-        if x < self.min.x { self.min.x = x; }
-        if x > self.max.x { self.max.x = x; }
-        if y < self.min.y { self.min.y = y; }
-        if y > self.max.y { self.max.y = y; }
-        if z < self.min.z { self.min.z = z; }
-        if z > self.max.z { self.max.z = z; }
+        self.min.x = self.min.x.min(x);
+        self.max.x = self.max.x.max(x);
+        self.min.y = self.min.y.min(y);
+        self.max.y = self.max.y.max(y);
+        self.min.z = self.min.z.min(z);
+        self.max.z = self.max.z.max(z);
     }
 }
 

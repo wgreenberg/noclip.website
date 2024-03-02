@@ -530,6 +530,7 @@ impl LightDatabase {
     }
 
     fn get_light_result(&self, light: &LightRecord, time: u32) -> Option<LightResult> {
+        // TODO: select based on weather conditions
         let id = light.light_param_ids[0];
         assert!(id != 0);
 
