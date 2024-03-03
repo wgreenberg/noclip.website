@@ -5,7 +5,8 @@ use wasm_bindgen::prelude::*;
 
 use super::common::{Chunk, parse, parse_array, parse_with_byte_size, ChunkedData, Vec3, AABBox};
 
-const CHUNK_SIZE: f32 = (1600.0 / 3.0) / 16.0;
+const TILE_SIZE: f32 = 1600.0 / 3.0;
+const CHUNK_SIZE: f32 = TILE_SIZE / 16.0;
 const UNIT_SIZE: f32 = CHUNK_SIZE / 8.0;
 
 #[wasm_bindgen(js_name = "WowAdt", getter_with_clone)]
@@ -28,7 +29,6 @@ impl Adt {
     pub fn new(data: &[u8]) -> Result<Adt, String> {
         let mut chunked_data = ChunkedData::new(data);
         let mut map_chunks: Vec<MapChunk> = Vec::with_capacity(256);
-        let mut liquids: Vec<Option<LiquidData>> = Vec::new();
         let mut liquid_data: Option<(LiquidHeader, &[u8])> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
@@ -42,11 +42,14 @@ impl Adt {
             }
         }
 
+        let adt_base_pos = &map_chunks[0].header.position;
+        let mut liquids: Vec<Option<LiquidData>> = Vec::new();
         if let Some((liquid_header, data)) = liquid_data {
             for (i, instance_header) in liquid_header.chunks.iter().enumerate() {
-                let mcnk = &map_chunks[i];
-                let x_coord = mcnk.header.position.x; 
-                let y_coord = mcnk.header.position.y;
+                let x_chunk = (i / 16) as f32;
+                let y_chunk = (i % 16) as f32;
+                let x_coord = adt_base_pos.x - x_chunk as f32 * CHUNK_SIZE; 
+                let y_coord = adt_base_pos.y - y_chunk as f32 * CHUNK_SIZE;
                 let liquid = LiquidData::parse(instance_header, x_coord, y_coord, data)?;
                 liquids.push(liquid);
             }
@@ -206,12 +209,12 @@ impl Adt {
     }
 
     fn chunk_index_to_coords(index: usize) -> (f32, f32) {
-        let mut x = (index as f32) % 17.0;
-        let mut y = ((index as f32) / 17.0).floor();
+        let mut x = (index / 17) as f32;
+        let mut y = (index as f32) % 17.0;
 
-        if x > 8.01 {
-            y += 0.5;
-            x -= 8.5;
+        if y > 8.01 {
+            x += 0.5;
+            y -= 8.5;
         }
         (x, y)
     }
@@ -225,8 +228,8 @@ impl Adt {
 
                 // position
                 let (x, y) = Adt::chunk_index_to_coords(j);
-                let x_coord = mcnk.header.position.x - (y * UNIT_SIZE); 
-                let y_coord = mcnk.header.position.y - (x * UNIT_SIZE);
+                let x_coord = mcnk.header.position.x - (x * UNIT_SIZE); 
+                let y_coord = mcnk.header.position.y - (y * UNIT_SIZE);
                 let z_coord = mcnk.header.position.z + mcnk.heightmap.heightmap[j];
                 result.push(x_coord);
                 result.push(y_coord);
@@ -267,6 +270,7 @@ impl Adt {
         let mut index_buffer = Vec::new();
         let mut descriptors = Vec::with_capacity(256);
         for (i, mcnk) in self.map_chunks.iter().enumerate() {
+            let offset = (i as u16) * (9*9 + 8*8);
             let texture_layers = match (&mcnk.texture_layers, &self.diffuse_tex_ids) {
                 (layers, Some(mdid)) => layers.iter()
                     .map(|layer| mdid.file_data_ids[layer.texture_index as usize])
@@ -281,7 +285,6 @@ impl Adt {
                         continue;
                     }
                     for k in 0..12 {
-                        let offset = (i as u16) * (9*9 + 8*8);
                         index_buffer.push(offset + SQUARE_INDICES_TRIANGLE[k] + 17 * (y as u16) + (x as u16));
                         index_count += 1;
                     }
@@ -350,7 +353,12 @@ pub struct ChunkDescriptor {
     pub index_count: usize,
 }
 
-static SQUARE_INDICES_TRIANGLE: &[u16] = &[9, 0, 17, 9, 1, 0, 9, 18, 1, 9, 17, 18];
+static SQUARE_INDICES_TRIANGLE: &[u16] = &[
+    9, 0, 17,
+    9, 1, 0,
+    9, 18, 1,
+    9, 17, 18,
+];
 
 pub static ADT_VBO_INFO: AdtVBOInfo = AdtVBOInfo {
     stride:          (1 + 3 + 3 + 4 + 4) * 4,
@@ -705,7 +713,7 @@ impl LiquidData {
             let width = instance.width as usize + 1;
             let mut maybe_heightmap: Option<Vec<f32>> = None;
             let uses_heightmap = !(instance.liquid_object_or_lvf == 42 && instance.liquid_type == 2)
-                                    && instance.liquid_object_or_lvf != 2;
+                                 && instance.liquid_object_or_lvf != 2;
             if uses_heightmap && instance.vertex_data_offset != 0 {
                 let start = instance.vertex_data_offset as usize;
                 let end = start + 4 * width * height;
@@ -716,8 +724,8 @@ impl LiquidData {
             let mut vertices: Vec<f32> = Vec::with_capacity(3 * height * width);
             for y in 0..height {
                 for x in 0..width {
-                    let y_pos = chunk_y + (y as f32 + instance.y_offset as f32) * CHUNK_SIZE;
-                    let x_pos = chunk_x + (x as f32 + instance.x_offset as f32) * CHUNK_SIZE;
+                    let x_pos = chunk_x - (y as f32 + instance.x_offset as f32) * UNIT_SIZE;
+                    let y_pos = chunk_y - (x as f32 + instance.y_offset as f32) * UNIT_SIZE;
                     let mut z_pos = instance.min_height_level;
 
                     if let Some(heights) = maybe_heightmap.as_ref() {

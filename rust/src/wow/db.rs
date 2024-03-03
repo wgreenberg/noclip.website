@@ -243,13 +243,15 @@ impl<T> Database<T> {
         let bitvec = BitVec::from_slice(&data[db2.section_headers[0].file_offset as usize..]);
         let mut rest = bitvec.as_bitslice();
         let mut id = db2.header.min_id;
-        for i in 0..db2.header.record_count as usize {
-            let offset = i * db2.header.record_size as usize;
-            let (_, value) = T::read(&rest[offset..], db2.clone())
+        for _ in 0..db2.header.record_count {
+            let (new_rest, value) = T::read(rest, db2.clone())
                 .map_err(|e| format!("{:?}", e))?;
             records.push(value);
             ids.push(id);
             id += 1;
+            let bits_read = rest.len() - new_rest.len();
+            assert_eq!(db2.header.record_size as usize * 8, bits_read);
+            rest = new_rest;
         }
         Ok(Database {
             db2,
@@ -284,8 +286,10 @@ pub struct LightParamsRecord {
     pub water_deep_alpha: f32,
     #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 8)")]
     pub ocean_shallow_alpha: f32,
-    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 9)", pad_bits_after = "5")]
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 9)")]
     pub ocean_deep_alpha: f32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 10)", pad_bits_after = "1")]
+    pub flags: f32,
 }
 
 #[derive(DekuRead, Debug, Clone)]
@@ -333,7 +337,7 @@ struct LightDataRecord {
     pub shadow_opacity: u32,
     #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 20)")]
     pub fog_end: f32,
-    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 21)", pad_bits_after = "32")]
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 21)", pad_bits_after = "40")]
     pub fog_scaler: f32,
 }
 
@@ -662,9 +666,9 @@ mod test {
 
     #[test]
     fn test() {
-        let d1 = std::fs::read("../data/wow/dbfilesclient/light.db2").unwrap();
-        let d2 = std::fs::read("../data/wow/dbfilesclient/lightparams.db2").unwrap();
-        let d3 = std::fs::read("../data/wow/dbfilesclient/lightdata.db2").unwrap();
+        let d1 = std::fs::read("../data/wotlk/dbfilesclient/light.db2").unwrap();
+        let d2 = std::fs::read("../data/wotlk/dbfilesclient/lightparams.db2").unwrap();
+        let d3 = std::fs::read("../data/wotlk/dbfilesclient/lightdata.db2").unwrap();
         let db = LightDatabase::new(&d1, &d3, &d2).unwrap();
         let result = db.get_lighting_data(0, -7829.5380859375, -1157.3988037109375, 218.613525390625, 2000);
         for color in [result.sky_top_color, result.sky_middle_color, result.sky_band1_color, result.sky_band2_color, result.sky_smog_color, result.sky_fog_color] {
