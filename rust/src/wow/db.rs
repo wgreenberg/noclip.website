@@ -180,7 +180,7 @@ impl Wdc4Db2File {
         let mut offset = 0;
         for field_number_i in 0..field_number {
             match &self.field_storage_info[field_number_i].storage_type {
-                StorageType::CommonData {..}=> {
+                StorageType::CommonData {..} => {
                     offset += self.field_storage_info[field_number_i].additional_data_size as usize;
                 },
                 _ => {},

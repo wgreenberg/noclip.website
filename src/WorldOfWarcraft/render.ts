@@ -4,7 +4,7 @@ import { AABB } from "../Geometry.js";
 import { TextureMapping } from "../TextureHolder.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
-import { GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage } from "../gfx/platform/GfxPlatform.js";
+import { GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxCullMode } from "../gfx/platform/GfxPlatform.js";
 import { GfxFormat } from "../gfx/platform/GfxPlatformFormat.js";
 import { GfxInputLayout, GfxProgram } from "../gfx/platform/GfxPlatformImpl.js";
 import { GfxRenderHelper } from "../gfx/render/GfxRenderHelper.js";
@@ -331,8 +331,7 @@ export class TerrainRenderer {
 
 export class WaterRenderer {
   private inputLayout: GfxInputLayout;
-  public chunkIndexBuffers: MapArray<number, GfxIndexBufferDescriptor[]> = new MapArray();
-  public chunkVertexBuffers: MapArray<number, GfxVertexAttributeDescriptor[]> = new MapArray();
+  public buffers: MapArray<number, [GfxIndexBufferDescriptor, number, GfxVertexBufferDescriptor]> = new MapArray();
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
@@ -344,6 +343,27 @@ export class WaterRenderer {
     const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+
+    for (let [chunkIndex, liquidLayers] of this.adt.chunkLiquids.map.entries()) {
+      for (let layer of liquidLayers) {
+        this.buffers.append(chunkIndex, [layer.takeIndices(device), layer.indexCount, layer.takeVertices(device)]);
+      }
+    }
+  }
+
+  public prepareToRenderWater(renderInstManager: GfxRenderInstManager) {
+    // if (!this.adt.visible) return;
+    for (let [chunkIndex, layers] of this.buffers.map.entries()) {
+      const chunk = this.adt.chunkData[chunkIndex];
+      // if (!chunk.visible) return;
+      for (let [indexBuffer, indexCount, vertexBuffer] of layers) {
+        const renderInst = renderInstManager.newRenderInst();
+        renderInst.setVertexInput(this.inputLayout, [vertexBuffer], indexBuffer);
+        renderInst.setMegaStateFlags({ cullMode: GfxCullMode.None });
+        renderInst.setDrawCount(indexCount);
+        renderInstManager.submitRenderInst(renderInst);
+      }
+    }
   }
 
   public destroy(device: GfxDevice) {

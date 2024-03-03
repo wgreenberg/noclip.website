@@ -866,16 +866,32 @@ export class AdtLodData {
 export class LiquidLayerData {
   private vertices: Float32Array | undefined;
   private indices: Uint16Array | undefined;
+  public indexCount: number;
   public worldSpaceAABB: AABB;
   public liquidType: number;
   public liquidObjectId: number;
 
-  constructor(layer: WowAdtLiquidLayer, adtModelMatrix: mat4) {
+  constructor(layer: WowAdtLiquidLayer) {
     this.vertices = layer.take_vertices();
     this.indices = layer.take_indices();
+    this.indexCount = this.indices.length;
     this.liquidType = layer.get_liquid_type();
     this.liquidObjectId = layer.get_liquid_object_id();
-    this.worldSpaceAABB.transform(convertWowAABB(layer.extents), adtModelMatrix)
+    this.worldSpaceAABB = convertWowAABB(layer.extents);
+  }
+
+  public takeVertices(device: GfxDevice): GfxVertexBufferDescriptor {
+    return {
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.vertices!.buffer),
+      byteOffset: 0,
+    };
+  } 
+
+  public takeIndices(device: GfxDevice): GfxIndexBufferDescriptor {
+    return {
+      buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, this.indices!.buffer),
+      byteOffset: 0,
+    };
   }
 }
 
@@ -890,7 +906,7 @@ export class AdtData {
   public lodData: AdtLodData[] = [];
   public visible = true;
   public chunkData: ChunkData[] = [];
-  public chunkLiquids: MapArray<number, LiquidLayerData[]> = new MapArray();
+  public chunkLiquids: MapArray<number, LiquidLayerData> = new MapArray();
   private vertexBuffer: Float32Array;
   private indexBuffer: Uint16Array;
   private inner: WowAdt | null = null;
@@ -980,9 +996,11 @@ export class AdtData {
       }
 
       this.chunkData.push(new ChunkData(chunk, textures, chunkWorldSpaceAABB));
-      if (chunk.liquid_data_index !== undefined) {
-        const layers = 
-        this.chunkLiquids.append()
+      const liquidLayers = this.inner!.take_chunk_liquid_data(i);
+      if (liquidLayers !== undefined) {
+        for (let layer of liquidLayers) {
+          this.chunkLiquids.append(i, new LiquidLayerData(layer));
+        }
       }
       i += 1;
     }

@@ -25,10 +25,11 @@ import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
 import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D, interactiveVizSliderSelect } from '../DebugJunk.js';
 import { Frustum, AABB } from '../Geometry.js';
-import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram, SkyboxProgram, BaseProgram } from './program.js';
+import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram, SkyboxProgram, BaseProgram, WaterProgram } from './program.js';
 import { ViewerRenderInput } from '../viewer.js';
 import { skyboxIndices, skyboxVertices } from './skybox.js';
-import { ModelRenderer, SkyboxRenderer, TerrainRenderer, WmoRenderer } from './render.js';
+import { ModelRenderer, SkyboxRenderer, TerrainRenderer, WaterRenderer, WmoRenderer } from './render.js';
+import { Water } from '../Glover/parsers/GloverLevel.cjs';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
@@ -187,6 +188,7 @@ export class MapArray<K, V> {
 
 export class WdtScene implements Viewer.SceneGfx {
   private terrainRenderers: Map<number, TerrainRenderer> = new Map();
+  private waterRenderers: Map<number, WaterRenderer> = new Map();
   private modelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
@@ -197,6 +199,7 @@ export class WdtScene implements Viewer.SceneGfx {
   public ADT_LOD0_DISTANCE = 1000;
 
   private terrainProgram: GfxProgram;
+  private waterProgram: GfxProgram;
   private modelProgram: GfxProgram;
   private wmoProgram: GfxProgram;
   private skyboxProgram: GfxProgram;
@@ -217,6 +220,7 @@ export class WdtScene implements Viewer.SceneGfx {
     console.time('WdtScene construction');
     this.textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
+    this.waterProgram = this.renderHelper.renderCache.createProgram(new WaterProgram());
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
     this.wmoProgram = this.renderHelper.renderCache.createProgram(new WmoProgram());
     this.skyboxProgram = this.renderHelper.renderCache.createProgram(new SkyboxProgram());
@@ -247,6 +251,12 @@ export class WdtScene implements Viewer.SceneGfx {
     }
 
     this.terrainRenderers.set(adt.fileId, new TerrainRenderer(
+      this.device,
+      this.renderHelper,
+      adt,
+      this.textureCache,
+    ));
+    this.waterRenderers.set(adt.fileId, new WaterRenderer(
       this.device,
       this.renderHelper,
       adt,
@@ -404,6 +414,12 @@ export class WdtScene implements Viewer.SceneGfx {
       renderer.prepareToRenderTerrain(this.renderHelper.renderInstManager);
     }
 
+    template.setGfxProgram(this.waterProgram);
+    template.setBindingLayouts(WaterProgram.bindingLayouts);
+    for (let renderer of this.waterRenderers.values()) {
+      renderer.prepareToRenderWater(this.renderHelper.renderInstManager);
+    }
+
     template.setGfxProgram(this.wmoProgram);
     template.setBindingLayouts(WmoProgram.bindingLayouts);
     for (let [wmoId, renderer] of this.wmoRenderers.entries()) {
@@ -550,7 +566,6 @@ const sceneDescs = [
     new WdtSceneDesc('Blackrock Depths', 780172, 230),
     new WdtSceneDesc('Scholomance', 790713, 289),
     new WdtSceneDesc("Naxxramas", 827115, 533),
-    new WdtSceneDesc("Caverns of Time", 829736, 269),
     new WdtSceneDesc("Ruins of Ahn'qiraj", 775637, 509),
     new WdtSceneDesc("Deeprun Tram", 780788, 369),
     new WdtSceneDesc("Deadmines", 780605, 36),

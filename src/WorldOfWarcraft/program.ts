@@ -555,7 +555,7 @@ export class WaterProgram extends BaseProgram {
 ${BaseProgram.commonDeclarations}
 
 varying vec4 v_Color;
-varying vec4 v_Position;
+varying vec3 v_Position;
 
 #ifdef VERT
 layout(location = ${TerrainProgram.a_Position}) attribute vec3 a_Position;
