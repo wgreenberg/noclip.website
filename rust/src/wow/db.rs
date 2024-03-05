@@ -1,3 +1,5 @@
+use std::{io::Read, ptr::null};
+
 use deku::prelude::*;
 use super::common::*;
 use deku::bitvec::{BitVec, BitSlice, Msb0, Lsb0, bitvec, bits};
@@ -70,7 +72,7 @@ pub enum StorageType {
     BitpackedIndexedArray {
         offset_bits: u32,
         size_bits: u32,
-        unk1: u32,
+        array_count: u32,
     },
     #[deku(id = "5")]
     BitpackedSigned {
@@ -109,6 +111,23 @@ pub struct Wdc4Db2File {
     pub common_data: Vec<u8>,
 }
 
+impl Wdc4Db2File {
+    pub fn print_table_debug_info(&self) {
+        assert_eq!(self.field_structs.len(), self.field_storage_info.len());
+        println!("Number of fields: {}", self.field_structs.len());
+        for i in 0..self.field_structs.len() {
+            let field_struct = &self.field_structs[i];
+            let field_storage = &self.field_storage_info[i];
+            println!("Field {}", i+1);
+            println!("  - Offset (bits): {}", field_storage.field_offset_bits);
+            println!("  - Size (bits): {}", field_storage.field_size_bits);
+            println!("  - Position?: {}", field_struct.position);
+            println!("  - Storage type: {:?}", field_storage.storage_type);
+            println!("  - Additional data size: {}", field_storage.additional_data_size);
+        }
+    }
+}
+
 fn bitslice_to_u32(bits: &BitSlice<u8, Msb0>, bit_offset: usize, num_bits: usize) -> u32 {
     let mut result: u32 = 0;
     for bit_num in bit_offset..bit_offset + num_bits {
@@ -141,6 +160,58 @@ impl Wdc4Db2File {
         }
     }
 
+    pub fn read_vec<'a, T>(&self, input: &'a BitSlice<u8, Msb0>, bit_offset: usize, field_number: usize) -> Result<(&'a BitSlice<u8, Msb0>, Vec<T>), DekuError>
+        where for<'b> T: DekuRead<'b, ()>
+    {
+        let field_offset = self.field_storage_info[field_number].field_offset_bits as usize;
+        let field_size = self.field_storage_info[field_number].field_size_bits as usize;
+        let field_bits = &input[field_offset..field_offset + field_size];
+        let result = match &self.field_storage_info[field_number].storage_type {
+            StorageType::BitpackedIndexedArray { offset_bits, size_bits, array_count } => {
+                let index = bitslice_to_u32(&input, field_offset, field_size);
+                let mut result: Vec<T> = Vec::with_capacity(*array_count as usize);
+                for _ in 0..*array_count as usize {
+                    let palette_element = self.get_palette_data(field_number, index as usize);
+                    result.push(from_u32(palette_element)?);
+                }
+                result
+            },
+            _ => panic!("called read_vec() on field {}, which is a non-BitpackedIndexedArray type. call read_field instead", field_number),
+        };
+        Ok((&input[field_offset + field_size..], result))
+    }
+
+    pub fn read_string_helper<'a>(&self, input: &'a BitSlice<u8, Msb0>, string_data: &'a BitSlice<u8, Msb0>) -> Result<(&'a BitSlice<u8, Msb0>, String), DekuError>
+    {
+        let mut string = String::new();
+        let mut rest = string_data;
+        loop {
+            let (new_rest, byte) = u8::read(&rest, ())?;
+            rest = new_rest;
+            if byte == 0 {
+                return Ok((input, string));
+            }
+            string.push(byte as char);
+            if string.len() > 50 {
+                panic!("bad string data: {}", string);
+            }
+        }
+    }
+
+    pub fn read_string_direct<'a>(&self, input: &'a BitSlice<u8, Msb0>) -> Result<(&'a BitSlice<u8, Msb0>, String), DekuError>
+    {
+        let (field_rest, string_offset) = u32::read(input, ())?;
+        let string_rest = &input[string_offset as usize * 8..];
+        self.read_string_helper(field_rest, string_rest)
+    }
+
+    pub fn read_string<'a>(&self, input: &'a BitSlice<u8, Msb0>, bit_offset: usize, field_number: usize) -> Result<(&'a BitSlice<u8, Msb0>, String), DekuError>
+    {
+        let (field_rest, string_offset) = self.read_field::<u32>(input, bit_offset, field_number)?;
+        let string_rest = &input[string_offset as usize * 8..];
+        self.read_string_helper(field_rest, string_rest)
+    }
+
     pub fn read_field<'a, T>(&self, input: &'a BitSlice<u8, Msb0>, bit_offset: usize, field_number: usize) -> Result<(&'a BitSlice<u8, Msb0>, T), DekuError>
         where for<'b> T: DekuRead<'b, ()>
     {
@@ -167,7 +238,9 @@ impl Wdc4Db2File {
                 let palette_element = self.get_palette_data(field_number, index as usize);
                 from_u32(palette_element)?
             },
-            StorageType::BitpackedIndexedArray { .. } => todo!(),
+            StorageType::BitpackedIndexedArray { offset_bits, size_bits, array_count } => {
+                panic!("read_value() called on field {}, which is a BitpackedIndexedArray type. use read_vec() instead", field_number)
+            },
             StorageType::BitpackedSigned { offset_bits, size_bits, flags } => {
                 let size_bits = *size_bits as usize;
                 from_u32(bitslice_to_u32(&input, field_offset, size_bits))?
@@ -226,21 +299,24 @@ impl Wdc4Db2File {
     }
 }
 
-pub struct Database<T> {
+#[derive(Debug)]
+pub struct DatabaseTable<T> {
     db2: Wdc4Db2File,
     records: Vec<T>,
     ids: Vec<u32>,
+    strings: Vec<(usize, String)>,
 }
 
-impl<T> Database<T> {
-    pub fn new(data: &[u8]) -> Result<Database<T>, String>
+impl<T> DatabaseTable<T> {
+    pub fn new(data: &[u8]) -> Result<DatabaseTable<T>, String>
         where for<'a> T: DekuRead<'a, Wdc4Db2File>
     {
         let (_, db2) = Wdc4Db2File::from_bytes((&data, 0))
             .map_err(|e| format!("{:?}", e))?;
         let mut records: Vec<T> = Vec::with_capacity(db2.header.record_count as usize);
         let mut ids: Vec<u32> = Vec::with_capacity(db2.header.record_count as usize);
-        let bitvec = BitVec::from_slice(&data[db2.section_headers[0].file_offset as usize..]);
+        let records_start = db2.section_headers[0].file_offset as usize;
+        let bitvec = BitVec::from_slice(&data[records_start..]);
         let mut rest = bitvec.as_bitslice();
         let mut id = db2.header.min_id;
         for _ in 0..db2.header.record_count {
@@ -253,9 +329,33 @@ impl<T> Database<T> {
             assert_eq!(db2.header.record_size as usize * 8, bits_read);
             rest = new_rest;
         }
-        Ok(Database {
+        let mut strings = Vec::new();
+        let strings_start = records_start + (db2.header.record_count * db2.header.record_size) as usize;
+        if strings_start < data.len() {
+            let strings_end = strings_start + db2.header.string_table_size as usize;
+            let mut current_string = String::new();
+            let mut string_offset = strings_start - records_start;
+            for &byte in &data[strings_start..strings_end] {
+                if byte == 0 {
+                    if current_string.len() == 0 {
+                        continue;
+                    }
+                    // Correlate the offset values that records use to identify
+                    // strings w/ the string itself
+                    let offset = string_offset - current_string.len();
+                    println!("offset {} string {}", offset, &current_string);
+                    strings.push((offset, current_string.clone()));
+                    current_string.clear();
+                } else {
+                    current_string.push(byte as char);
+                }
+                string_offset += 1;
+            }
+        }
+        Ok(DatabaseTable {
             db2,
             records,
+            strings,
             ids,
         })
     }
@@ -505,23 +605,116 @@ impl Lerp for LightResult {
     }
 }
 
-#[wasm_bindgen(js_name = "WowLightDatabase")]
-pub struct LightDatabase {
-    lights: Database<LightRecord>,
-    light_data: Database<LightDataRecord>,
-    light_params: Database<LightParamsRecord>,
+#[derive(DekuRead, Clone, Debug)]
+#[deku(ctx = "db2: Wdc4Db2File")]
+pub struct LiquidType {
+    #[deku(reader = "db2.read_string(deku::input_bits, deku::bit_offset, 0)")]
+    pub name: String,
+    #[deku(reader = "db2.read_string_direct(deku::rest)")]
+    pub tex0: String,
+    #[deku(reader = "db2.read_string_direct(deku::rest)")]
+    pub tex1: String,
+    #[deku(reader = "db2.read_string_direct(deku::rest)")]
+    pub tex2: String,
+    #[deku(reader = "db2.read_string_direct(deku::rest)")]
+    pub tex3: String,
+    #[deku(reader = "db2.read_string_direct(deku::rest)")]
+    pub tex4: String,
+    #[deku(reader = "db2.read_string_direct(deku::rest)")]
+    pub tex5: String,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 2)")]
+    pub flags: u16,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 3)")]
+    pub sound_bank: u8,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 4)")]
+    pub sound_id: u32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 5)")]
+    pub f6: u32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 6)")]
+    pub max_darken_depth: f32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 7)")]
+    pub fog_darken_intensity: f32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 8)")]
+    pub ambient_darken_intensity: f32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 9)")]
+    pub dir_darken_intensity: f32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 10)")]
+    pub light_id: u32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 11)")]
+    pub particle_scale: f32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 12)")]
+    pub particle_movement: u32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 13)")]
+    pub particle_tex_slots: u32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 14)")]
+    pub particle_material_id: u32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 15)")]
+    pub minimap_colors: u32,
+    #[deku(reader = "db2.read_vec(deku::input_bits, deku::bit_offset, 16)")]
+    pub unknown_colors: Vec<u32>,
+    #[deku(reader = "db2.read_vec(deku::input_bits, deku::bit_offset, 17)")]
+    pub shader_color: Vec<u32>,
+    #[deku(reader = "db2.read_vec(deku::input_bits, deku::bit_offset, 18)")]
+    pub shader_f32_params: Vec<f32>,
+    #[deku(reader = "db2.read_vec(deku::input_bits, deku::bit_offset, 19)")]
+    pub shader_int_params: Vec<u32>,
+    #[deku(reader = "db2.read_vec(deku::input_bits, deku::bit_offset, 20)", pad_bits_after = "5")]
+    pub coeffecients: Vec<u32>,
 }
 
-#[wasm_bindgen(js_class = "WowLightDatabase")]
-impl LightDatabase {
-    pub fn new(lights_db: &[u8], light_data_db: &[u8], light_params_db: &[u8]) -> Result<LightDatabase, String> {
-        let lights = Database::new(lights_db)?;
-        let light_data = Database::new(light_data_db)?;
-        let light_params = Database::new(light_params_db)?;
+#[derive(DekuRead, Clone, Debug)]
+#[deku(ctx = "_: Wdc4Db2File")]
+pub struct LiquidObject {
+    pub flow_direction: f32,
+    pub flow_speed: f32,
+    pub liquid_type_id: u32,
+}
+
+#[derive(DekuRead, Clone, Debug)]
+#[deku(ctx = "_: Wdc4Db2File")]
+pub struct LiquidTexture {
+    pub file_data_id: u32,
+    pub order_index: u32,
+    pub liquid_type_id: u32,
+}
+
+#[wasm_bindgen(js_name = "WowLiquidResult", getter_with_clone)]
+#[derive(Debug, Clone)]
+pub struct LiquidResult {
+    pub flags: u16,
+    pub tex0: String,
+    pub tex1: String,
+    pub tex2: String,
+    pub tex3: String,
+    pub tex4: String,
+    pub tex5: String,
+}
+
+#[wasm_bindgen(js_name = "WowDatabase")]
+pub struct Database {
+    lights: DatabaseTable<LightRecord>,
+    light_data: DatabaseTable<LightDataRecord>,
+    light_params: DatabaseTable<LightParamsRecord>,
+    liquid_types: DatabaseTable<LiquidType>,
+}
+
+#[wasm_bindgen(js_class = "WowDatabase")]
+impl Database {
+    pub fn new(
+        lights_db: &[u8],
+        light_data_db: &[u8],
+        light_params_db: &[u8],
+        liquid_types_db: &[u8],
+    ) -> Result<Database, String> {
+        let lights = DatabaseTable::new(lights_db)?;
+        let light_data = DatabaseTable::new(light_data_db)?;
+        let light_params = DatabaseTable::new(light_params_db)?;
+        let liquid_types = DatabaseTable::new(liquid_types_db)?;
         Ok(Self {
             lights,
             light_data,
             light_params,
+            liquid_types,
         })
     }
 
@@ -577,6 +770,19 @@ impl LightDatabase {
         }
 
         Some(final_result)
+    }
+
+    pub fn get_liquid_type(&self, liquid_type: u32) -> Option<LiquidResult> {
+        let liquid = self.liquid_types.get_record(liquid_type)?;
+        Some(LiquidResult {
+            flags: liquid.flags,
+            tex0: liquid.tex0.clone(),
+            tex1: liquid.tex1.clone(),
+            tex2: liquid.tex2.clone(),
+            tex3: liquid.tex3.clone(),
+            tex4: liquid.tex4.clone(),
+            tex5: liquid.tex5.clone(),
+        })
     }
 
     pub fn get_lighting_data(&self, map_id: u16, x: f32, y: f32, z: f32, time: u32) -> LightResult {
@@ -669,7 +875,8 @@ mod test {
         let d1 = std::fs::read("../data/wotlk/dbfilesclient/light.db2").unwrap();
         let d2 = std::fs::read("../data/wotlk/dbfilesclient/lightparams.db2").unwrap();
         let d3 = std::fs::read("../data/wotlk/dbfilesclient/lightdata.db2").unwrap();
-        let db = LightDatabase::new(&d1, &d3, &d2).unwrap();
+        let d4 = std::fs::read("../data/wotlk/dbfilesclient/liquidtype.db2").unwrap();
+        let db = Database::new(&d1, &d3, &d2, &d4).unwrap();
         let result = db.get_lighting_data(0, -7829.5380859375, -1157.3988037109375, 218.613525390625, 2000);
         for color in [result.sky_top_color, result.sky_middle_color, result.sky_band1_color, result.sky_band2_color, result.sky_smog_color, result.sky_fog_color] {
             let color = color * 255.0;
@@ -677,6 +884,22 @@ mod test {
             let g = color.y.floor() as u32;
             let b = color.z.floor() as u32;
             println!("#{:0>6x}", (r << 16) + (g << 8) + b);
+        }
+    }
+
+    #[test]
+    fn test_liquid_type() {
+        let d5 = std::fs::read("../data/wotlk/dbfilesclient/liquidtype.db2").unwrap();
+        let db: DatabaseTable<LiquidType> = DatabaseTable::new(&d5).unwrap();
+        for record in &db.records[0..4] {
+            println!("name: {}, textures: {:?}", record.name, [
+                &record.tex0,
+                &record.tex1,
+                &record.tex2,
+                &record.tex3,
+                &record.tex4,
+                &record.tex5,
+            ]);
         }
     }
 }

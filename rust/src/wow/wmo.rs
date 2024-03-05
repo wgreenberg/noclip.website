@@ -157,25 +157,6 @@ impl Wmo {
     }
 }
 
-#[derive(DekuRead, Debug, Clone)]
-pub struct WmoLiquid {
-    pub x_verts: u32,
-    pub y_verts: u32,
-    pub x_tiles: u32,
-    pub y_tiles: u32,
-    pub base_position: Vec3,
-    pub material_id: u16,
-}
-
-#[derive(DekuRead, Debug, Clone)]
-pub struct SMOLVert {
-    pub flow1: u8,
-    pub flow2: u8,
-    #[deku(pad_bytes_after = "1")]
-    pub flow_pct: u8,
-    pub height: f32,
-}
-
 #[derive(DekuRead)]
 pub struct Mosi {
     pub skybox_file_id: u32,
@@ -198,6 +179,7 @@ pub struct WmoGroup {
     pub first_color_buf_len: Option<usize>,
     pub batches: Vec<MaterialBatch>,
     pub replacement_for_header_color: Option<Argb>,
+    liquid: Option<WmoLiquid>,
 }
 
 #[wasm_bindgen(js_class = "WowWmoGroup")]
@@ -214,6 +196,7 @@ impl WmoGroup {
         let mut normals: Option<Vec<u8>> = None;
         let mut uvs: Vec<u8> = Vec::new();
         let mut num_uv_bufs = 0;
+        let mut liquid: Option<WmoLiquid> = None;
         let mut colors: Vec<u8> = Vec::new();
         let mut first_color_buf_len: Option<usize> = None;
         let mut num_vertices = 0;
@@ -227,6 +210,7 @@ impl WmoGroup {
                 b"YPOM" => mopy = Some(parse_array(chunk_data, 2)?),
                 b"IVOM" => indices = Some(chunk_data.to_vec()),
                 b"LADM" => replacement_for_header_color = Some(parse(chunk_data)?),
+                b"QILM" => liquid = Some(parse(chunk_data)?),
                 b"TVOM" => {
                     num_vertices = chunk_data.len();
                     vertices = Some(chunk_data.to_vec());
@@ -258,6 +242,7 @@ impl WmoGroup {
             vertices: Some(vertices.ok_or("WMO group didn't have vertices")?),
             num_vertices,
             normals: Some(normals.ok_or("WMO group didn't have normals")?),
+            liquid,
             replacement_for_header_color,
             first_color_buf_len,
             uvs: Some(uvs),
@@ -291,6 +276,18 @@ impl WmoGroup {
 
     pub fn take_doodad_refs(&mut self) -> Vec<u16> {
         self.doodad_refs.take().expect("WmoGroup doodad_refs already taken")
+    }
+
+    pub fn has_liquid(&self) -> bool {
+        self.liquid.is_some()
+    }
+
+    pub fn take_liquid_vertices(&self) -> Vec<u8> {
+        todo!();
+    }
+
+    pub fn take_liquid_indices(&self) -> Vec<u16> {
+        todo!();
     }
 
     // pub fn fix_color_vertex_alpha(&mut self, wmo_header: &WmoHeader) {
@@ -379,6 +376,26 @@ impl WmoGroup {
     //         }
     //     }
     // }
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct LiquidVertex {
+    pub data: u32,
+    pub height: f32,
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct WmoLiquid {
+    pub width: u32,
+    pub height: u32,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub position: Vec3,
+    pub material_id: u16,
+    #[deku(count = "width * height")]
+    vertices: Vec<LiquidVertex>,
+    #[deku(count = "tile_width * tile_height")]
+    tiles: Vec<u8>,
 }
 
 #[derive(DekuRead, Debug, Clone)]

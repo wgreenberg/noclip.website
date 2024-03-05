@@ -17,7 +17,7 @@ import { nArray } from '../util.js';
 import { TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3, vec4 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, LightDatabase, WmoGroupData } from './data.js';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, Database, WmoGroupData } from './data.js';
 import { getMatrixTranslation, lerp, projectionMatrixForFrustum } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
@@ -88,6 +88,8 @@ export class View {
     public timeOffset = 1440;
     public secondsPerGameDay = 60;
 
+    private scratchVec3 = vec3.create();
+
     public finishSetup(): void {
       mat4.invert(this.worldFromViewMatrix, this.viewFromWorldMatrix);
       mat4.mul(this.clipFromWorldMatrix, this.clipFromViewMatrix, this.viewFromWorldMatrix);
@@ -114,9 +116,8 @@ export class View {
     }
 
     public cameraDistanceToWorldSpaceAABB(aabb: AABB): number {
-      let center: vec3 = [0, 0, 0]
-      aabb.centerPoint(center);
-      return vec3.distance(this.cameraPos, center);
+      aabb.centerPoint(this.scratchVec3);
+      return vec3.distance(this.cameraPos, this.scratchVec3);
     }
 
     public setupFromViewerInput(viewerInput: Viewer.ViewerRenderInput): void {
@@ -216,7 +217,7 @@ export class WdtScene implements Viewer.SceneGfx {
   // FIXME
   public forceLod = 0;
 
-  constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private lightDb: LightDatabase) {
+  constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private db: Database) {
     console.time('WdtScene construction');
     this.textureCache = new TextureCache(this.renderHelper.renderCache);
     this.terrainProgram = this.renderHelper.renderCache.createProgram(new TerrainProgram());
@@ -399,7 +400,7 @@ export class WdtScene implements Viewer.SceneGfx {
       template,
       viewerInput.camera.projectionMatrix,
       this.mainView,
-      this.lightDb.getGlobalLightingData(this.mainView.cameraPos, this.mainView.time)
+      this.db.getGlobalLightingData(this.mainView.cameraPos, this.mainView.time)
     );
     this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
@@ -417,6 +418,7 @@ export class WdtScene implements Viewer.SceneGfx {
     template.setGfxProgram(this.waterProgram);
     template.setBindingLayouts(WaterProgram.bindingLayouts);
     for (let renderer of this.waterRenderers.values()) {
+      renderer.update(this.mainView);
       renderer.prepareToRenderWater(this.renderHelper.renderInstManager);
     }
 
@@ -527,13 +529,13 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const wdt = new WorldData(this.fileId);
+    const db = new Database(this.lightdbMapId);
+    await db.load(dataFetcher);
+    const wdt = new WorldData(this.fileId, db);
     console.time('loading wdt');
     await wdt.load(dataFetcher, cache);
     console.timeEnd('loading wdt');
-    const lightDb = new LightDatabase(this.lightdbMapId);
-    await lightDb.load(dataFetcher);
-    return new WdtScene(device, wdt, renderHelper, lightDb);
+    return new WdtScene(device, wdt, renderHelper, db);
   }
 }
 
@@ -550,13 +552,13 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
     rust.init_panic_hook();
-    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache);
+    const db = new Database(this.lightdbMapId);
+    await db.load(dataFetcher);
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache, db);
     console.time('loading wdt')
     await wdt.load();
     console.timeEnd('loading wdt')
-    const lightDb = new LightDatabase(this.lightdbMapId);
-    await lightDb.load(dataFetcher);
-    return new WdtScene(device, wdt, renderHelper, lightDb);
+    return new WdtScene(device, wdt, renderHelper, db);
   }
 }
 
@@ -644,7 +646,7 @@ const sceneDescs = [
     new ContinentSceneDesc("Ironforge", 775971, 33, 40, 0),
     new ContinentSceneDesc("Dun Morogh", 775971, 31, 43, 0),
     new ContinentSceneDesc("Redridge", 775971, 35, 50, 0),
-    new ContinentSceneDesc("Blockrock Mountain", 775971, 34, 45, 0),
+    new ContinentSceneDesc("Blackrock Mountain", 775971, 34, 45, 0),
     new ContinentSceneDesc("Booty Bay", 775971, 31, 58, 0),
 
     "Outland",

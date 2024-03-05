@@ -1,10 +1,10 @@
 import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowLightDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox, WowAdtLiquidLayer } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox, WowAdtLiquidLayer, WowLiquidResult } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
-import { fetchFileByID, fetchDataByFileID, getFilePath } from "./util.js";
+import { fetchFileByID, fetchDataByFileID, getFilePath, getFileDataId } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
 import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene, View } from "./scenes.js";
 import { AABB } from "../Geometry.js";
@@ -20,8 +20,8 @@ import { assert } from "../util.js";
 // game world size in game units
 const MAP_SIZE = 17066;
 
-export class LightDatabase {
-  private db: WowLightDatabase;
+export class Database {
+  private db: WowDatabase;
 
   constructor(public mapId: number) {
   }
@@ -30,11 +30,21 @@ export class LightDatabase {
     let lightDbData = await fetchDataByFileID(1375579, dataFetcher);
     let lightDataDbData = await fetchDataByFileID(1375580, dataFetcher);
     let lightParamsDbData = await fetchDataByFileID(1334669, dataFetcher);
-    this.db = rust.WowLightDatabase.new(lightDbData, lightDataDbData, lightParamsDbData);
+    let liquidTypes = await fetchDataByFileID(1371380, dataFetcher);
+    this.db = rust.WowDatabase.new(
+      lightDbData,
+      lightDataDbData,
+      lightParamsDbData,
+      liquidTypes
+    );
   }
 
   public getGlobalLightingData(coords: vec3, time: number): WowLightResult {
     return this.db.get_lighting_data(this.mapId, coords[0], coords[1], coords[2], time);
+  }
+
+  public getLiquidType(liquidType: number): WowLiquidResult | undefined {
+    return this.db.get_liquid_type(liquidType);
   }
 }
 
@@ -87,6 +97,65 @@ export class WowCache {
       this.blps.set(fileId, blp);
     }
     return blp;
+  }
+}
+
+export enum ProceduralTexture {
+  River = 0,
+  Ocean = 0,
+  Wmo = 0,
+}
+
+export class LiquidType {
+  public flags: number;
+  public animatedTextureIds: number[] | undefined;
+  public proceduralTexture: ProceduralTexture | undefined;
+  public textureIds: (number | undefined)[] = [];
+
+  constructor(liquid: WowLiquidResult) {
+    this.flags = liquid.flags;
+    const positionalTemplate = liquid.tex0;
+    if (positionalTemplate) {
+      const positionals = [];
+      for (let i=1; i<31; i++) {
+        const fileName = positionalTemplate.replace("%d", i.toString());
+        const fileDataId = getFileDataId(fileName); 
+        assert(fileDataId !== undefined, "couldn't find positional texture");
+        positionals.push(fileDataId);
+      }
+      this.animatedTextureIds = positionals;
+    }
+    const maybeProcedural = liquid.tex1;
+    if (maybeProcedural && maybeProcedural.startsWith('procedural')) {
+      if (maybeProcedural.includes('River')) {
+        this.proceduralTexture = ProceduralTexture.River;
+      } else if (maybeProcedural.includes('Ocean')) {
+        this.proceduralTexture = ProceduralTexture.Ocean;
+      } else if (maybeProcedural.includes('Wmo')) {
+        this.proceduralTexture = ProceduralTexture.Wmo;
+      }
+    } else {
+      this.textureIds.push(this.pathToFileId(maybeProcedural));
+    }
+    this.textureIds.push(this.pathToFileId(liquid.tex2));
+    this.textureIds.push(this.pathToFileId(liquid.tex3));
+    this.textureIds.push(this.pathToFileId(liquid.tex4));
+    this.textureIds.push(this.pathToFileId(liquid.tex5));
+    liquid.free();
+  }
+
+  private pathToFileId(path: string): number | undefined {
+    if (path === '') {
+      return undefined;
+    }
+    return getFileDataId(this.fixPath(path));
+  }
+
+  private fixPath(path: string): string {
+    if (!path.endsWith('.blp')) {
+      path += '.blp';
+    }
+    return path;
   }
 }
 
@@ -907,6 +976,7 @@ export class AdtData {
   public visible = true;
   public chunkData: ChunkData[] = [];
   public chunkLiquids: MapArray<number, LiquidLayerData> = new MapArray();
+  public liquidTypes: Map<number, LiquidType> = new Map();
   private vertexBuffer: Float32Array;
   private indexBuffer: Uint16Array;
   private inner: WowAdt | null = null;
@@ -937,7 +1007,7 @@ export class AdtData {
     }
   }
   
-  public async load(dataFetcher: DataFetcher, cache: WowCache) {
+  public async load(cache: WowCache, db: Database) {
     for (let blpId of this.inner!.get_texture_file_ids()) {
       try {
         this.blps.set(blpId, new BlpData(blpId, await cache.loadBlp(blpId)));
@@ -999,7 +1069,30 @@ export class AdtData {
       const liquidLayers = this.inner!.take_chunk_liquid_data(i);
       if (liquidLayers !== undefined) {
         for (let layer of liquidLayers) {
-          this.chunkLiquids.append(i, new LiquidLayerData(layer));
+          const layerData = new LiquidLayerData(layer);
+          if (layerData.liquidType === 100) {
+            console.warn(`basic procedural water detected!!!!`);
+          }
+          if (!this.liquidTypes.has(layerData.liquidType)) {
+            const wowLiquidType = db.getLiquidType(layerData.liquidType)!;
+            assert(wowLiquidType !== undefined, "couldn't find liquidType");
+            const liquidType = new LiquidType(wowLiquidType);
+            let textureIds: (number | undefined)[] = liquidType.textureIds;
+            if (liquidType.animatedTextureIds) {
+              textureIds = textureIds.concat(liquidType.animatedTextureIds);
+            }
+            for (let blpId of textureIds) {
+              if (blpId !== undefined && !this.blps.has(blpId)) {
+                try {
+                  this.blps.set(blpId, new BlpData(blpId, await cache.loadBlp(blpId)));
+                } catch (e) {
+                  console.error(`failed to load BLP ${e}`);
+                }
+              }
+            }
+            this.liquidTypes.set(layerData.liquidType, liquidType);
+          }
+          this.chunkLiquids.append(i, layerData);
         }
       }
       i += 1;
@@ -1126,7 +1219,7 @@ export class LazyWorldData {
   public adtFileIds: WowMapFileDataIDs[] = [];
   public loading = false;
 
-  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 2, private dataFetcher: DataFetcher, public cache: WowCache) {
+  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 2, private dataFetcher: DataFetcher, public cache: WowCache, private db: Database) {
   }
 
   public async load() {
@@ -1200,7 +1293,7 @@ export class LazyWorldData {
     wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, this.dataFetcher));
 
     const adt = new AdtData(fileIDs.root_adt, wowAdt);
-    await adt.load(this.dataFetcher, this.cache);
+    await adt.load(this.cache, this.db);
 
     adt.hasBigAlpha = this.hasBigAlpha;
     adt.hasHeightTexturing = this.hasHeightTexturing;
@@ -1234,7 +1327,7 @@ export class WorldData {
   public globalWmoDef: WmoDefinition | null = null;
   public cache: any;
 
-  constructor(public fileId: number) {
+  constructor(public fileId: number, private db: Database) {
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
@@ -1259,7 +1352,7 @@ export class WorldData {
         wowAdt.append_tex_adt(await fetchDataByFileID(fileIDs.tex0_adt, dataFetcher));
 
         const adt = new AdtData(fileIDs.root_adt, wowAdt);
-        await adt.load(dataFetcher, cache);
+        await adt.load(cache, this.db);
 
         adt.hasBigAlpha = hasBigAlpha;
         adt.hasHeightTexturing = hasHeightTexturing;

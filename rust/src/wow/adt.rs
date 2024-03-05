@@ -721,7 +721,7 @@ impl LiquidData {
             }
 
             let mut extents = AABBox::default();
-            let mut vertices: Vec<f32> = Vec::with_capacity(3 * height * width);
+            let mut vertices: Vec<f32> = Vec::with_capacity(5 * height * width);
             for y in 0..height {
                 for x in 0..width {
                     let x_pos = chunk_x - (y as f32 + instance.x_offset as f32) * UNIT_SIZE;
@@ -735,6 +735,8 @@ impl LiquidData {
                     vertices.push(x_pos);
                     vertices.push(y_pos);
                     vertices.push(z_pos);
+                    vertices.push(y as f32 / height as f32);
+                    vertices.push(x as f32 / width as f32);
                     extents.update(x_pos, y_pos, z_pos);
                 }
             }

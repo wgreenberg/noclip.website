@@ -4,14 +4,14 @@ import { AABB } from "../Geometry.js";
 import { TextureMapping } from "../TextureHolder.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
-import { GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxCullMode } from "../gfx/platform/GfxPlatform.js";
+import { GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxDevice, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency, GfxBufferUsage, GfxCullMode, GfxBlendFactor, GfxBlendMode, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { GfxFormat } from "../gfx/platform/GfxPlatformFormat.js";
 import { GfxInputLayout, GfxProgram } from "../gfx/platform/GfxPlatformImpl.js";
 import { GfxRenderHelper } from "../gfx/render/GfxRenderHelper.js";
-import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager.js";
+import { GfxRenderInstManager, GfxRendererLayer, makeSortKey } from "../gfx/render/GfxRenderInstManager.js";
 import { rust } from "../rustlib.js";
 import { ViewerRenderInput } from "../viewer.js";
-import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData } from "./data.js";
+import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData, LiquidLayerData } from "./data.js";
 import { MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WaterProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
@@ -19,6 +19,7 @@ import { MapArray, View, adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, pl
 import { convertToTriangleIndexBuffer, GfxTopology } from "../gfx/helpers/TopologyHelpers.js";
 import { skyboxVertices, skyboxIndices } from "./skybox.js";
 import { assert } from "../util.js";
+import { setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
 
 type TextureMappingArray = (TextureMapping | null)[];
 
@@ -331,36 +332,76 @@ export class TerrainRenderer {
 
 export class WaterRenderer {
   private inputLayout: GfxInputLayout;
-  public buffers: MapArray<number, [GfxIndexBufferDescriptor, number, GfxVertexBufferDescriptor]> = new MapArray();
+  public buffers: MapArray<number, [GfxIndexBufferDescriptor, GfxVertexBufferDescriptor, LiquidLayerData]> = new MapArray();
+  public liquidTexturesByType: MapArray<number, TextureMapping> = new MapArray();
+  public megaStateFlags: Partial<GfxMegaStateDescriptor>;
+  public time: number = 0;
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: WaterProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB },
+      { location: WaterProgram.a_TexCoord, bufferIndex: 0, bufferByteOffset: 12, format: GfxFormat.F32_RG },
     ];
     const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex },
+      { byteStride: 20, frequency: GfxVertexBufferFrequency.PerVertex },
     ];
     const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
     const cache = renderHelper.renderCache;
     this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+    this.megaStateFlags = { cullMode: GfxCullMode.None };
+    setAttachmentStateSimple(this.megaStateFlags, {
+      blendMode: GfxBlendMode.Add,
+      blendSrcFactor: GfxBlendFactor.SrcAlpha,
+      blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
+    });
 
     for (let [chunkIndex, liquidLayers] of this.adt.chunkLiquids.map.entries()) {
       for (let layer of liquidLayers) {
-        this.buffers.append(chunkIndex, [layer.takeIndices(device), layer.indexCount, layer.takeVertices(device)]);
+        this.buffers.append(chunkIndex, [
+          layer.takeIndices(device),
+          layer.takeVertices(device),
+          layer
+        ]);
       }
     }
+
+    for (let [liquidType, liquidData] of this.adt.liquidTypes.entries()) {
+      if (!liquidData.animatedTextureIds) continue;
+      for (let blpId of liquidData.animatedTextureIds) {
+        const blp = this.adt.blps.get(blpId);
+        assert(blp !== undefined, `blp (id=${blpId}) didn't exist in ADT`);
+        this.liquidTexturesByType.append(liquidType, this.textureCache.getTextureMapping(blpId, blp!.inner));
+      }
+    }
+  }
+
+  public update(view: View) {
+    this.time = view.time;
   }
 
   public prepareToRenderWater(renderInstManager: GfxRenderInstManager) {
     // if (!this.adt.visible) return;
     for (let [chunkIndex, layers] of this.buffers.map.entries()) {
-      const chunk = this.adt.chunkData[chunkIndex];
+      // const chunk = this.adt.chunkData[chunkIndex];
       // if (!chunk.visible) return;
-      for (let [indexBuffer, indexCount, vertexBuffer] of layers) {
+      for (let [indexBuffer, vertexBuffer, layer] of layers) {
         const renderInst = renderInstManager.newRenderInst();
+
+        let offs = renderInst.allocateUniformBuffer(WaterProgram.ub_WaterParams, 4);
+        const mapped = renderInst.mapUniformBufferF32(WaterProgram.ub_WaterParams);
+        offs += fillVec4(mapped, offs, layer.liquidType);
+
+        const liquidTextures = this.liquidTexturesByType.get(layer.liquidType);
+        if (liquidTextures) {
+          const texIndex = Math.floor(this.time % liquidTextures.length);
+          renderInst.setSamplerBindingsFromTextureMappings([liquidTextures[texIndex]]);
+        } else {
+          console.warn(`no tex`)
+        }
         renderInst.setVertexInput(this.inputLayout, [vertexBuffer], indexBuffer);
-        renderInst.setMegaStateFlags({ cullMode: GfxCullMode.None });
-        renderInst.setDrawCount(indexCount);
+        renderInst.setMegaStateFlags(this.megaStateFlags);
+        renderInst.setDrawCount(layer.indexCount);
+        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
         renderInstManager.submitRenderInst(renderInst);
       }
     }

@@ -20,6 +20,7 @@
             "es2016.array.include",
             "es2017.sharedmemory",
             "es2019.array",
+            "es2021.string",
             "esnext.BigInt",
             "dom"
         ],

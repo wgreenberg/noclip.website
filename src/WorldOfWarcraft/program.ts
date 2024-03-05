@@ -546,29 +546,56 @@ void mainPS() {
 
 export class WaterProgram extends BaseProgram {
   public static a_Position = 0;
+  public static a_TexCoord = 1;
+
+  public static ub_WaterParams = 1;
 
   public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
-      { numUniformBuffers: super.numUniformBuffers, numSamplers: super.numSamplers },
+      { numUniformBuffers: super.numUniformBuffers + 1, numSamplers: super.numSamplers + 1 },
   ];
 
   public override both = `
 ${BaseProgram.commonDeclarations}
 
-varying vec4 v_Color;
+varying vec3 v_Color;
 varying vec3 v_Position;
+varying vec2 v_TexCoord;
+
+layout(std140) uniform ub_WaterParams {
+    vec4 waterParams; // liquidType, _, _, _
+};
+
+layout(binding = 0) uniform sampler2D u_Texture0;
 
 #ifdef VERT
-layout(location = ${TerrainProgram.a_Position}) attribute vec3 a_Position;
+layout(location = ${WaterProgram.a_Position}) attribute vec3 a_Position;
+layout(location = ${WaterProgram.a_TexCoord}) attribute vec2 a_TexCoord;
 
 void mainVS() {
     v_Position = a_Position;
+    v_TexCoord = a_TexCoord;
     gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
 }
 #endif
 
 #ifdef FRAG
+vec2 rot2(vec2 p, float degree) {
+  float a = radians(degree);
+  return mat2(cos(a), -sin(a), sin(a), cos(a))*p;
+}
+
 void mainPS() {
-    gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
+    int liquidType = int(waterParams.x);
+    vec4 tex = texture(SAMPLER_2D(u_Texture0), v_TexCoord);
+    vec4 finalColor;
+    if (liquidType == 2 || liquidType == 3) {
+        finalColor = vec4(saturate(tex.xyz), 0.7);
+    } else {
+        vec4 lightColor = liquidType == 1 ? oceanCloseColor : riverCloseColor;
+        finalColor = vec4(saturate(lightColor.xyz + tex.xyz), 0.7);
+    }
+    finalColor.rgb = calcFog(finalColor.rgb, v_Position);
+    gl_FragColor = finalColor;
 }
 #endif
 `;
