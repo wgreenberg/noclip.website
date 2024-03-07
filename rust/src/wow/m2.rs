@@ -189,7 +189,6 @@ pub struct M2 {
     pub skin_ids: Vec<u32>,
     pub name: String,
     pub materials: Vec<M2Material>,
-    pub emits_particles: bool,
     vertex_data: Option<Vec<u8>>,
     texture_lookup_table: Option<Vec<u16>>,
     bone_lookup_table: Option<Vec<u16>>,
@@ -234,7 +233,6 @@ impl M2 {
             texture_ids: txid.unwrap_or(vec![]),
             skin_ids: sfid.ok_or("M2 didn't have SFID chunk!".to_string())?,
             animation_manager,
-            emits_particles: header.particle_emitters.count > 0,
             name: header.get_name(m2_data)?,
             materials: header.get_materials(m2_data)?,
             vertex_data: Some(header.get_vertex_data(m2_data)?),
@@ -387,7 +385,7 @@ mod tests {
     fn test() {
         //let data = std::fs::read("../data/wow/world/critter/birds/bird02.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/generic/nightelf/passive doodads/magicalimplements/nemagicimplement06.m2").unwrap();
-        let data = std::fs::read("../data/wow/world/kalimdor/orgrimmar/passivedoodads/orgrimmarbonfire/orgrimmarsmokeemitter.m2").unwrap();
+        let data = std::fs::read("../data/wotlk/world/generic/passivedoodads/ships/shipanimation/transportship_sails.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
         let mut m2 = M2::new(&data).unwrap();
         dbg!(m2.header.particle_emitters);

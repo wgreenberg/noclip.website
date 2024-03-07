@@ -5,9 +5,9 @@ use wasm_bindgen::prelude::*;
 
 use super::common::{Chunk, parse, parse_array, parse_with_byte_size, ChunkedData, Vec3, AABBox};
 
-const TILE_SIZE: f32 = 1600.0 / 3.0;
-const CHUNK_SIZE: f32 = TILE_SIZE / 16.0;
-const UNIT_SIZE: f32 = CHUNK_SIZE / 8.0;
+pub const TILE_SIZE: f32 = 1600.0 / 3.0;
+pub const CHUNK_SIZE: f32 = TILE_SIZE / 16.0;
+pub const UNIT_SIZE: f32 = CHUNK_SIZE / 8.0;
 
 #[wasm_bindgen(js_name = "WowAdt", getter_with_clone)]
 #[derive(Debug, Clone)]

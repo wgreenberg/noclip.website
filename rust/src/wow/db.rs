@@ -352,6 +352,19 @@ impl<T> DatabaseTable<T> {
                 string_offset += 1;
             }
         }
+        // if a list of IDs is provided, correct our auto-generated IDs
+        let id_list_start = strings_start + db2.header.string_table_size as usize;
+        let id_list_size = db2.section_headers[0].id_list_size as usize;
+        if id_list_size > 0 {
+            let mut bitslice = BitSlice::from_slice(&data[id_list_start..]);
+            assert_eq!(id_list_size, records.len() * 4);
+            for i in 0..records.len() {
+                (rest, id) = u32::read(&mut bitslice, ())
+                    .map_err(|e| format!("{:?}", e))?;
+                bitslice = rest;
+                ids[i] = id;
+            }
+        }
         Ok(DatabaseTable {
             db2,
             records,
@@ -682,6 +695,7 @@ pub struct LiquidTexture {
 #[derive(Debug, Clone)]
 pub struct LiquidResult {
     pub flags: u16,
+    pub name: String,
     pub tex0: String,
     pub tex1: String,
     pub tex2: String,
@@ -776,6 +790,7 @@ impl Database {
         let liquid = self.liquid_types.get_record(liquid_type)?;
         Some(LiquidResult {
             flags: liquid.flags,
+            name: liquid.name.clone(),
             tex0: liquid.tex0.clone(),
             tex1: liquid.tex1.clone(),
             tex2: liquid.tex2.clone(),
@@ -891,15 +906,9 @@ mod test {
     fn test_liquid_type() {
         let d5 = std::fs::read("../data/wotlk/dbfilesclient/liquidtype.db2").unwrap();
         let db: DatabaseTable<LiquidType> = DatabaseTable::new(&d5).unwrap();
-        for record in &db.records[0..4] {
-            println!("name: {}, textures: {:?}", record.name, [
-                &record.tex0,
-                &record.tex1,
-                &record.tex2,
-                &record.tex3,
-                &record.tex4,
-                &record.tex5,
-            ]);
-        }
+        dbg!(&db.get_record(20).unwrap().name);
+        dbg!(&db.get_record(21).unwrap().name);
+        dbg!(&db.get_record(22));
+        dbg!(&db.get_record(41).unwrap().name);
     }
 }

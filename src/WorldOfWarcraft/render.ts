@@ -11,7 +11,7 @@ import { GfxRenderHelper } from "../gfx/render/GfxRenderHelper.js";
 import { GfxRenderInstManager, GfxRendererLayer, makeSortKey } from "../gfx/render/GfxRenderInstManager.js";
 import { rust } from "../rustlib.js";
 import { ViewerRenderInput } from "../viewer.js";
-import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData, LiquidLayerData } from "./data.js";
+import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData, LiquidInstance as LiquidInstance, LiquidType } from "./data.js";
 import { MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WaterProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
@@ -164,6 +164,7 @@ export class WmoRenderer {
   private indexBuffers: GfxIndexBufferDescriptor[] = [];
   private groups: WmoGroupData[] = [];
   public batches: WmoBatchData[][] = [];
+  public visible: boolean = true;
   public groupBatchTextureMappings: TextureMappingArray[][] = [];
 
   constructor(device: GfxDevice, private wmo: WmoData, private textureCache: TextureCache, renderHelper: GfxRenderHelper) {
@@ -199,6 +200,7 @@ export class WmoRenderer {
   }
 
   public prepareToRenderWmo(renderInstManager: GfxRenderInstManager, defs: WmoDefinition[]) {
+    if (!this.visible) return;
     for (let def of defs) {
       if (!def.visible) continue;
       assert(def.wmoId === this.wmo.fileId, `WmoRenderer handed a WmoDefinition that doesn't belong to it (${def.wmoId} != ${this.wmo.fileId}`);
@@ -332,12 +334,13 @@ export class TerrainRenderer {
 
 export class WaterRenderer {
   private inputLayout: GfxInputLayout;
-  public buffers: MapArray<number, [GfxIndexBufferDescriptor, GfxVertexBufferDescriptor, LiquidLayerData]> = new MapArray();
+  public buffers: [GfxIndexBufferDescriptor, GfxVertexBufferDescriptor, LiquidInstance, LiquidType][] = [];
   public liquidTexturesByType: MapArray<number, TextureMapping> = new MapArray();
   public megaStateFlags: Partial<GfxMegaStateDescriptor>;
   public time: number = 0;
+  private scratchMat4 = mat4.create();
 
-  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public adt: AdtData, private textureCache: TextureCache) {
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public liquids: LiquidInstance[], public liquidTypes: Map<number, LiquidType>, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
       { location: WaterProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB },
       { location: WaterProgram.a_TexCoord, bufferIndex: 0, bufferByteOffset: 12, format: GfxFormat.F32_RG },
@@ -355,22 +358,25 @@ export class WaterRenderer {
       blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
     });
 
-    for (let [chunkIndex, liquidLayers] of this.adt.chunkLiquids.map.entries()) {
-      for (let layer of liquidLayers) {
-        this.buffers.append(chunkIndex, [
-          layer.takeIndices(device),
-          layer.takeVertices(device),
-          layer
-        ]);
+    for (let layer of this.liquids) {
+      const liquidType = this.liquidTypes.get(layer.liquidType);
+      if (!liquidType) {
+        throw new Error(`liquid with type ${layer.liquidType}, but no matching LiquidType provided`);
       }
+      this.buffers.push([
+        layer.takeIndices(device),
+        layer.takeVertices(device),
+        layer,
+        liquidType
+      ]);
     }
 
-    for (let [liquidType, liquidData] of this.adt.liquidTypes.entries()) {
-      if (!liquidData.animatedTextureIds) continue;
-      for (let blpId of liquidData.animatedTextureIds) {
-        const blp = this.adt.blps.get(blpId);
-        assert(blp !== undefined, `blp (id=${blpId}) didn't exist in ADT`);
-        this.liquidTexturesByType.append(liquidType, this.textureCache.getTextureMapping(blpId, blp!.inner));
+    for (let liquidType of this.liquidTypes.values()) {
+      if (!liquidType.animatedTextureIds) continue;
+      for (let blpId of liquidType.animatedTextureIds) {
+        const blp = liquidType.blps.get(blpId);
+        assert(blp !== undefined, `blp (id=${blpId}) didn't exist in LiquidType`);
+        this.liquidTexturesByType.append(liquidType.type, this.textureCache.getTextureMapping(blpId, blp!.inner));
       }
     }
   }
@@ -379,31 +385,46 @@ export class WaterRenderer {
     this.time = view.time;
   }
 
-  public prepareToRenderWater(renderInstManager: GfxRenderInstManager) {
-    // if (!this.adt.visible) return;
-    for (let [chunkIndex, layers] of this.buffers.map.entries()) {
-      // const chunk = this.adt.chunkData[chunkIndex];
-      // if (!chunk.visible) return;
-      for (let [indexBuffer, vertexBuffer, layer] of layers) {
-        const renderInst = renderInstManager.newRenderInst();
+  public prepareToRenderWmoWater(renderInstManager: GfxRenderInstManager, defs: WmoDefinition[]) {
+    for (let def of defs) {
+      this.prepareToRenderWaterInner(renderInstManager, def.modelMatrix, def.liquidVisibility);
+    }
+  }
 
-        let offs = renderInst.allocateUniformBuffer(WaterProgram.ub_WaterParams, 4);
-        const mapped = renderInst.mapUniformBufferF32(WaterProgram.ub_WaterParams);
-        offs += fillVec4(mapped, offs, layer.liquidType);
+  public prepareToRenderAdtWater(renderInstManager: GfxRenderInstManager) {
+    mat4.identity(this.scratchMat4);
+    this.prepareToRenderWaterInner(renderInstManager, this.scratchMat4);
+  }
 
-        const liquidTextures = this.liquidTexturesByType.get(layer.liquidType);
-        if (liquidTextures) {
-          const texIndex = Math.floor(this.time % liquidTextures.length);
-          renderInst.setSamplerBindingsFromTextureMappings([liquidTextures[texIndex]]);
-        } else {
-          console.warn(`no tex`)
-        }
-        renderInst.setVertexInput(this.inputLayout, [vertexBuffer], indexBuffer);
-        renderInst.setMegaStateFlags(this.megaStateFlags);
-        renderInst.setDrawCount(layer.indexCount);
-        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
-        renderInstManager.submitRenderInst(renderInst);
+  private prepareToRenderWaterInner(renderInstManager: GfxRenderInstManager, modelMatrix: mat4, visibilityArray: boolean[] | undefined = undefined) {
+    if (visibilityArray) {
+      assert(visibilityArray.length === this.buffers.length, "visibilityArray must match buffers array");
+    }
+    for (let i in this.buffers) {
+      if (visibilityArray) {
+        if (!visibilityArray[i]) continue;
       }
+      const [indexBuffer, vertexBuffer, liquid, liquidType] = this.buffers[i];
+      if (!liquid.visible) continue;
+      const renderInst = renderInstManager.newRenderInst();
+
+      let offs = renderInst.allocateUniformBuffer(WaterProgram.ub_WaterParams, 16 + 4);
+      const mapped = renderInst.mapUniformBufferF32(WaterProgram.ub_WaterParams);
+      offs += fillVec4(mapped, offs, liquidType.category);
+      offs += fillMatrix4x4(mapped, offs, modelMatrix);
+
+      const liquidTextures = this.liquidTexturesByType.get(liquid.liquidType);
+      if (liquidTextures) {
+        const texIndex = Math.floor(this.time % liquidTextures.length);
+        renderInst.setSamplerBindingsFromTextureMappings([liquidTextures[texIndex]]);
+      } else {
+        console.warn(`no tex`)
+      }
+      renderInst.setVertexInput(this.inputLayout, [vertexBuffer], indexBuffer);
+      renderInst.setMegaStateFlags(this.megaStateFlags);
+      renderInst.setDrawCount(liquid.indexCount);
+      renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+      renderInstManager.submitRenderInst(renderInst);
     }
   }
 

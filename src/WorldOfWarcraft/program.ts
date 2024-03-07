@@ -8,6 +8,7 @@ import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBuffer
 import { GfxRenderInst } from "../gfx/render/GfxRenderInstManager.js";
 import { GfxShaderLibrary } from "../gfx/helpers/GfxShaderLibrary.js";
 import { View } from "./scenes.js";
+import { LiquidCategory } from "./data.js";
 
 export class BaseProgram extends DeviceProgram {
   public static numUniformBuffers = 1;
@@ -558,11 +559,12 @@ export class WaterProgram extends BaseProgram {
 ${BaseProgram.commonDeclarations}
 
 varying vec3 v_Color;
-varying vec3 v_Position;
+varying vec4 v_Position;
 varying vec2 v_TexCoord;
 
 layout(std140) uniform ub_WaterParams {
-    vec4 waterParams; // liquidType, _, _, _
+    vec4 u_WaterParams; // LiquidCategory, _, _, _
+    Mat4x4 u_ModelMatrix;
 };
 
 layout(binding = 0) uniform sampler2D u_Texture0;
@@ -572,9 +574,9 @@ layout(location = ${WaterProgram.a_Position}) attribute vec3 a_Position;
 layout(location = ${WaterProgram.a_TexCoord}) attribute vec2 a_TexCoord;
 
 void mainVS() {
-    v_Position = a_Position;
     v_TexCoord = a_TexCoord;
-    gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(a_Position, 1.0)));
+    v_Position = Mul(u_ModelMatrix, vec4(a_Position, 1.0));
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, v_Position));
 }
 #endif
 
@@ -585,16 +587,16 @@ vec2 rot2(vec2 p, float degree) {
 }
 
 void mainPS() {
-    int liquidType = int(waterParams.x);
+    int liquidCategory = int(u_WaterParams.x);
     vec4 tex = texture(SAMPLER_2D(u_Texture0), v_TexCoord);
     vec4 finalColor;
-    if (liquidType == 2 || liquidType == 3) {
-        finalColor = vec4(saturate(tex.xyz), 0.7);
+    if (liquidCategory == ${LiquidCategory.Slime} || liquidCategory == ${LiquidCategory.Lava}) {
+        finalColor = vec4(saturate(tex.xyz), 1.0);
     } else {
-        vec4 lightColor = liquidType == 1 ? oceanCloseColor : riverCloseColor;
+        vec4 lightColor = liquidCategory == ${LiquidCategory.Ocean} ? oceanCloseColor : riverCloseColor;
         finalColor = vec4(saturate(lightColor.xyz + tex.xyz), 0.7);
     }
-    finalColor.rgb = calcFog(finalColor.rgb, v_Position);
+    finalColor.rgb = calcFog(finalColor.rgb, v_Position.xyz);
     gl_FragColor = finalColor;
 }
 #endif

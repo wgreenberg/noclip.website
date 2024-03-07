@@ -1,4 +1,4 @@
-use deku::{prelude::*, bitvec::BitVec, ctx::ByteSize};
+use deku::{bitvec::{BitSlice, BitVec}, ctx::ByteSize, prelude::*};
 use wasm_bindgen::prelude::*;
 use std::ops::{Mul, AddAssign};
 
@@ -225,8 +225,7 @@ pub struct WowArray<T> {
 impl<T> WowArray<T> where for<'a> T: DekuRead<'a> {
     pub fn to_vec(&self, data: &[u8]) -> Result<Vec<T>, DekuError> {
         let mut result = Vec::with_capacity(self.count as usize);
-        let bitvec = BitVec::from_slice(&data[self.offset as usize..]);
-        let mut bitslice = bitvec.as_bitslice();
+        let mut bitslice = BitSlice::from_slice(&data[self.offset as usize..]);
         for _ in 0..self.count {
             let (new_bitslice, element) = T::read(bitslice, ())?;
             bitslice = new_bitslice;

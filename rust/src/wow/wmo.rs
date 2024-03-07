@@ -1,9 +1,9 @@
 use deku::{prelude::*, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
 
-use crate::wow::common::{parse, parse_array, ChunkedData};
+use crate::{unity::mesh::AABB, wow::{adt::LiquidData, common::{parse, parse_array, ChunkedData}}};
 
-use super::common::{Argb, AABBox, Vec3, Quat};
+use super::{adt::UNIT_SIZE, common::{AABBox, Argb, Quat, Vec3}};
 
 #[wasm_bindgen(js_name = "WowWmoHeader")]
 #[derive(DekuRead, Debug, Copy, Clone)]
@@ -31,11 +31,12 @@ impl WmoHeader {
 
 #[wasm_bindgen(js_name = "WowWmoHeaderFlags")]
 pub struct WmoHeaderFlags {
-    attenuate_vertices_based_on_distance_to_portal: bool,
-    skip_base_color: bool,
-    use_liquid_type_dbc_id: bool,
-    lighten_interiors: bool,
-    lod: bool,
+    pub attenuate_vertices_based_on_distance_to_portal: bool,
+    pub skip_base_color: bool,
+    pub use_liquid_type_dbc_id: bool,
+    pub lighten_interiors: bool,
+    pub lod: bool,
+    pub default_max_lod: bool,
 }
 
 impl WmoHeaderFlags {
@@ -46,6 +47,7 @@ impl WmoHeaderFlags {
             use_liquid_type_dbc_id: x & 0x04 > 0,
             lighten_interiors: x & 0x08 > 0,
             lod: x & 0x10 > 0,
+            default_max_lod: x & 0x20 > 0,
         }
     }
 }
@@ -92,7 +94,11 @@ impl Wmo {
                 b"DDOM" => modd = Some(parse_array(chunk_data, 40)?),
                 b"GOFM" => mfog = Some(parse_array(chunk_data, 48)?),
                 b"IDOM" => modi = Some(parse_array(chunk_data, 4)?),
-                b"DIFG" => gfid = Some(parse_array(chunk_data, 4)?),
+                b"DIFG" => {
+                    let ids: Vec<u32> = parse_array(chunk_data, 4)?;
+                    dbg!(ids.len(), header.get_flags().lod, header.num_lod);
+                    gfid = Some(ids);
+                },
                 b"DVAM" => mavd = parse_array(chunk_data, 0x30)?,
                 b"GVAM" => mavg = parse_array(chunk_data, 0x30)?,
                 b"ISOM" => mosi = Some(parse(chunk_data)?),
@@ -179,7 +185,7 @@ pub struct WmoGroup {
     pub first_color_buf_len: Option<usize>,
     pub batches: Vec<MaterialBatch>,
     pub replacement_for_header_color: Option<Argb>,
-    liquid: Option<WmoLiquid>,
+    liquids: Option<Vec<WmoLiquid>>,
 }
 
 #[wasm_bindgen(js_class = "WowWmoGroup")]
@@ -196,7 +202,7 @@ impl WmoGroup {
         let mut normals: Option<Vec<u8>> = None;
         let mut uvs: Vec<u8> = Vec::new();
         let mut num_uv_bufs = 0;
-        let mut liquid: Option<WmoLiquid> = None;
+        let mut liquids: Vec<WmoLiquid> = Vec::new();
         let mut colors: Vec<u8> = Vec::new();
         let mut first_color_buf_len: Option<usize> = None;
         let mut num_vertices = 0;
@@ -210,7 +216,7 @@ impl WmoGroup {
                 b"YPOM" => mopy = Some(parse_array(chunk_data, 2)?),
                 b"IVOM" => indices = Some(chunk_data.to_vec()),
                 b"LADM" => replacement_for_header_color = Some(parse(chunk_data)?),
-                b"QILM" => liquid = Some(parse(chunk_data)?),
+                b"QILM" => liquids.push(parse(chunk_data)?),
                 b"TVOM" => {
                     num_vertices = chunk_data.len();
                     vertices = Some(chunk_data.to_vec());
@@ -234,6 +240,10 @@ impl WmoGroup {
         }
 
         assert!(num_uv_bufs > 0);
+        let mut maybe_liquids: Option<Vec<WmoLiquid>> = None;
+        if liquids.len() > 0 {
+            maybe_liquids = Some(liquids);
+        }
 
         Ok(WmoGroup {
             header,
@@ -242,7 +252,7 @@ impl WmoGroup {
             vertices: Some(vertices.ok_or("WMO group didn't have vertices")?),
             num_vertices,
             normals: Some(normals.ok_or("WMO group didn't have normals")?),
-            liquid,
+            liquids: maybe_liquids,
             replacement_for_header_color,
             first_color_buf_len,
             uvs: Some(uvs),
@@ -278,110 +288,55 @@ impl WmoGroup {
         self.doodad_refs.take().expect("WmoGroup doodad_refs already taken")
     }
 
-    pub fn has_liquid(&self) -> bool {
-        self.liquid.is_some()
+    pub fn take_liquid_data(&mut self) -> Option<Vec<LiquidResult>> {
+        let liquids = self.liquids.take()?;
+        let mut result = Vec::new();
+        for liquid in liquids {
+            result.push(liquid.get_render_result(&self.header));
+        }
+        Some(result)
+    }
+}
+
+#[wasm_bindgen(js_name = "WowWmoLiquidResult")]
+pub struct LiquidResult {
+    vertices: Option<Vec<f32>>,
+    indices: Option<Vec<u16>>,
+    pub material_id: u16,
+    pub extents: AABBox,
+    pub liquid_type: u32,
+}
+
+#[wasm_bindgen(js_class = "WowWmoLiquidResult")]
+impl LiquidResult {
+    pub fn take_vertices(&mut self) -> Vec<f32> {
+        self.vertices.take().expect("vertices already taken")
     }
 
-    pub fn take_liquid_vertices(&self) -> Vec<u8> {
-        todo!();
+    pub fn take_indices(&mut self) -> Vec<u16> {
+        self.indices.take().expect("indices already taken")
     }
-
-    pub fn take_liquid_indices(&self) -> Vec<u16> {
-        todo!();
-    }
-
-    // pub fn fix_color_vertex_alpha(&mut self, wmo_header: &WmoHeader) {
-    //     let num_colors = match self.first_color_buf_len {
-    //         Some(n) => n,
-    //         None => { return; }
-    //     };
-
-    //     let wmo_flags = WmoHeaderFlags::new(wmo_header.flags);
-    //     let group_flags = WmoGroupFlags::new(self.header.flags);
-
-    //     let mut begin_second_fixup = 0;
-    //     if self.header.trans_batch_count > 0 {
-    //         begin_second_fixup = self.batches[self.header.trans_batch_count as usize - 1].last_vertex + 1;
-    //     }
-
-    //     let mut r_diff: u8 = 0;
-    //     let mut g_diff: u8 = 0;
-    //     let mut b_diff: u8 = 0;
-
-    //     if (wmo_flags.lighten_interiors) {
-    //         for i in begin_second_fixup as usize..num_colors {
-    //             if group_flags.exterior {
-    //                 self.colors[i*4 + 3] = 0xff;
-    //             } else {
-    //                 self.colors[i*4 + 3] = 0x00;
-    //             }
-    //         }
-    //     } else {
-    //         if !wmo_flags.skip_base_color {
-    //             r_diff = wmo_header.ambient_color.r;
-    //             g_diff = wmo_header.ambient_color.g;
-    //             b_diff = wmo_header.ambient_color.b;
-    //         }
-
-    //         for i in 0..begin_second_fixup as usize {
-    //             let r_index = i*4 + 2;
-    //             let g_index = i*4 + 1;
-    //             let b_index = i*4 + 0;
-    //             let a_index = i*4 + 3;
-    //             self.colors[r_index] -= r_diff;
-    //             self.colors[g_index] -= g_diff;
-    //             self.colors[b_index] -= b_diff;
-    //             let a = self.colors[a_index] as f32 / 255.0;
-
-    //             let scaled_r = self.colors[r_index] as f32 - a * self.colors[r_index] as f32;
-    //             assert!(scaled_r > -0.5);
-    //             assert!(scaled_r < 255.5);
-    //             self.colors[r_index] = (scaled_r / 2.0).floor().max(0.0) as u8;
-
-    //             let scaled_g = self.colors[g_index] as f32 - a * self.colors[g_index] as f32;
-    //             assert!(scaled_g > -0.5);
-    //             assert!(scaled_g < 255.5);
-    //             self.colors[g_index] = (scaled_g / 2.0).floor().max(0.0) as u8;
-
-    //             let scaled_b = self.colors[b_index] as f32 - a * self.colors[b_index] as f32;
-    //             assert!(scaled_b > -0.5);
-    //             assert!(scaled_b < 255.5);
-    //             self.colors[b_index] = (scaled_b / 2.0).floor().max(0.0) as u8;
-    //         }
-
-    //         for i in begin_second_fixup as usize..num_colors {
-    //             let r_index = i*4 + 2;
-    //             let g_index = i*4 + 1;
-    //             let b_index = i*4 + 0;
-    //             let a_index = i*4 + 3;
-    //             let r = self.colors[r_index] as f32;
-    //             let g = self.colors[g_index] as f32;
-    //             let b = self.colors[b_index] as f32;
-    //             let a = self.colors[a_index] as f32;
-
-    //             let scaled_r = (r * a) / 64.0 + r - r_diff as f32;
-    //             self.colors[r_index] = (scaled_r / 2.0).max(0.0).min(255.0) as u8;
-
-    //             let scaled_g = (g * a) / 64.0 + g - g_diff as f32;
-    //             self.colors[g_index] = (scaled_g / 2.0).max(0.0).min(255.0) as u8;
-
-    //             let scaled_b = (b * a) / 64.0 + b - b_diff as f32;
-    //             self.colors[b_index] = (scaled_b / 2.0).max(0.0).min(255.0) as u8;
-
-    //             if group_flags.exterior {
-    //                 self.colors[a_index] = 0xff;
-    //             } else {
-    //                 self.colors[a_index] = 0;
-    //             }
-    //         }
-    //     }
-    // }
 }
 
 #[derive(DekuRead, Debug, Clone)]
 pub struct LiquidVertex {
     pub data: u32,
     pub height: f32,
+}
+
+#[derive(DekuRead, Debug, Clone)]
+pub struct LiquidTile {
+    pub data: u8,
+}
+
+impl LiquidTile {
+    pub fn is_visible(&self) -> bool {
+        self.data & 0x8 == 0
+    }
+
+    pub fn is_lava(&self) -> bool {
+        self.data & 0x2 == 0
+    }
 }
 
 #[derive(DekuRead, Debug, Clone)]
@@ -395,7 +350,73 @@ pub struct WmoLiquid {
     #[deku(count = "width * height")]
     vertices: Vec<LiquidVertex>,
     #[deku(count = "tile_width * tile_height")]
-    tiles: Vec<u8>,
+    tiles: Vec<LiquidTile>,
+}
+
+impl WmoLiquid {
+    pub fn get_render_result(&self, header: &WmoGroupHeader) -> LiquidResult {
+        let width = self.tile_width as usize;
+        let height = self.tile_height as usize;
+        let mut vertex_prototypes = Vec::new();
+        let mut indices = Vec::new();
+        let mut extents = AABBox::default();
+        for y in 0..height + 1 {
+            for x in 0..width + 1 {
+                let vertex = &self.vertices[y * (width + 1) + x];
+                let pos_x = self.position.x + UNIT_SIZE * x as f32;
+                let pos_y = self.position.y + UNIT_SIZE * y as f32;
+                let pos_z = vertex.height;
+                vertex_prototypes.push([
+                    pos_x, pos_y, pos_z,
+                    x as f32, y as f32
+                ]);
+                extents.update(pos_x, pos_y, pos_z);
+            }
+        }
+
+        let mut vertices = Vec::new();
+        let mut index = 0;
+        let mut last_tile_liquid: Option<u8> = None;
+        for y in 0..height {
+            for x in 0..width {
+                let tile_i = y * width + x;
+                let tile = &self.tiles[tile_i];
+                if !tile.is_visible() {
+                    continue
+                }
+
+                let p = y * (width + 1) + x;
+                for v_i in [p, p+1, p+width+1+1, p+width+1] {
+                    for value in vertex_prototypes[v_i] {
+                        vertices.push(value);
+                    }
+                }
+                indices.push(index + 0);
+                indices.push(index + 1);
+                indices.push(index + 2);
+
+                indices.push(index + 2);
+                indices.push(index + 3);
+                indices.push(index + 0);
+                index += 4;
+
+                if tile.is_lava() {
+                } else {
+                }
+                if let Some(v) = last_tile_liquid {
+                    assert!(v == tile.data & 0x0F);
+                }
+                last_tile_liquid = Some(tile.data & 0x0F);
+            }
+        }
+        LiquidResult {
+            vertices: Some(vertices),
+            indices: Some(indices),
+            material_id: self.material_id,
+            liquid_type: last_tile_liquid.unwrap() as u32,
+            extents,
+        }
+    }
 }
 
 #[derive(DekuRead, Debug, Clone)]
@@ -550,6 +571,7 @@ pub struct WmoGroupFlags {
     pub has_doodads: bool,
     pub has_water: bool,
     pub interior: bool,
+    pub water_is_ocean: bool,
 }
 
 #[wasm_bindgen(js_class = "WowWmoGroupFlags")]
@@ -566,6 +588,7 @@ impl WmoGroupFlags {
             has_doodads: x & 0x800 > 0,
             has_water: x & 0x1000 > 0,
             interior: x & 0x2000 > 0,
+            water_is_ocean: x & 0x80000 > 0,
         }
     }
 }
@@ -677,7 +700,6 @@ mod tests {
         let wmoData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03.wmo").unwrap();
         let groupData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03_000.wmo").unwrap();
         let wmo = Wmo::new(&wmoData).unwrap();
-        dbg!(wmo.group_infos);
         let mut group = WmoGroup::new(&groupData).unwrap();
     }
 }

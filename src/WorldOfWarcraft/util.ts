@@ -64,7 +64,8 @@ export type Constructor<T> = (data: Uint8Array) => T;
 
 export async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher, constructor: Constructor<T>): Promise<T> {
   const buf = await fetchDataByFileID(fileId, dataFetcher);
-  return constructor(buf);
+  const result = constructor(buf);
+  return result;
 }
 
 export async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {

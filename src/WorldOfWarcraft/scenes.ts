@@ -17,7 +17,7 @@ import { nArray } from '../util.js';
 import { TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
 import { mat4, vec3, vec4 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, Database, WmoGroupData } from './data.js';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, Database, WmoGroupData, LiquidType } from './data.js';
 import { getMatrixTranslation, lerp, projectionMatrixForFrustum } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
@@ -84,7 +84,8 @@ export class View {
     public frustum: Frustum = new Frustum();
     public time: number;
     public deltaTime: number;
-    public farPlane = 1000;
+    // public farPlane = 1000; FIXME
+    public farPlane = Infinity;
     public timeOffset = 1440;
     public secondsPerGameDay = 60;
 
@@ -189,7 +190,8 @@ export class MapArray<K, V> {
 
 export class WdtScene implements Viewer.SceneGfx {
   private terrainRenderers: Map<number, TerrainRenderer> = new Map();
-  private waterRenderers: Map<number, WaterRenderer> = new Map();
+  private adtWaterRenderers: Map<number, WaterRenderer> = new Map();
+  private wmoWaterRenderers: Map<number, WaterRenderer> = new Map();
   private modelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
@@ -213,9 +215,6 @@ export class WdtScene implements Viewer.SceneGfx {
   public enableProgressiveLoading = false;
   public cullingState = CullingState.Running;
   public currentAdtCoords: [number, number] = [0, 0];
-
-  // FIXME
-  public forceLod = 0;
 
   constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private db: Database) {
     console.time('WdtScene construction');
@@ -257,10 +256,11 @@ export class WdtScene implements Viewer.SceneGfx {
       adt,
       this.textureCache,
     ));
-    this.waterRenderers.set(adt.fileId, new WaterRenderer(
+    this.adtWaterRenderers.set(adt.fileId, new WaterRenderer(
       this.device,
       this.renderHelper,
-      adt,
+      adt.liquids,
+      adt.liquidTypes,
       this.textureCache,
     ));
     for (let lodData of adt.lodData) {
@@ -288,6 +288,13 @@ export class WdtScene implements Viewer.SceneGfx {
       this.textureCache,
       this.renderHelper,
     ));
+    this.wmoWaterRenderers.set(wmo.fileId, new WaterRenderer(
+      this.device,
+      this.renderHelper,
+      wmo.liquids,
+      wmo.liquidTypes,
+      this.textureCache
+    ))
     for (let model of wmo.models.values()) {
       this.createModelRenderer(model);
     }
@@ -295,12 +302,10 @@ export class WdtScene implements Viewer.SceneGfx {
 
   // TODO
   public teardownWmo(wmo: WmoData) {
-
   }
 
   // TODO
   public teardownAdt(adt: AdtData) {
-
   }
 
   public createModelRenderer(model: ModelData) {
@@ -347,6 +352,9 @@ export class WdtScene implements Viewer.SceneGfx {
       for (let groupAABB of def.groupDefAABBs.values()) {
         drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, groupAABB);
       }
+      for (let aabb of def.liquidAABBs) {
+        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, aabb);
+      }
     }
     def.setVisible(this.mainView.frustum.contains(def.worldSpaceAABB));
     if (!def.visible) {
@@ -366,6 +374,9 @@ export class WdtScene implements Viewer.SceneGfx {
         def.setGroupVisible(groupId, false);
       }
     }
+    for (let i=0; i<def.liquidAABBs.length; i++) {
+      def.liquidVisibility[i] = this.mainView.frustum.contains(def.liquidAABBs[i]);
+    }
   }
 
   public cullAdt(adt: AdtData) {
@@ -376,6 +387,9 @@ export class WdtScene implements Viewer.SceneGfx {
       adt.setVisible(true);
       for (let chunk of adt.chunkData) {
         chunk.setVisible(this.mainView.frustum.contains(chunk.worldSpaceAABB));
+      }
+      for (let liquid of adt.liquids) {
+        liquid.setVisible(this.mainView.frustum.contains(liquid.worldSpaceAABB));
       }
       const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
       adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
@@ -417,9 +431,14 @@ export class WdtScene implements Viewer.SceneGfx {
 
     template.setGfxProgram(this.waterProgram);
     template.setBindingLayouts(WaterProgram.bindingLayouts);
-    for (let renderer of this.waterRenderers.values()) {
+    for (let renderer of this.adtWaterRenderers.values()) {
       renderer.update(this.mainView);
-      renderer.prepareToRenderWater(this.renderHelper.renderInstManager);
+      renderer.prepareToRenderAdtWater(this.renderHelper.renderInstManager);
+    }
+    for (let [wmoId, renderer] of this.wmoWaterRenderers.entries()) {
+      const defs = this.wmoIdToDefs.get(wmoId)!;
+      renderer.update(this.mainView);
+      renderer.prepareToRenderWmoWater(this.renderHelper.renderInstManager, defs);
     }
 
     template.setGfxProgram(this.wmoProgram);
@@ -445,8 +464,7 @@ export class WdtScene implements Viewer.SceneGfx {
   }
 
   private updateCurrentAdt() {
-    const [worldY, worldX, _] = this.mainView.cameraPos;
-    const adtCoords = this.adtCoordsForWorldCoords(worldX, worldY);
+    const adtCoords = this.getCurrentAdtCoords();
     if (adtCoords) {
       if (this.currentAdtCoords[0] !== adtCoords[0] || this.currentAdtCoords[1] !== adtCoords[1]) {
         this.currentAdtCoords = adtCoords;
@@ -457,10 +475,11 @@ export class WdtScene implements Viewer.SceneGfx {
     }
   }
 
-  public adtCoordsForWorldCoords(x: number, y: number): [number, number] | undefined {
+  public getCurrentAdtCoords(): [number, number] | undefined {
+    const [worldY, worldX, _] = this.mainView.cameraPos;
     const adt_dimension = 533.33;
-    const x_coord = Math.floor(32 - x / adt_dimension);
-    const y_coord = Math.floor(32 - y / adt_dimension);
+    const x_coord = Math.floor(32 - worldX / adt_dimension);
+    const y_coord = Math.floor(32 - worldY / adt_dimension);
     if (x_coord >= 0 && x_coord < 64 && y_coord >= 0 && y_coord < 64) {
       return [x_coord, y_coord];
     }
@@ -468,7 +487,7 @@ export class WdtScene implements Viewer.SceneGfx {
   }
 
   public adjustCameraController(c: CameraController) {
-      c.setSceneMoveSpeedMult(0.51);
+      c.setSceneMoveSpeedMult(0.11);
   }
 
   render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
@@ -520,18 +539,18 @@ class WdtSceneDesc implements Viewer.SceneDesc {
   public id: string;
 
   constructor(public name: string, public fileId: number, public lightdbMapId: number) {
-    this.id = fileId.toString();
+    this.id = `${name}-${fileId}`;
   }
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
-    const cache = new WowCache(dataFetcher);
-    const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
-    rust.init_panic_hook();
     const db = new Database(this.lightdbMapId);
     await db.load(dataFetcher);
-    const wdt = new WorldData(this.fileId, db);
+    const cache = new WowCache(dataFetcher, db);
+    const renderHelper = new GfxRenderHelper(device);
+    rust.init_panic_hook();
+    const wdt = new WorldData(this.fileId);
     console.time('loading wdt');
     await wdt.load(dataFetcher, cache);
     console.timeEnd('loading wdt');
@@ -548,13 +567,13 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
-    const cache = new WowCache(dataFetcher);
-    const renderHelper = new GfxRenderHelper(device);
     await initFileList(dataFetcher);
-    rust.init_panic_hook();
     const db = new Database(this.lightdbMapId);
     await db.load(dataFetcher);
-    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache, db);
+    const cache = new WowCache(dataFetcher, db);
+    const renderHelper = new GfxRenderHelper(device);
+    rust.init_panic_hook();
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache);
     console.time('loading wdt')
     await wdt.load();
     console.timeEnd('loading wdt')
@@ -585,7 +604,7 @@ const sceneDescs = [
     new WdtSceneDesc('Scarlet Monastery - Graveyard', 788662, 189),
     new WdtSceneDesc('Scarlet Monastery - Cathedral', 788662, 189),
     new WdtSceneDesc('Scarlet Monastery - Library', 788662, 189),
-    new WdtSceneDesc('Scarlet Monastery - Armory', 865519, 189),
+    new WdtSceneDesc('Scarlet Monastery - Armory', 788662, 189),
     new WdtSceneDesc("Onyxia's Lair", 789922, 249),
     new WdtSceneDesc("Zul'gurub", 791432, 309),
     new WdtSceneDesc("Ragefire Chasm", 789981, 389),
@@ -635,6 +654,7 @@ const sceneDescs = [
     new WdtSceneDesc('Scott Test', 863335, 0),
     new WdtSceneDesc('Collin Test', 863984, 0),
     new WdtSceneDesc('PvP Zone 02', 861092, 0),
+    new WdtSceneDesc('Scarlet Monastery Prototype', 865519, 189),
 
     "Kalimdor",
     new ContinentSceneDesc("??", 782779, 35, 23, 1),
@@ -643,6 +663,7 @@ const sceneDescs = [
     "Eastern Kingdoms",
     new ContinentSceneDesc("Undercity", 775971, 31, 28, 0),
     new ContinentSceneDesc("Stormwind", 775971, 31, 48, 0),
+    new ContinentSceneDesc("Stormwind Harbor", 775971, 29, 47, 0),
     new ContinentSceneDesc("Ironforge", 775971, 33, 40, 0),
     new ContinentSceneDesc("Dun Morogh", 775971, 31, 43, 0),
     new ContinentSceneDesc("Redridge", 775971, 35, 50, 0),
