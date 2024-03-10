@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::{unity::mesh::AABB, wow::{adt::LiquidData, common::{parse, parse_array, ChunkedData}}};
 
-use super::{adt::UNIT_SIZE, common::{AABBox, Argb, Quat, Vec3}};
+use super::{adt::UNIT_SIZE, common::{AABBox, Argb, Plane, Quat, Vec3}};
 
 #[wasm_bindgen(js_name = "WowWmoHeader")]
 #[derive(DekuRead, Debug, Copy, Clone)]
@@ -63,8 +63,12 @@ pub struct Wmo {
     pub doodad_file_ids: Vec<u32>,
     pub fogs: Vec<Fog>,
     pub skybox_file_id: Option<u32>,
+    group_text: Vec<String>,
     doodad_sets: Vec<DoodadSet>,
     global_ambient_volumes: Vec<AmbientVolume>,
+    portals: Option<Vec<Portal>>,
+    portal_refs: Option<Vec<PortalRef>>,
+    portal_vertices: Option<Vec<f32>>,
     ambient_volumes: Vec<AmbientVolume>,
 }
 
@@ -85,6 +89,10 @@ impl Wmo {
         let mut gfid: Option<Vec<u32>> = None;
         let mut mavg: Vec<AmbientVolume> = Vec::new();
         let mut mavd: Vec<AmbientVolume> = Vec::new();
+        let mut portals: Option<Vec<Portal>> = None;
+        let mut portal_refs: Option<Vec<PortalRef>> = None;
+        let mut group_text = Vec::new();
+        let mut portal_vertices: Option<Vec<f32>> = None;
         let mut mods: Vec<DoodadSet> = Vec::new();
         let mut mosi: Option<Mosi> = None;
         for (chunk, chunk_data) in &mut chunked_data {
@@ -93,6 +101,15 @@ impl Wmo {
                 b"IGOM" => mogi = Some(parse_array(chunk_data, 0x20)?),
                 b"DDOM" => modd = Some(parse_array(chunk_data, 40)?),
                 b"GOFM" => mfog = Some(parse_array(chunk_data, 48)?),
+                b"VPOM" => portal_vertices = Some(parse_array(chunk_data, 4)?),
+                b"NGOM" => {
+                    for s in chunk_data.split(|n| *n == 0) {
+                        group_text.push(String::from_utf8_lossy(s)
+                            .to_string());
+                    }
+                },
+                b"TPOM" => portals = Some(parse_array(chunk_data, 20)?),
+                b"RPOM" => portal_refs = Some(parse_array(chunk_data, 8)?),
                 b"IDOM" => modi = Some(parse_array(chunk_data, 4)?),
                 b"DIFG" => {
                     let ids: Vec<u32> = parse_array(chunk_data, 4)?;
@@ -116,9 +133,29 @@ impl Wmo {
             group_file_ids: gfid.ok_or("WMO file didn't have group ids")?,
             skybox_file_id: mosi.map(|m| m.skybox_file_id),
             doodad_sets: mods,
+            portal_refs,
+            portal_vertices,
+            portals,
+            group_text,
             global_ambient_volumes: mavg,
             ambient_volumes: mavd,
         })
+    }
+
+    pub fn take_portals(&mut self) -> Vec<Portal>{
+        self.portals.take().expect("portals already taken")
+    }
+
+    pub fn take_portal_refs(&mut self) -> Vec<PortalRef>{
+        self.portal_refs.take().expect("portals already taken")
+    }
+
+    pub fn take_portal_vertices(&mut self) -> Vec<f32>{
+        self.portal_vertices.take().expect("portals already taken")
+    }
+
+    pub fn get_group_text(&self, index: usize) -> Option<String> {
+        self.group_text.get(index).cloned()
     }
 
     pub fn get_ambient_color(&self, doodad_set_id: u16) -> Argb {
@@ -163,6 +200,23 @@ impl Wmo {
     }
 }
 
+#[wasm_bindgen(js_name = "WowWmoPortal", getter_with_clone)]
+#[derive(DekuRead, Debug, Clone)]
+pub struct Portal {
+    pub start_vertex: u16,
+    pub count: u16,
+    pub plane: Plane,
+}
+
+#[wasm_bindgen(js_name = "WowWmoPortalRef")]
+#[derive(DekuRead, Debug, Clone)]
+pub struct PortalRef {
+    pub portal_index: u16, // into MOPT
+    pub group_index: u16,
+    #[deku(pad_bytes_after = "2")]
+    pub side: i16,
+}
+
 #[derive(DekuRead)]
 pub struct Mosi {
     pub skybox_file_id: u32,
@@ -179,6 +233,8 @@ pub struct WmoGroup {
     uvs: Option<Vec<u8>>,
     colors: Option<Vec<u8>>,
     doodad_refs: Option<Vec<u16>>,
+    bsp_nodes: Vec<BspNode>,
+    bsp_indices: Vec<u16>,
     pub num_vertices: usize,
     pub num_uv_bufs: usize,
     pub num_color_bufs: usize,
@@ -207,6 +263,8 @@ impl WmoGroup {
         let mut first_color_buf_len: Option<usize> = None;
         let mut num_vertices = 0;
         let mut num_color_bufs = 0;
+        let mut bsp_indices: Vec<u16> = Vec::new();
+        let mut bsp_nodes: Vec<BspNode> = Vec::new();
         let mut batches: Option<Vec<MaterialBatch>> = None;
         let mut replacement_for_header_color: Option<Argb> = None;
         let mut doodad_refs: Option<Vec<u16>> = None;
@@ -217,6 +275,8 @@ impl WmoGroup {
                 b"IVOM" => indices = Some(chunk_data.to_vec()),
                 b"LADM" => replacement_for_header_color = Some(parse(chunk_data)?),
                 b"QILM" => liquids.push(parse(chunk_data)?),
+                b"RBOM" => bsp_indices = parse_array(chunk_data, 2)?,
+                b"NBOM" => bsp_nodes = parse_array(chunk_data, 0x10)?,
                 b"TVOM" => {
                     num_vertices = chunk_data.len();
                     vertices = Some(chunk_data.to_vec());
@@ -257,6 +317,8 @@ impl WmoGroup {
             first_color_buf_len,
             uvs: Some(uvs),
             num_uv_bufs,
+            bsp_indices,
+            bsp_nodes,
             colors: Some(colors),
             num_color_bufs,
             batches: batches.unwrap_or(vec![]),
@@ -428,6 +490,16 @@ pub struct DoodadSet {
 }
 
 #[derive(DekuRead, Debug, Clone)]
+pub struct BspNode {
+    pub flags: u16,
+    pub negative_child: i16,
+    pub positive_child: i16,
+    pub n_faces: u16,
+    pub face_start: u32,
+    pub plane_distance: f32,
+}
+
+#[derive(DekuRead, Debug, Clone)]
 pub struct AmbientVolume {
     pub position: Vec3,
     pub start: f32,
@@ -572,6 +644,7 @@ pub struct WmoGroupFlags {
     pub has_water: bool,
     pub interior: bool,
     pub water_is_ocean: bool,
+    pub antiportal: bool,
 }
 
 #[wasm_bindgen(js_class = "WowWmoGroupFlags")]
@@ -589,6 +662,7 @@ impl WmoGroupFlags {
             has_water: x & 0x1000 > 0,
             interior: x & 0x2000 > 0,
             water_is_ocean: x & 0x80000 > 0,
+            antiportal: x & 0x4000000 > 0,
         }
     }
 }

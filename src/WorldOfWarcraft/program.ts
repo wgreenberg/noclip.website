@@ -2,7 +2,7 @@ import { WowLightResult, WowM2BlendingMode, WowPixelShader, WowVec3 } from "../.
 import { rust } from "../rustlib.js";
 import { GfxBindingLayoutDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { DeviceProgram } from "../Program.js";
-import { SkyboxColor } from './skybox.js';
+import { SkyboxColor } from './mesh.js';
 import { mat4, vec4, vec3 } from "gl-matrix";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
 import { GfxRenderInst } from "../gfx/render/GfxRenderInstManager.js";
@@ -540,6 +540,76 @@ void mainPS() {
     finalColor.rgb = calcFog(finalColor.rgb, v_Position.xyz);
 
     gl_FragColor = finalColor;
+}
+#endif
+`;
+}
+
+export class DebugWmoPortalProgram extends BaseProgram {
+  public static a_Position = 0;
+
+  public static ub_ModelParams = 1;
+
+  public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
+      { numUniformBuffers: super.numUniformBuffers + 1, numSamplers: super.numSamplers },
+  ];
+
+  public override both = `
+${BaseProgram.commonDeclarations}
+
+layout(std140) uniform ub_ModelParams {
+    Mat4x4 u_ModelMatrix;
+};
+
+#ifdef VERT
+layout(location = ${DebugWmoPortalProgram.a_Position}) attribute vec3 a_Position;
+
+void mainVS() {
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_ModelMatrix, vec4(a_Position, 1.0))));
+}
+#endif
+
+#ifdef FRAG
+void mainPS() {
+    gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);
+}
+#endif
+`;
+}
+
+export class LoadingAdtProgram extends BaseProgram {
+  public static a_Position = 0;
+
+  public static ub_ModelParams = 1;
+
+  public static bindingLayouts: GfxBindingLayoutDescriptor[] = [
+      { numUniformBuffers: super.numUniformBuffers + 1, numSamplers: super.numSamplers },
+  ];
+
+  public override both = `
+${BaseProgram.commonDeclarations}
+
+varying vec4 v_Color;
+
+layout(std140) uniform ub_ModelParams {
+    Mat4x4 u_ModelMatrix;
+    vec4 u_Params; // time, _, _, _
+};
+
+#ifdef VERT
+layout(location = ${LoadingAdtProgram.a_Position}) attribute vec3 a_Position;
+
+void mainVS() {
+    vec4 color1 = vec4(0.55);
+    vec4 color2 = vec4(0.75);
+    v_Color = mix(skyFogColor, skyBand1Color, sin(u_Params.x) * 0.5 + 0.2);
+    gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(u_ModelMatrix, vec4(a_Position, 1.0))));
+}
+#endif
+
+#ifdef FRAG
+void mainPS() {
+    gl_FragColor = v_Color;
 }
 #endif
 `;

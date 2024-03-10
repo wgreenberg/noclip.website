@@ -1,5 +1,5 @@
-import { vec3, mat4, vec4, quat } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox, WowAdtLiquidLayer, WowLiquidResult, WowWmoLiquidResult, WowWmoHeaderFlags } from "../../rust/pkg";
+import { vec3, mat4, vec4, quat, ReadonlyMat4 } from "gl-matrix";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox, WowAdtLiquidLayer, WowLiquidResult, WowWmoLiquidResult, WowWmoHeaderFlags, WowWmoPortal, WowWmoPortalRef } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
@@ -7,7 +7,7 @@ import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID, getFilePath, getFileDataId } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
 import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene, View } from "./scenes.js";
-import { AABB } from "../Geometry.js";
+import { AABB, Frustum, IntersectionState, Plane } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
 import { BaseProgram, ModelProgram, WmoProgram } from "./program.js";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
@@ -16,9 +16,10 @@ import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 import { assert } from "../util.js";
+import { drawWorldSpaceLine, drawWorldSpacePoint, getDebugOverlayCanvas2D } from "../DebugJunk.js";
 
 // game world size in game units
-const MAP_SIZE = 17066;
+export const MAP_SIZE = 17066;
 
 export class Database {
   private inner: WowDatabase;
@@ -222,15 +223,20 @@ function convertWowAABB(aabb: WowAABBox): AABB {
     return result;
 }
 
+const TEX_PIVOT: vec3 = [0.5, 0.5, 0];
+const TEX_ANTIPIVOT: vec3 = [-0.5, -0.5, 0];
 export class ModelData {
   public skins: WowSkin[] = [];
   public blps: BlpData[] = [];
   public vertexBuffer: Uint8Array;
   public vertexColors: Float32Array;
+  public numTextureTransformations: number;
   public textureWeights: Float32Array;
   public textureRotations: Float32Array;
   public textureScalings: Float32Array;
   public textureTranslations: Float32Array;
+  public numColors: number;
+  public numBones: number;
   public boneRotations: Float32Array;
   public boneScalings: Float32Array;
   public boneTranslations: Float32Array;
@@ -280,19 +286,20 @@ export class ModelData {
     }
     this.animationManager = m2.take_animation_manager();
     this.textureWeights = new Float32Array(this.animationManager.get_num_texture_weights());
-    const numTransformations = this.animationManager.get_num_transformations();
-    this.textureTranslations = new Float32Array(numTransformations * 3);
-    this.textureRotations = new Float32Array(numTransformations * 4);
-    this.textureScalings = new Float32Array(numTransformations * 3);
-    const numBones = this.animationManager.get_num_bones();
-    this.boneTranslations = new Float32Array(numBones * 3);
-    this.boneRotations = new Float32Array(numBones * 4);
-    this.boneScalings = new Float32Array(numBones * 3);
-    this.vertexColors = new Float32Array(this.animationManager.get_num_colors() * 3);
-    for (let i=0; i<numTransformations; i++) {
+    this.numTextureTransformations = this.animationManager.get_num_transformations();
+    this.textureTranslations = new Float32Array(this.numTextureTransformations * 3);
+    this.textureRotations = new Float32Array(this.numTextureTransformations * 4);
+    this.textureScalings = new Float32Array(this.numTextureTransformations * 3);
+    this.numBones = this.animationManager.get_num_bones();
+    this.boneTranslations = new Float32Array(this.numBones * 3);
+    this.boneRotations = new Float32Array(this.numBones * 4);
+    this.boneScalings = new Float32Array(this.numBones * 3);
+    this.numColors = this.animationManager.get_num_colors();
+    this.vertexColors = new Float32Array(this.numColors * 3);
+    for (let i=0; i<this.numTextureTransformations; i++) {
       this.textureTransforms.push(mat4.create());
     }
-    for (let i=0; i<numBones; i++) {
+    for (let i=0; i<this.numBones; i++) {
       this.boneTransforms.push(mat4.create());
     }
     this.boneParents = this.animationManager.get_bone_parents();
@@ -318,24 +325,20 @@ export class ModelData {
       this.vertexColors
     );
 
-    const pivot: vec3 = [0.5, 0.5, 0];
-    const antiPivot: vec3 = [-0.5, -0.5, 0];
-    const numTransforms = this.animationManager.get_num_transformations();
-    for (let i = 0; i < numTransforms; i++) {
+    for (let i = 0; i < this.numTextureTransformations; i++) {
       mat4.identity(this.textureTransforms[i]);
-      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], pivot);
+      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], TEX_PIVOT);
       const rotation: vec4 = this.textureRotations.slice(i * 4, (i + 1) * 4);
       mat4.fromQuat(this.textureTransforms[i], rotation);
       const scaling: vec3 = this.textureScalings.slice(i * 3, (i + 1) * 3);
       mat4.scale(this.textureTransforms[i], this.textureTransforms[i], scaling);
-      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], antiPivot);
+      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], TEX_ANTIPIVOT);
 
       const translation: vec3 = this.textureTranslations.slice(i * 3, (i + 1) * 3);
       mat4.translate(this.textureTransforms[i], this.textureTransforms[i], translation);
     }
 
-    const numBones = this.animationManager.get_num_bones();
-    for (let i = 0; i < numBones; i++) {
+    for (let i = 0; i < this.numBones; i++) {
       const parentId = this.boneParents[i];
       assert(parentId < i, "bone parent > bone");
       mat4.fromRotationTranslationScale(this.boneTransforms[i],
@@ -475,6 +478,12 @@ export class WmoBatchData {
 export class WmoGroupData {
   public innerBatches: WowWmoMaterialBatch[] = [];
   public flags: WowWmoGroupFlags;
+  public name: string | undefined;
+  public nameIndex: number;
+  public description: string | undefined;
+  public descriptionIndex: number;
+  public portalStart: number;
+  public portalCount: number;
   public doodadRefs: Uint16Array;
   public replacementForHeaderColor: WowArgb | undefined;
   public numUVBufs: number;
@@ -484,6 +493,8 @@ export class WmoGroupData {
   public groupLiquidType: number;
   public liquids: LiquidInstance[] | undefined;
   public liquidMaterials: number[] | undefined;
+  public numLiquids = 0;
+  public liquidIndex = 0;
   public vertices: Uint8Array;
   public normals: Uint8Array;
   public indices: Uint8Array;
@@ -575,6 +586,8 @@ export class WmoGroupData {
     const group = await fetchFileByID(this.fileId, dataFetcher, rust.WowWmoGroup.new);
     this.groupLiquidType = group.header.group_liquid;
     this.replacementForHeaderColor = group.replacement_for_header_color;
+    this.nameIndex = group.header.group_name;
+    this.descriptionIndex = group.header.descriptive_group_name;
     this.numVertices = group.num_vertices;
     this.numUVBufs = group.num_uv_bufs;
     this.numColorBufs = group.num_color_bufs;
@@ -582,14 +595,20 @@ export class WmoGroupData {
     this.vertices = group.take_vertices();
     this.normals = group.take_normals();
     this.colors = group.take_colors();
+    this.portalStart = group.header.portal_start;
+    this.portalCount = group.header.portal_count;
     this.uvs = group.take_uvs();
     this.indices = group.take_indices();
     this.flags = rust.WowWmoGroupFlags.new(group.header.flags);
+    if (this.flags.antiportal) {
+      console.log(this);
+    }
     this.doodadRefs = group.take_doodad_refs();
     const liquids = group.take_liquid_data();
     if (liquids) {
       this.liquids = [];
       this.liquidMaterials = [];
+      this.numLiquids = liquids.length;
       for (let liquid of liquids) {
         this.liquidMaterials.push(liquid.material_id);
         this.liquids.push(LiquidInstance.fromWmoLiquid(liquid));
@@ -604,7 +623,11 @@ export class WmoData {
   public flags: WowWmoHeaderFlags;
   public groups: WmoGroupData[] = [];
   public groupInfos: WowWmoGroupInfo[] = [];
+  public groupIdToIndex: Map<number, number> = new Map();
   public groupAABBs: AABB[] = [];
+  public portals: PortalData[] = [];
+  public portalRefs: WowWmoPortalRef[] = [];
+  public portalVertices: Float32Array;
   public blps: Map<number, BlpData> = new Map();
   public materials: WowWmoMaterial[] = [];
   public models: Map<number, ModelData> = new Map();
@@ -639,11 +662,19 @@ export class WmoData {
         this.models.set(modelId, await cache.loadModel(modelId))
     }
 
+    this.portalVertices = this.wmo.take_portal_vertices();
+    this.portalRefs = this.wmo.take_portal_refs();
+    const portals = this.wmo.take_portals();
+    for (let portal of portals) {
+      this.portals.push(PortalData.fromWowPortal(portal, this.portalVertices));
+    }
+
     this.groupInfos = this.wmo.group_infos;
     for (let i=0; i<this.wmo.group_file_ids.length; i++) {
       const gfid = this.wmo.group_file_ids[i];
       const group = await cache.loadWmoGroup(gfid);
       if (group.liquids) {
+        group.liquidIndex = this.liquids.length;
         for (let liquid of group.liquids) {
           liquid.liquidType = calculateWmoLiquidType(this.flags, group, liquid.liquidType);
           this.liquids.push(liquid);
@@ -653,10 +684,21 @@ export class WmoData {
         }
         group.liquids = undefined;
       }
+      group.name = this.wmo.get_group_text(group.nameIndex);
+      group.description = this.wmo.get_group_text(group.descriptionIndex);
+      this.groupIdToIndex.set(group.fileId, this.groups.length);
       this.groups.push(group);
       const groupInfo = this.groupInfos[i];
       this.groupAABBs.push(convertWowAABB(groupInfo.bounding_box));
     }
+  }
+
+  public getGroup(groupId: number): WmoGroupData | undefined {
+    const index = this.groupIdToIndex.get(groupId);
+    if (index !== undefined){
+      return this.groups[index];
+    }
+    return undefined;
   }
 }
 
@@ -720,6 +762,7 @@ export class ModelRenderPass {
   public tex1: BlpData | null;
   public tex2: BlpData | null;
   public tex3: BlpData | null;
+  private scratchMat4 = mat4.identity(mat4.create());
 
   constructor(public batch: WowModelBatch, public skin: WowSkin, public model: ModelData) {
     this.fragmentShaderId = batch.get_pixel_shader();
@@ -824,7 +867,7 @@ export class ModelRenderPass {
         return this.model.textureTransforms[transformIndex];
       }
     }
-    return mat4.identity(mat4.create())
+    return this.scratchMat4;
   }
 
   private getTextureWeight(texIndex: number): number {
@@ -881,16 +924,126 @@ export class ModelRenderPass {
   }
 }
 
+export class PortalData {
+  public points: vec3[] = [];
+  public plane = new Plane();
+  public aabb = new AABB();
+  public vertexCount = 0;
+  public vertexStart = 0;
+  private scratchVec4 = vec4.create();
+  private scratchVec3A = vec3.create();
+  private scratchVec3B = vec3.create();
+  private scratchVec3C = vec3.create();
+
+  constructor() {
+  }
+
+  static fromWowPortal(wowPortal: WowWmoPortal, vertices: Float32Array): PortalData {
+    // stay vigilant!!
+    if (wowPortal.count !== 4) {
+      throw new Error(`found a portal w/ ${wowPortal.count} vertices, gotta fix PortalData`);
+    }
+    const result = new PortalData();
+    result.vertexStart = wowPortal.start_vertex;
+    result.vertexCount = wowPortal.count;
+    const start = result.vertexStart * 3;
+    const end = start + result.vertexCount * 3;
+    const verts = vertices.slice(start, end);
+    result.points = [
+      [verts[0*3 + 0], verts[0*3 + 1], verts[0*3 + 2]],
+      [verts[1*3 + 0], verts[1*3 + 1], verts[1*3 + 2]],
+      [verts[2*3 + 0], verts[2*3 + 1], verts[2*3 + 2]],
+      [verts[3*3 + 0], verts[3*3 + 1], verts[3*3 + 2]],
+    ];
+    result.aabb.setFromPoints(result.points);
+    const wowPlane = wowPortal.plane;
+    const wowPlaneNorm = wowPlane.normal;
+    result.plane.n[0] = wowPlaneNorm.x;
+    result.plane.n[1] = wowPlaneNorm.y;
+    result.plane.n[2] = wowPlaneNorm.z;
+    result.plane.d = wowPlane.distance;
+    wowPlaneNorm.free();
+    wowPlane.free();
+    wowPortal.free();
+    return result;
+  }
+
+  public clone(): PortalData {
+    const clone = new PortalData();
+    for (let point of this.points) {
+      clone.points.push(vec3.clone(point));
+    }
+    clone.plane.copy(this.plane);
+    clone.vertexCount = this.vertexCount;
+    clone.vertexStart = this.vertexStart;
+    clone.aabb.copy(this.aabb);
+    return clone;
+  }
+
+  public transform(m: ReadonlyMat4) {
+    for (let point of this.points) {
+      vec3.transformMat4(point, point, m);
+    }
+    this.aabb.transform(this.aabb, m);
+    this.plane.transform(m);
+  }
+
+  public inFrustum(frustum: Frustum): boolean {
+    // return this.points.reduce((result, point) => result || frustum.containsPoint(point), false);
+    return frustum.contains(this.aabb);
+  }
+
+  public getPointsInFrustum(frustum: Frustum): vec3[] {
+    return this.points.filter(point => frustum.containsPoint(point));
+  }
+
+  public clipFrustum(cameraPoint: vec3, currentFrustum: Frustum, side: number): Frustum {
+    const result = new Frustum();
+    const [p1, p2, p3, p4] = this.points;
+    const planePoints = [
+      [p4, p1, p2], // Left
+      [p2, p3, p4], // Right
+      [p1, p2, p3], // Top
+      [p3, p4, p1], // Bottom
+    ];
+    let planeIndex = 0;
+    for (let [a, b, testPoint] of planePoints) {
+      result.planes[planeIndex].setTri(cameraPoint, a, b);
+      let dist = result.planes[planeIndex].distanceVec3(testPoint);
+      if (dist > 0) {
+        result.planes[planeIndex].negate();
+      }
+      dist = result.planes[planeIndex].distanceVec3(testPoint);
+      assert(dist <= 0);
+      planeIndex += 1;
+    }
+
+    result.planes[4].copy(this.plane); // Near
+    if (side < 0) {
+      result.planes[4].negate(); // Far
+    }
+    result.planes[5].copy(currentFrustum.planes[5]); // Far
+
+    return result;
+  }
+}
+
 export class WmoDefinition {
   public modelMatrix: mat4 = mat4.create();
+  public invModelMatrix: mat4 = mat4.create();
   public normalMatrix: mat4 = mat4.create();
   public worldSpaceAABB: AABB = new AABB();
-  public groupDefAABBs: Map<number, AABB> = new Map();
+  public groupDefWorldSpaceAABBs: Map<number, AABB> = new Map();
+  public worldSpacePortals: PortalData[] = [];
+
+  public portals: PortalData[] = [];
+
   public visible = true;
   public doodads: DoodadData[] = [];
   public groupIdToVisibility: Map<number, boolean> = new Map();
   public groupIdToDoodadIndices: MapArray<number, number> = new MapArray();
   public groupAmbientColors: Map<number, vec4> = new Map();
+  public groupIdToLiquidIndices: MapArray<number, number> = new MapArray();
   public liquidAABBs: AABB[] = [];
   public liquidVisibility: boolean[] = [];
 
@@ -900,10 +1053,7 @@ export class WmoDefinition {
       doodad.setVisible(visible);
     }
     for (let groupId of this.groupIdToVisibility.keys()) {
-      this.groupIdToVisibility.set(groupId, visible);
-    }
-    for (let i=0; i<this.liquidVisibility.length; i++) {
-      this.liquidVisibility[i] = visible;
+      this.setGroupVisible(groupId, visible);
     }
   }
 
@@ -973,6 +1123,14 @@ export class WmoDefinition {
     mat4.mul(this.modelMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.modelMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
 
+    for (let portal of wmo.portals) {
+      const worldSpacePortal = portal.clone();
+      worldSpacePortal.transform(this.modelMatrix);
+      this.worldSpacePortals.push(worldSpacePortal);
+    }
+
+    mat4.invert(this.invModelMatrix, this.modelMatrix);
+
     mat4.mul(this.normalMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.invert(this.normalMatrix, this.normalMatrix);
     mat4.transpose(this.normalMatrix, this.normalMatrix);
@@ -981,7 +1139,10 @@ export class WmoDefinition {
       const group = wmo.groups[i];
       const groupAABB = new AABB();
       groupAABB.transform(wmo.groupAABBs[i], this.modelMatrix);
-      this.groupDefAABBs.set(group.fileId, groupAABB);
+      this.groupDefWorldSpaceAABBs.set(group.fileId, groupAABB);
+      for (let i=group.liquidIndex; i<group.liquidIndex + group.numLiquids; i++) {
+        this.groupIdToLiquidIndices.append(group.fileId, i);
+      }
       this.groupAmbientColors.set(group.fileId, group.getAmbientColor(wmo, doodadSet));
     }
 
@@ -1023,9 +1184,9 @@ export class WmoDefinition {
 
   public isWmoGroupVisible(groupFileId: number): boolean {
     const visible = this.groupIdToVisibility.get(groupFileId);
-    // default to true
+    // default to false
     if (visible === undefined) {
-      return true;
+      return false;
     }
     return visible;
   }
@@ -1035,6 +1196,11 @@ export class WmoDefinition {
     if (this.groupIdToDoodadIndices.has(groupId)) {
       for (let index of this.groupIdToDoodadIndices.get(groupId)) {
         this.doodads[index].setVisible(visible);
+      }
+    }
+    if (this.groupIdToLiquidIndices.has(groupId)) {
+      for (let index of this.groupIdToLiquidIndices.get(groupId)) {
+        this.liquidVisibility[index] = visible;
       }
     }
   }
@@ -1332,9 +1498,11 @@ export class DoodadData {
   }
 }
 
+export type AdtCoord = [number, number];
+
 export class LazyWorldData {
   public adts: AdtData[] = [];
-  private loadedAdtFileIds: number[] = [];
+  private loadedAdtCoords: AdtCoord[] = [];
   public globalWmo: WmoData | null = null;
   public globalWmoDef: WmoDefinition | null = null;
   public hasBigAlpha: boolean;
@@ -1342,7 +1510,7 @@ export class LazyWorldData {
   public adtFileIds: WowMapFileDataIDs[] = [];
   public loading = false;
 
-  constructor(public fileId: number, public startAdtCoords: [number, number], public adtRadius = 2, private dataFetcher: DataFetcher, public cache: WowCache) {
+  constructor(public fileId: number, public startAdtCoords: AdtCoord, public adtRadius = 2, private dataFetcher: DataFetcher, public cache: WowCache) {
   }
 
   public async load() {
@@ -1362,31 +1530,50 @@ export class LazyWorldData {
     wdt.free();
   }
 
-  public onEnterAdt([centerX, centerY]: [number, number], scene: WdtScene) {
+  public onEnterAdt([centerX, centerY]: AdtCoord, callback: (coord: AdtCoord, adt: AdtData) => void): AdtCoord[] {
     if (this.loading) {
-      return;
+      return [];
+    }
+    let adtCoords: AdtCoord[] = [];
+    console.log(`loading area around ${centerX}, ${centerY}`)
+    for (let x = centerX - this.adtRadius; x <= centerX + this.adtRadius; x++) {
+      for (let y = centerY - this.adtRadius; y <= centerY + this.adtRadius; y++) {
+        if (!this.hasLoadedAdt([x, y])) {
+          adtCoords.push([x, y]);
+        }
+      }
     }
     setTimeout(async () => {
       this.loading = true;
-      console.log(`loading area around ${centerX}, ${centerY}`)
-      for (let x = centerX - this.adtRadius; x <= centerX + this.adtRadius; x++) {
-        for (let y = centerY - this.adtRadius; y <= centerY + this.adtRadius; y++) {
-          try {
-            const maybeAdt = await this.ensureAdtLoaded(x, y);
-            if (maybeAdt) {
-              scene.setupAdt(maybeAdt);
-              this.adts.push(maybeAdt);
-            }
-          } catch (e) {
-            console.log('failed to load ADT: ', e);
+      for (let [x, y] of adtCoords) {
+        try {
+          const maybeAdt = await this.ensureAdtLoaded(x, y);
+          if (maybeAdt) {
+            callback([x, y], maybeAdt);
+            this.adts.push(maybeAdt);
           }
+        } catch (e) {
+          console.log('failed to load ADT: ', e);
         }
       }
       this.loading = false;
     }, 0);
+    return adtCoords;
+  }
+
+  public hasLoadedAdt(coord: AdtCoord): boolean {
+    for (let [x, y] of this.loadedAdtCoords) {
+      if (x === coord[0] && y === coord[1]) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public async ensureAdtLoaded(x: number, y: number): Promise<AdtData | undefined> {
+    if (this.hasLoadedAdt([x, y])) {
+      return undefined;
+    }
     let fileIDs: WowMapFileDataIDsLike | undefined;
     // hardcode GM Island's ADT on Kalimdor
     if (this.fileId === 782779 && x === 1 && y === 1) {
@@ -1399,7 +1586,7 @@ export class LazyWorldData {
     } else {
       fileIDs = this.adtFileIds[y * 64 + x];
     }
-    if (fileIDs === undefined || this.loadedAdtFileIds.includes(fileIDs.root_adt)) {
+    if (fileIDs === undefined) {
       return undefined;
     }
     console.log(`loading coords ${x}, ${y}`)
@@ -1421,11 +1608,11 @@ export class LazyWorldData {
     adt.hasBigAlpha = this.hasBigAlpha;
     adt.hasHeightTexturing = this.hasHeightTexturing;
 
-    this.loadedAdtFileIds.push(fileIDs.root_adt);
+    this.loadedAdtCoords.push([x, y]);
     return adt;
   }
 
-  public getAdtCoords(fileId: number): [number, number] | undefined {
+  public getAdtCoords(fileId: number): AdtCoord | undefined {
     for (let i=0; i < this.adtFileIds.length; i++) {
       if (this.adtFileIds[i].root_adt === fileId) {
         const x = i % 64;

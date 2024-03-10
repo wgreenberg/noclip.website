@@ -186,6 +186,13 @@ pub struct Argb {
     pub a: u8,
 }
 
+#[wasm_bindgen(js_name = "WowPlane")]
+#[derive(DekuRead, Clone, Debug)]
+pub struct Plane {
+    pub normal: Vec3,
+    pub distance: f32,
+}
+
 // Axis-aligned bounding box
 #[wasm_bindgen(js_name = "WowAABBox")]
 #[derive(DekuRead, Debug, Clone, Copy)]

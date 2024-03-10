@@ -11,15 +11,16 @@ import { GfxRenderHelper } from "../gfx/render/GfxRenderHelper.js";
 import { GfxRenderInstManager, GfxRendererLayer, makeSortKey } from "../gfx/render/GfxRenderInstManager.js";
 import { rust } from "../rustlib.js";
 import { ViewerRenderInput } from "../viewer.js";
-import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData, LiquidInstance as LiquidInstance, LiquidType } from "./data.js";
-import { MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WaterProgram, WmoProgram } from "./program.js";
+import { SkinData, ModelData, WmoBatchData, WmoData, WmoDefinition, WmoGroupData, AdtData, DoodadData, ModelRenderPass, ChunkData, LiquidInstance as LiquidInstance, LiquidType, MAP_SIZE } from "./data.js";
+import { DebugWmoPortalProgram, LoadingAdtProgram, MAX_BONE_TRANSFORMS, MAX_DOODAD_INSTANCES, ModelProgram, SkyboxProgram, TerrainProgram, WaterProgram, WmoProgram } from "./program.js";
 import { TextureCache } from "./tex.js";
 import { WowAdtChunkDescriptor } from "../../rust/pkg/index.js";
 import { MapArray, View, adtSpaceFromPlacementSpace, noclipSpaceFromAdtSpace, placementSpaceFromModelSpace } from "./scenes.js";
-import { convertToTriangleIndexBuffer, GfxTopology } from "../gfx/helpers/TopologyHelpers.js";
-import { skyboxVertices, skyboxIndices } from "./skybox.js";
+import { convertToTriangleIndexBuffer, convertToTrianglesRange, GfxTopology, makeTriangleIndexBuffer } from "../gfx/helpers/TopologyHelpers.js";
+import { skyboxVertices, skyboxIndices, loadingAdtVertices, loadingAdtIndices } from "./mesh.js";
 import { assert } from "../util.js";
 import { setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
+import { CullMode } from "../gx/gx_enum.js";
 
 type TextureMappingArray = (TextureMapping | null)[];
 
@@ -30,6 +31,7 @@ export class ModelRenderer {
   private skinPassTextures: TextureMappingArray[][] = [];
   private inputLayout: GfxInputLayout;
   public visible = true;
+  private scratchMat4 = mat4.create();
 
   constructor(device: GfxDevice, public model: ModelData, renderHelper: GfxRenderHelper, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
@@ -102,7 +104,7 @@ export class ModelRenderer {
         offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
         offs += fillMatrix4x4(mapped, offs, doodad.normalMatrix);
         offs += fillVec4v(mapped, offs, doodad.ambientColor);
-        offs += fillVec4v(mapped, offs, [0, 0, 0, 0]);
+        offs += fillVec4(mapped, offs, 0);
         offs += fillVec4(mapped, offs,
           doodad.applyInteriorLighting ? 1.0 : 0.0,
           doodad.applyExteriorLighting ? 1.0 : 0.0,
@@ -112,13 +114,13 @@ export class ModelRenderer {
       }
       offs = baseOffs + instanceParamsSize * MAX_DOODAD_INSTANCES;
       assert(this.model.boneTransforms.length < MAX_BONE_TRANSFORMS, `model got too many bones (${this.model.boneTransforms.length})`);
-      const identity = mat4.identity(mat4.create());
+      mat4.identity(this.scratchMat4);
       for (let i=0; i<MAX_BONE_TRANSFORMS; i++) {
         if (i < this.model.boneTransforms.length) {
           offs += fillMatrix4x4(mapped, offs, this.model.boneTransforms[i]);
           offs += fillVec4(mapped, offs, this.model.boneFlags[i].spherical_billboard ? 1 : 0);
         } else {
-          offs += fillMatrix4x4(mapped, offs, identity);
+          offs += fillMatrix4x4(mapped, offs, this.scratchMat4);
           offs += fillVec4(mapped, offs, 0);
         }
       }
@@ -332,13 +334,119 @@ export class TerrainRenderer {
   }
 }
 
+export class DebugWmoPortalRenderer {
+  private inputLayout: GfxInputLayout;
+  private vertexBuffer: GfxVertexBufferDescriptor;
+  private indexBuffer: GfxIndexBufferDescriptor;
+  private portals: [number, number][] = [];
+  private numIndices: number;
+
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper, private wmo: WmoData) {
+    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+      { location: LoadingAdtProgram.a_Position,   bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+    ];
+    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex, },
+    ];
+    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+    this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+
+    let numIndices = 0;
+    for (let portal of this.wmo.portals) {
+      assert(portal.vertexCount > 0);
+      numIndices += (portal.vertexCount - 2) * 3;
+    }
+
+    const indices = new Uint16Array(numIndices);
+    let offset = 0;
+    for (let portal of this.wmo.portals) {
+      const start = offset;
+      convertToTrianglesRange(indices, offset, GfxTopology.TriFans, portal.vertexStart, portal.vertexCount);
+      offset += (portal.vertexCount - 2) * 3;
+      this.portals.push([start, offset - start])
+    }
+    this.numIndices = offset;
+
+    this.vertexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.wmo.portalVertices.buffer )}
+    this.indexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, new Uint16Array(indices).buffer )}
+  }
+
+  public prepareToRenderDebugPortals(renderInstManager: GfxRenderInstManager, defs: WmoDefinition[]) {
+    for (let def of defs) {
+      assert(def.wmoId === this.wmo.fileId, `WmoRenderer handed a WmoDefinition that doesn't belong to it (${def.wmoId} != ${this.wmo.fileId}`);
+      const renderInst = renderInstManager.newRenderInst();
+      let offs = renderInst.allocateUniformBuffer(DebugWmoPortalProgram.ub_ModelParams, 16);
+      const mapped = renderInst.mapUniformBufferF32(DebugWmoPortalProgram.ub_ModelParams);
+      offs += fillMatrix4x4(mapped, offs, def.modelMatrix);
+      renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
+      renderInst.setDrawCount(this.numIndices);
+      renderInst.setMegaStateFlags({ cullMode: GfxCullMode.None });
+      renderInstManager.submitRenderInst(renderInst);
+    }
+  }
+}
+
+export class LoadingAdtRenderer {
+  private inputLayout: GfxInputLayout;
+  private vertexBuffer: GfxVertexBufferDescriptor;
+  private indexBuffer: GfxIndexBufferDescriptor;
+  private scratchMat4 = mat4.create();
+  private time: number = 0;
+  public frequency = 0.1;
+  public numIndices: number;
+
+  constructor(device: GfxDevice, renderHelper: GfxRenderHelper) {
+    const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
+      { location: LoadingAdtProgram.a_Position,   bufferIndex: 0, bufferByteOffset: 0, format: GfxFormat.F32_RGB, },
+    ];
+    const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
+      { byteStride: 12, frequency: GfxVertexBufferFrequency.PerVertex, },
+    ];
+    const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
+    this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+
+    this.vertexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, loadingAdtVertices.buffer )}
+    this.numIndices = loadingAdtIndices.length;
+    this.indexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Index, loadingAdtIndices.buffer) };
+  }
+
+  public update(view: View) {
+    this.time = view.time;
+  }
+
+  public prepareToRenderLoadingBox(renderInstManager: GfxRenderInstManager, loadingAdts: [number, number][]) {
+    for (let [x, y] of loadingAdts) {
+      const renderInst = renderInstManager.newRenderInst();
+
+      let offs = renderInst.allocateUniformBuffer(LoadingAdtProgram.ub_ModelParams, 16 + 4);
+      const mapped = renderInst.mapUniformBufferF32(LoadingAdtProgram.ub_ModelParams);
+      mat4.identity(this.scratchMat4);
+      const ADT_SIZE = 1600.0 / 3.0;
+      mat4.translate(this.scratchMat4, this.scratchMat4, [MAP_SIZE - (y + 0.5) * ADT_SIZE, MAP_SIZE - (x + 0.5) * ADT_SIZE, 0]);
+      mat4.scale(this.scratchMat4, this.scratchMat4, [ADT_SIZE / 2, ADT_SIZE / 2, 500]);
+      offs += fillMatrix4x4(mapped, offs, this.scratchMat4);
+      offs += fillVec4(mapped, offs, this.frequency * this.time);
+
+      renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
+      renderInst.setBindingLayouts(LoadingAdtProgram.bindingLayouts);
+      renderInst.setDrawCount(this.numIndices, 0);
+      renderInstManager.submitRenderInst(renderInst);
+    }
+  }
+
+  public destroy(device: GfxDevice) {
+    device.destroyBuffer(this.vertexBuffer.buffer);
+    device.destroyBuffer(this.indexBuffer.buffer);
+  }
+}
+
 export class WaterRenderer {
   private inputLayout: GfxInputLayout;
-  public buffers: [GfxIndexBufferDescriptor, GfxVertexBufferDescriptor, LiquidInstance, LiquidType][] = [];
+  public buffers: [GfxIndexBufferDescriptor, GfxVertexBufferDescriptor[], LiquidInstance, LiquidType][] = [];
   public liquidTexturesByType: MapArray<number, TextureMapping> = new MapArray();
   public megaStateFlags: Partial<GfxMegaStateDescriptor>;
   public time: number = 0;
-  private scratchMat4 = mat4.create();
+  private scratchMat4 = mat4.identity(mat4.create());
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper, public liquids: LiquidInstance[], public liquidTypes: Map<number, LiquidType>, private textureCache: TextureCache) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
@@ -365,7 +473,7 @@ export class WaterRenderer {
       }
       this.buffers.push([
         layer.takeIndices(device),
-        layer.takeVertices(device),
+        [layer.takeVertices(device)],
         layer,
         liquidType
       ]);
@@ -404,7 +512,7 @@ export class WaterRenderer {
       if (visibilityArray) {
         if (!visibilityArray[i]) continue;
       }
-      const [indexBuffer, vertexBuffer, liquid, liquidType] = this.buffers[i];
+      const [indexBuffer, vertexBuffers, liquid, liquidType] = this.buffers[i];
       if (!liquid.visible) continue;
       const renderInst = renderInstManager.newRenderInst();
 
@@ -420,7 +528,7 @@ export class WaterRenderer {
       } else {
         console.warn(`no tex`)
       }
-      renderInst.setVertexInput(this.inputLayout, [vertexBuffer], indexBuffer);
+      renderInst.setVertexInput(this.inputLayout, vertexBuffers, indexBuffer);
       renderInst.setMegaStateFlags(this.megaStateFlags);
       renderInst.setDrawCount(liquid.indexCount);
       renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
@@ -447,7 +555,6 @@ export class SkyboxRenderer {
   private vertexBuffer: GfxVertexBufferDescriptor;
   private indexBuffer: GfxIndexBufferDescriptor;
   public numIndices: number;
-  private skyboxProgram: GfxProgram;
 
   constructor(device: GfxDevice, renderHelper: GfxRenderHelper) {
     const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
@@ -460,8 +567,6 @@ export class SkyboxRenderer {
     const indexBufferFormat: GfxFormat = GfxFormat.U16_R;
     this.inputLayout = renderHelper.renderCache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
 
-    this.skyboxProgram = renderHelper.renderCache.createProgram(new SkyboxProgram());
-
     this.vertexBuffer = { byteOffset: 0, buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, skyboxVertices.buffer )}
     const convertedIndices = convertToTriangleIndexBuffer(GfxTopology.TriStrips, skyboxIndices);
     this.numIndices = convertedIndices.length;
@@ -470,7 +575,6 @@ export class SkyboxRenderer {
 
   public prepareToRenderSkybox(renderInstManager: GfxRenderInstManager) {
     const renderInst = renderInstManager.newRenderInst();
-    renderInst.setGfxProgram(this.skyboxProgram);
     renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], this.indexBuffer);
     renderInst.setBindingLayouts(SkyboxProgram.bindingLayouts);
     renderInst.setDrawCount(this.numIndices, 0);

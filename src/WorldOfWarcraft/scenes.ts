@@ -13,29 +13,27 @@ import { makeBackbufferDescSimple, standardFullClearRenderPassDescriptor, pushAn
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph.js';
 import { fillMatrix4x4, fillVec4, fillVec4v } from '../gfx/helpers/UniformBufferHelpers.js';
 import { DataFetcher, NamedArrayBufferSlice } from '../DataFetcher.js';
-import { nArray } from '../util.js';
+import { assert, nArray } from '../util.js';
 import { TextureCache } from './tex.js';
 import { TextureMapping } from '../TextureHolder.js';
-import { mat4, vec3, vec4 } from 'gl-matrix';
-import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, Database, WmoGroupData, LiquidType } from './data.js';
+import { mat3, mat4, vec3, vec4 } from 'gl-matrix';
+import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, Database, WmoGroupData, LiquidType, AdtCoord, PortalData } from './data.js';
 import { getMatrixTranslation, lerp, projectionMatrixForFrustum } from "../MathHelpers.js";
 import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
-import { drawWorldSpaceAABB, drawWorldSpaceText, getDebugOverlayCanvas2D, interactiveVizSliderSelect } from '../DebugJunk.js';
-import { Frustum, AABB } from '../Geometry.js';
-import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram, SkyboxProgram, BaseProgram, WaterProgram } from './program.js';
+import { drawWorldSpaceAABB, drawWorldSpaceLine, drawWorldSpacePoint, drawWorldSpaceText, drawWorldSpaceVector, getDebugOverlayCanvas2D, interactiveVizSliderSelect } from '../DebugJunk.js';
+import { Frustum, AABB, Plane, IntersectionState } from '../Geometry.js';
+import { ModelProgram, MAX_DOODAD_INSTANCES, WmoProgram, TerrainProgram, SkyboxProgram, BaseProgram, WaterProgram, LoadingAdtProgram, DebugWmoPortalProgram } from './program.js';
 import { ViewerRenderInput } from '../viewer.js';
-import { skyboxIndices, skyboxVertices } from './skybox.js';
-import { ModelRenderer, SkyboxRenderer, TerrainRenderer, WaterRenderer, WmoRenderer } from './render.js';
+import { skyboxIndices, skyboxVertices } from './mesh.js';
+import { DebugWmoPortalRenderer, LoadingAdtRenderer, ModelRenderer, SkyboxRenderer, TerrainRenderer, WaterRenderer, WmoRenderer } from './render.js';
 import { Water } from '../Glover/parsers/GloverLevel.cjs';
+import { Color, colorNewFromRGBA } from '../Color.js';
 
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
-
-const DEBUG_DRAW_ADT_BOUNDING_BOXES = false;
-const DEBUG_DRAW_WMO_BOUNDING_BOXES = false;
 
 export const noclipSpaceFromAdtSpace = mat4.fromValues(
   0, 0, -1, 0,
@@ -84,8 +82,7 @@ export class View {
     public frustum: Frustum = new Frustum();
     public time: number;
     public deltaTime: number;
-    // public farPlane = 1000; FIXME
-    public farPlane = Infinity;
+    public farPlane = 1000;
     public timeOffset = 1440;
     public secondsPerGameDay = 60;
 
@@ -145,6 +142,11 @@ enum CullingState {
   OneShot,
 }
 
+enum CameraState {
+  Frozen,
+  Running,
+}
+
 export class MapArray<K, V> {
   public map: Map<K, V[]> = new Map();
 
@@ -188,17 +190,92 @@ export class MapArray<K, V> {
   }
 }
 
+let drawPortalScratchVec3a = vec3.create();
+let drawPortalScratchVec3b = vec3.create();
+function debugDrawPortal(portal: PortalData, view: View, name: string, level: number) {
+  const colors = [
+    colorNewFromRGBA(1, 0, 0),
+    colorNewFromRGBA(0, 1, 0),
+    colorNewFromRGBA(0, 0, 1),
+    colorNewFromRGBA(1, 1, 0),
+    colorNewFromRGBA(0, 1, 1),
+    colorNewFromRGBA(1, 1, 1),
+  ];
+  for (let i in portal.points) {
+    const p = portal.points[i];
+    drawWorldSpacePoint(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, p, colors[level], 10);
+    drawWorldSpaceText(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, p, `${i}`);
+  }
+  vec3.lerp(drawPortalScratchVec3a, portal.points[0], portal.points[1], 0.5);
+  vec3.lerp(drawPortalScratchVec3b, portal.points[2], portal.points[3], 0.5);
+  vec3.lerp(drawPortalScratchVec3a, drawPortalScratchVec3a, drawPortalScratchVec3b, 0.5);
+  drawWorldSpaceText(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, drawPortalScratchVec3a, name);
+  // drawWorldSpaceAABB(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, portal.aabb);
+
+  drawDebugPlane(portal.plane, view, colors[level]);
+}
+
+function drawDebugPlane(plane: Plane, view: View, color: Color | undefined = undefined) {
+  vec3.scale(drawPortalScratchVec3a, plane.n, plane.d);
+  drawWorldSpacePoint(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, drawPortalScratchVec3a);
+  drawWorldSpaceText(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, drawPortalScratchVec3a, 'plane');
+  // drawWorldSpaceVector(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, drawFrustumScratchVec3a, plane.n, 10.0);
+}
+
+let drawFrustumScratchVec3a = vec3.create();
+let drawFrustumScratchVec3b = vec3.create();
+function debugDrawFrustum(cameraPos: vec3, f: Frustum, view: View, color: Color | undefined = undefined) {
+  const near = f.planes[4];
+  const far = f.planes[5];
+  let planePairs = [
+    [0, 2], // Left/Top
+    [1, 2], // Right/Top
+    [1, 3], // Right/Bottom
+    [0, 3], // Left/Bottom
+  ];
+  for (let [p1, p2] of planePairs) {
+    findIncidentPoint(drawFrustumScratchVec3a, f.planes[p1], f.planes[p2], near);
+    findIncidentPoint(drawFrustumScratchVec3b, f.planes[p1], f.planes[p2], far);
+    drawWorldSpaceLine(
+      getDebugOverlayCanvas2D(),
+      view.clipFromWorldMatrix,
+      drawFrustumScratchVec3a,
+      drawFrustumScratchVec3b,
+      color
+    );
+  }
+}
+
+let incidentScratchMat = mat3.create();
+let incidentScratchVec3 = vec3.create();
+function findIncidentPoint(dst: vec3, p1: Plane, p2: Plane, p3: Plane) {
+  incidentScratchMat[0] = p1.n[0];
+  incidentScratchMat[1] = p2.n[0];
+  incidentScratchMat[2] = p3.n[0];
+  incidentScratchMat[3] = p1.n[1];
+  incidentScratchMat[4] = p2.n[1];
+  incidentScratchMat[5] = p3.n[1];
+  incidentScratchMat[6] = p1.n[2];
+  incidentScratchMat[7] = p2.n[2];
+  incidentScratchMat[8] = p3.n[2];
+  mat3.invert(incidentScratchMat, incidentScratchMat);
+  incidentScratchVec3[0] = -p1.d;
+  incidentScratchVec3[1] = -p2.d;
+  incidentScratchVec3[2] = -p3.d;
+  vec3.transformMat3(dst, incidentScratchVec3, incidentScratchMat);
+}
+
 export class WdtScene implements Viewer.SceneGfx {
   private terrainRenderers: Map<number, TerrainRenderer> = new Map();
   private adtWaterRenderers: Map<number, WaterRenderer> = new Map();
   private wmoWaterRenderers: Map<number, WaterRenderer> = new Map();
   private modelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
+  private debugWmoPortalRenderers: Map<number, DebugWmoPortalRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
+  private loadingAdtRenderer: LoadingAdtRenderer;
   private renderInstListMain = new GfxRenderInstList();
 
-  public MAX_EXTERIOR_WMO_RENDER_DIST = 1000;
-  public MAX_INTERIOR_WMO_RENDER_DIST = 500;
   public ADT_LOD0_DISTANCE = 1000;
 
   private terrainProgram: GfxProgram;
@@ -206,6 +283,8 @@ export class WdtScene implements Viewer.SceneGfx {
   private modelProgram: GfxProgram;
   private wmoProgram: GfxProgram;
   private skyboxProgram: GfxProgram;
+  private loadingAdtProgram: GfxProgram;
+  private debugWmoPortalProgram: GfxProgram;
 
   private modelIdToDoodads: MapArray<number, DoodadData> = new MapArray();
   private wmoIdToDefs: MapArray<number, WmoDefinition> = new MapArray();
@@ -213,8 +292,14 @@ export class WdtScene implements Viewer.SceneGfx {
   public mainView = new View();
   private textureCache: TextureCache;
   public enableProgressiveLoading = false;
-  public cullingState = CullingState.Running;
   public currentAdtCoords: [number, number] = [0, 0];
+  public loadingAdts: [number, number][] = [];
+
+  public debug = false;
+  public cullingState = CullingState.Running;
+  public cameraState = CameraState.Running;
+  public frozenCamera = vec3.create();
+  public frozenFrustum = new Frustum();
 
   constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private db: Database) {
     console.time('WdtScene construction');
@@ -224,6 +309,8 @@ export class WdtScene implements Viewer.SceneGfx {
     this.modelProgram = this.renderHelper.renderCache.createProgram(new ModelProgram());
     this.wmoProgram = this.renderHelper.renderCache.createProgram(new WmoProgram());
     this.skyboxProgram = this.renderHelper.renderCache.createProgram(new SkyboxProgram());
+    this.loadingAdtProgram = this.renderHelper.renderCache.createProgram(new LoadingAdtProgram());
+    this.debugWmoPortalProgram = this.renderHelper.renderCache.createProgram(new DebugWmoPortalProgram());
 
     if (this.world.globalWmo) {
       this.setupWmoDef(this.world.globalWmoDef!);
@@ -235,6 +322,7 @@ export class WdtScene implements Viewer.SceneGfx {
     }
 
     this.skyboxRenderer = new SkyboxRenderer(device, this.renderHelper);
+    this.loadingAdtRenderer = new LoadingAdtRenderer(device, this.renderHelper);
     console.timeEnd('WdtScene construction');
   }
 
@@ -294,7 +382,14 @@ export class WdtScene implements Viewer.SceneGfx {
       wmo.liquids,
       wmo.liquidTypes,
       this.textureCache
-    ))
+    ));
+    if (wmo.portalVertices.length > 0) {
+      this.debugWmoPortalRenderers.set(wmo.fileId, new DebugWmoPortalRenderer(
+        this.device,
+        this.renderHelper,
+        wmo
+      ));
+    }
     for (let model of wmo.models.values()) {
       this.createModelRenderer(model);
     }
@@ -318,6 +413,26 @@ export class WdtScene implements Viewer.SceneGfx {
     return this.cullingState !== CullingState.Paused;
   }
 
+  public freezeCamera() {
+    this.cameraState = CameraState.Frozen;
+    vec3.copy(this.frozenCamera, this.mainView.cameraPos);
+    for (let i in this.frozenFrustum.planes) {
+      this.frozenFrustum.planes[i].copy(this.mainView.frustum.planes[i]);
+    }
+  }
+
+  public getCameraAndFrustum(): [vec3, Frustum] {
+    if (this.cameraState === CameraState.Frozen) {
+      return [this.frozenCamera, this.frozenFrustum];
+    } else {
+      return [this.mainView.cameraPos, this.mainView.frustum];
+    }
+  }
+
+  public unfreezeCamera() {
+    this.cameraState = CameraState.Running;
+  }
+
   private updateCullingState() {
     if (this.cullingState === CullingState.OneShot) {
       this.cullingState = CullingState.Paused;
@@ -338,7 +453,7 @@ export class WdtScene implements Viewer.SceneGfx {
 
   public cull() {
     if (this.world.globalWmo) {
-
+      this.cullWmoDef(this.world.globalWmoDef!, this.world.globalWmo);
     } else {
       for (let adt of this.world.adts) {
         this.cullAdt(adt);
@@ -346,43 +461,115 @@ export class WdtScene implements Viewer.SceneGfx {
     }
   }
 
-  public cullWmoDef(def: WmoDefinition, wmo: WmoData) {
-    if (DEBUG_DRAW_WMO_BOUNDING_BOXES) {
-      drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, def.worldSpaceAABB);
-      for (let groupAABB of def.groupDefAABBs.values()) {
-        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, groupAABB);
+  private wmoPortalCull(
+    wmo: WmoData,
+    def: WmoDefinition,
+    cameraPos: vec3,
+    frustum: Frustum,
+    currentGroupId: number,
+    visibleGroups: number[],
+    level = 0
+  ) {
+    if (visibleGroups.includes(currentGroupId)) return;
+    visibleGroups.push(currentGroupId);
+    const group = wmo.getGroup(currentGroupId)!;
+    const portalRefs = wmo.portalRefs.slice(group.portalStart, group.portalStart + group.portalCount);
+    for (let portalRef of portalRefs) {
+      const portal = def.worldSpacePortals[portalRef.portal_index];
+      const otherGroup = wmo.groups[portalRef.group_index];
+      const name = `${currentGroupId} -> ${otherGroup.fileId} (${level})`;
+      if (this.debug) {
+        debugDrawPortal(portal, this.mainView, name, level);
       }
-      for (let aabb of def.liquidAABBs) {
-        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, aabb);
+      if (visibleGroups.includes(otherGroup.fileId)) {
+        continue;
       }
+      if (!portal.inFrustum(frustum)) {
+        continue;
+      }
+      // check if we're facing the front of the portal
+      const dist = portal.plane.distanceVec3(cameraPos);
+      if (portalRef.side < 0 && dist > 0) {
+        continue;
+      } else if (portalRef.side > 0 && dist < 0) {
+        continue;
+      }
+      let portalFrustum = portal.clipFrustum(cameraPos, frustum, portalRef.side);
+      if (this.debug) {
+        debugDrawFrustum(cameraPos, portalFrustum, this.mainView, colorNewFromRGBA(0, 1, 0));
+      }
+      this.wmoPortalCull(
+        wmo,
+        def,
+        cameraPos,
+        portalFrustum,
+        otherGroup.fileId,
+        visibleGroups,
+        level + 1,
+      );
     }
-    def.setVisible(this.mainView.frustum.contains(def.worldSpaceAABB));
+  }
+
+  public cullWmoDef(def: WmoDefinition, wmo: WmoData) {
+    const [cameraPos, frustum] = this.getCameraAndFrustum();
+    def.setVisible(false);
+    // drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, def.worldSpaceAABB);
+    def.visible = frustum.contains(def.worldSpaceAABB);
     if (!def.visible) {
       return;
     }
-    // TODO: portal culling
-    for (let [groupId, groupAABB] of def.groupDefAABBs.entries()) {
-      if (this.mainView.frustum.contains(groupAABB)) {
-        const group = wmo.groups.find(group => group.fileId === groupId)!;
-        const distance = this.mainView.cameraDistanceToWorldSpaceAABB(groupAABB);
-        if (group.flags.exterior) {
-          def.setGroupVisible(groupId, distance < this.MAX_EXTERIOR_WMO_RENDER_DIST);
-        } else {
-          def.setGroupVisible(groupId, distance < this.MAX_INTERIOR_WMO_RENDER_DIST);
-        }
-      } else {
-        def.setGroupVisible(groupId, false);
+
+    // Get a list of the groups whose AABBs we're within
+    let rootGroups: number[] = [];
+    for (let [groupId, groupAABB] of def.groupDefWorldSpaceAABBs.entries()) {
+      if (groupAABB.containsPoint(cameraPos)) {
+        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, groupAABB);
+        rootGroups.push(groupId);
       }
     }
-    for (let i=0; i<def.liquidAABBs.length; i++) {
-      def.liquidVisibility[i] = this.mainView.frustum.contains(def.liquidAABBs[i]);
+    if (this.debug) {
+      debugDrawFrustum(cameraPos, frustum, this.mainView);
+    }
+
+    // If we're not inside any WMOs, check for exterior WMOs in sight
+    // if (rootGroups.length === 0) {
+    //   for (let [groupId, groupAABB] of def.groupDefAABBs.entries()) {
+    //     const group = wmo.getGroup(groupId)!;
+    //     if (group.flags.exterior && frustum.contains(groupAABB)) {
+    //       rootGroups.push(groupId);
+    //     }
+    //   }
+    // }
+
+    // // If we still don't have any groups, the user might be flying out of
+    // // bounds, so just choose the closest group to them
+    // if (rootGroups.length === 0) {
+    //   let closest: [number, number] = [Infinity, -1];
+    //   for (let [groupId, groupAABB] of def.groupDefAABBs.entries()) {
+    //     if (this.mainView.frustum.contains(groupAABB)) {
+    //       const dist = groupAABB.distanceVec3(cameraPos);
+    //       if (dist < closest[0]) {
+    //         closest = [dist, groupId];
+    //       }
+    //     }
+    //   }
+    //   if (closest[1] !== -1) {
+    //     rootGroups.push(closest[1]);
+    //   }
+    // }
+
+    // do portal culling on the visible groups
+    let visibleGroups: number[] = [];
+    for (let groupId of rootGroups) {
+      this.wmoPortalCull(wmo, def, cameraPos, frustum, groupId, visibleGroups);
+    }
+
+    for (let groupId of visibleGroups) {
+      def.setGroupVisible(groupId, true);
     }
   }
 
   public cullAdt(adt: AdtData) {
-    if (DEBUG_DRAW_ADT_BOUNDING_BOXES) {
-      drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, adt.worldSpaceAABB);
-    }
     if (this.mainView.frustum.contains(adt.worldSpaceAABB)) {
       adt.setVisible(true);
       for (let chunk of adt.chunkData) {
@@ -419,6 +606,14 @@ export class WdtScene implements Viewer.SceneGfx {
     this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
 
+    template.setGfxProgram(this.loadingAdtProgram);
+    template.setBindingLayouts(LoadingAdtProgram.bindingLayouts);
+    this.loadingAdtRenderer.update(this.mainView);
+    this.loadingAdtRenderer.prepareToRenderLoadingBox(
+      this.renderHelper.renderInstManager,
+      this.loadingAdts
+    );
+
     if (this.shouldCull()) {
       this.cull();
     }
@@ -448,6 +643,13 @@ export class WdtScene implements Viewer.SceneGfx {
       renderer.prepareToRenderWmo(this.renderHelper.renderInstManager, defs);
     }
 
+    // template.setGfxProgram(this.debugWmoPortalProgram);
+    // template.setBindingLayouts(DebugWmoPortalProgram.bindingLayouts);
+    // for (let [wmoId, renderer] of this.debugWmoPortalRenderers.entries()) {
+    //   const defs = this.wmoIdToDefs.get(wmoId)!;
+    //   renderer.prepareToRenderDebugPortals(this.renderHelper.renderInstManager, defs);
+    // }
+
     template.setBindingLayouts(ModelProgram.bindingLayouts);
     template.setGfxProgram(this.modelProgram);
     for (let [modelId, renderer] of this.modelRenderers.entries()) {
@@ -469,7 +671,13 @@ export class WdtScene implements Viewer.SceneGfx {
       if (this.currentAdtCoords[0] !== adtCoords[0] || this.currentAdtCoords[1] !== adtCoords[1]) {
         this.currentAdtCoords = adtCoords;
         if (this.enableProgressiveLoading && 'onEnterAdt' in this.world) {
-          this.world.onEnterAdt(this.currentAdtCoords, this);
+          const newCoords = this.world.onEnterAdt(this.currentAdtCoords, (coord: AdtCoord, adt: AdtData) => {
+            this.loadingAdts = this.loadingAdts.filter(([x, y]) => !(x === coord[0] && y === coord[1]));
+            this.setupAdt(adt);
+          });
+          for (let coord of newCoords) {
+            this.loadingAdts.push(coord);
+          }
         }
       }
     }
@@ -573,7 +781,7 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     const cache = new WowCache(dataFetcher, db);
     const renderHelper = new GfxRenderHelper(device);
     rust.init_panic_hook();
-    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 1, dataFetcher, cache);
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 2, dataFetcher, cache);
     console.time('loading wdt')
     await wdt.load();
     console.timeEnd('loading wdt')
@@ -599,7 +807,7 @@ const sceneDescs = [
     new WdtSceneDesc('Razorfen Downs', 790517, 129),
     new WdtSceneDesc('Blackfathom Deeps', 780169, 48),
     new WdtSceneDesc('Uldaman', 791372, 70),
-    new WdtSceneDesc('Gnomeragon', 782773, 90),
+    new WdtSceneDesc('Gnomeregon', 782773, 90),
     new WdtSceneDesc('Sunken Temple', 791166, 109),
     new WdtSceneDesc('Scarlet Monastery - Graveyard', 788662, 189),
     new WdtSceneDesc('Scarlet Monastery - Cathedral', 788662, 189),
