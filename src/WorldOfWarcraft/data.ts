@@ -6,7 +6,7 @@ import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBuff
 import { rust } from "../rustlib.js";
 import { fetchFileByID, fetchDataByFileID, getFilePath, getFileDataId } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
-import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene, View } from "./scenes.js";
+import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene, View, placementSpaceFromAdtSpace, MAP_SIZE, modelSpaceFromPlacementSpace } from "./scenes.js";
 import { AABB, Frustum, IntersectionState, Plane } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
 import { BaseProgram, ModelProgram, WmoProgram } from "./program.js";
@@ -17,9 +17,6 @@ import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 import { assert } from "../util.js";
 import { drawWorldSpaceLine, drawWorldSpacePoint, getDebugOverlayCanvas2D } from "../DebugJunk.js";
-
-// game world size in game units
-export const MAP_SIZE = 17066;
 
 export class Database {
   private inner: WowDatabase;
@@ -204,6 +201,12 @@ export class LiquidType {
     }
     return path;
   }
+}
+
+function convertWowVec3(wowVec3: WowVec3): vec3 {
+  const result = vec3.fromValues(wowVec3.x, wowVec3.y, wowVec3.z);
+  wowVec3.free();
+  return result;
 }
 
 function convertWowAABB(aabb: WowAABBox): AABB {
@@ -500,6 +503,7 @@ export class WmoGroupData {
   public indices: Uint8Array;
   public uvs: Uint8Array;
   public colors: Uint8Array;
+  public portalRefs: WowWmoPortalRef[];
 
   constructor(public fileId: number) {
   }
@@ -624,7 +628,7 @@ export class WmoData {
   public groups: WmoGroupData[] = [];
   public groupInfos: WowWmoGroupInfo[] = [];
   public groupIdToIndex: Map<number, number> = new Map();
-  public groupAABBs: AABB[] = [];
+  public groupDefAABBs: Map<number, AABB> = new Map();
   public portals: PortalData[] = [];
   public portalRefs: WowWmoPortalRef[] = [];
   public portalVertices: Float32Array;
@@ -673,6 +677,7 @@ export class WmoData {
     for (let i=0; i<this.wmo.group_file_ids.length; i++) {
       const gfid = this.wmo.group_file_ids[i];
       const group = await cache.loadWmoGroup(gfid);
+      group.portalRefs = this.portalRefs.slice(group.portalStart, group.portalStart + group.portalCount);
       if (group.liquids) {
         group.liquidIndex = this.liquids.length;
         for (let liquid of group.liquids) {
@@ -689,7 +694,7 @@ export class WmoData {
       this.groupIdToIndex.set(group.fileId, this.groups.length);
       this.groups.push(group);
       const groupInfo = this.groupInfos[i];
-      this.groupAABBs.push(convertWowAABB(groupInfo.bounding_box));
+      this.groupDefAABBs.set(group.fileId, convertWowAABB(groupInfo.bounding_box));
     }
   }
 
@@ -997,6 +1002,16 @@ export class PortalData {
     return this.points.filter(point => frustum.containsPoint(point));
   }
 
+  public isPortalFacingUs(cameraPos: vec3, side: number) {
+    const dist = this.plane.distanceVec3(cameraPos);
+    if (side < 0 && dist > -0.01) {
+      return false;
+    } else if (side > 0 && dist < 0.01) {
+      return false;
+    }
+    return true;
+  }
+
   public clipFrustum(cameraPoint: vec3, currentFrustum: Frustum, side: number): Frustum {
     const result = new Frustum();
     const [p1, p2, p3, p4] = this.points;
@@ -1030,13 +1045,13 @@ export class PortalData {
 
 export class WmoDefinition {
   public modelMatrix: mat4 = mat4.create();
+  public placementMatrix: mat4 = mat4.create();
+  public invPlacementMatrix: mat4 = mat4.create();
   public invModelMatrix: mat4 = mat4.create();
   public normalMatrix: mat4 = mat4.create();
-  public worldSpaceAABB: AABB = new AABB();
-  public groupDefWorldSpaceAABBs: Map<number, AABB> = new Map();
-  public worldSpacePortals: PortalData[] = [];
 
-  public portals: PortalData[] = [];
+  public aabb: AABB = new AABB();
+  public worldAABB: AABB = new AABB();
 
   public visible = true;
   public doodads: DoodadData[] = [];
@@ -1059,25 +1074,9 @@ export class WmoDefinition {
 
   static fromAdtDefinition(def: WowAdtWmoDefinition, wmo: WmoData) {
     const scale = def.scale / 1024;
-    const defPos = def.position;
-    const position: vec3 = [
-      defPos.x - MAP_SIZE,
-      defPos.y,
-      defPos.z - MAP_SIZE,
-    ];
-    defPos.free();
-    const defRot = def.rotation;
-    const rotation: vec3 = [
-      defRot.x,
-      defRot.y,
-      defRot.z,
-    ];
-    defRot.free();
+    const position = convertWowVec3(def.position);
+    const rotation = convertWowVec3(def.rotation);
     const aabb = convertWowAABB(def.extents);
-    aabb.minX -= MAP_SIZE;
-    aabb.minZ -= MAP_SIZE;
-    aabb.maxX -= MAP_SIZE;
-    aabb.maxZ -= MAP_SIZE;
     const fileId = def.name_id;
     const uniqueId = def.unique_id;
     const doodadSet = def.doodad_set;
@@ -1087,25 +1086,9 @@ export class WmoDefinition {
 
   static fromGlobalDefinition(def: WowGlobalWmoDefinition, wmo: WmoData) {
     const scale = 1.0;
-    const defPos = def.position;
-    const position: vec3 = [
-      defPos.x - MAP_SIZE,
-      defPos.y,
-      defPos.z - MAP_SIZE,
-    ];
-    defPos.free();
-    const defRot = def.rotation;
-    const rotation: vec3 = [
-      defRot.x,
-      defRot.y,
-      defRot.z,
-    ];
-    defRot.free();
+    const position = convertWowVec3(def.position);
+    const rotation = convertWowVec3(def.rotation);
     const aabb = convertWowAABB(def.extents);
-    aabb.minX -= MAP_SIZE;
-    aabb.minZ -= MAP_SIZE;
-    aabb.maxX -= MAP_SIZE;
-    aabb.maxZ -= MAP_SIZE;
     const fileId = def.name_id;
     const uniqueId = def.unique_id;
     const doodadSet = def.doodad_set;
@@ -1115,21 +1098,18 @@ export class WmoDefinition {
 
   // `extents` should be in placement space
   constructor(public wmoId: number, wmo: WmoData, public uniqueId: number, public doodadSet: number, scale: number, position: vec3, rotation: vec3, extents: AABB) {
-    setMatrixTranslation(this.modelMatrix, position);
-    mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
-    mat4.rotateZ(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[2]);
-    mat4.rotateY(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[1]);
-    mat4.rotateX(this.modelMatrix, this.modelMatrix, MathConstants.DEG_TO_RAD * rotation[0]);
-    mat4.mul(this.modelMatrix, this.modelMatrix, placementSpaceFromModelSpace);
+    setMatrixTranslation(this.placementMatrix, position);
+    mat4.scale(this.placementMatrix, this.placementMatrix, [scale, scale, scale]);
+    mat4.rotateZ(this.placementMatrix, this.placementMatrix, MathConstants.DEG_TO_RAD * rotation[2]);
+    mat4.rotateY(this.placementMatrix, this.placementMatrix, MathConstants.DEG_TO_RAD * rotation[1]);
+    mat4.rotateX(this.placementMatrix, this.placementMatrix, MathConstants.DEG_TO_RAD * rotation[0]);
+    mat4.mul(this.modelMatrix, this.placementMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.modelMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
 
-    for (let portal of wmo.portals) {
-      const worldSpacePortal = portal.clone();
-      worldSpacePortal.transform(this.modelMatrix);
-      this.worldSpacePortals.push(worldSpacePortal);
-    }
-
     mat4.invert(this.invModelMatrix, this.modelMatrix);
+    mat4.invert(this.invPlacementMatrix, this.placementMatrix);
+    mat4.mul(this.invPlacementMatrix, this.invPlacementMatrix, placementSpaceFromAdtSpace);
+    mat4.mul(this.invPlacementMatrix, modelSpaceFromPlacementSpace, this.invPlacementMatrix);
 
     mat4.mul(this.normalMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.invert(this.normalMatrix, this.normalMatrix);
@@ -1137,9 +1117,8 @@ export class WmoDefinition {
 
     for (let i=0; i<wmo.groups.length; i++) {
       const group = wmo.groups[i];
-      const groupAABB = new AABB();
-      groupAABB.transform(wmo.groupAABBs[i], this.modelMatrix);
-      this.groupDefWorldSpaceAABBs.set(group.fileId, groupAABB);
+      this.groupIdToVisibility.set(group.fileId, true);
+
       for (let i=group.liquidIndex; i<group.liquidIndex + group.numLiquids; i++) {
         this.groupIdToLiquidIndices.append(group.fileId, i);
       }
@@ -1178,17 +1157,14 @@ export class WmoDefinition {
       }
     }
 
-    this.worldSpaceAABB.transform(extents, adtSpaceFromPlacementSpace);
+    this.aabb.transform(extents, this.invPlacementMatrix);
+    this.aabb.transform(extents, modelSpaceFromPlacementSpace);
+    this.worldAABB.transform(extents, adtSpaceFromPlacementSpace);
     this.visible = true;
   }
 
   public isWmoGroupVisible(groupFileId: number): boolean {
-    const visible = this.groupIdToVisibility.get(groupFileId);
-    // default to false
-    if (visible === undefined) {
-      return false;
-    }
-    return visible;
+    return this.groupIdToVisibility.get(groupFileId)!;
   }
 
   public setGroupVisible(groupId: number, visible: boolean) {
@@ -1236,7 +1212,6 @@ export class LiquidInstance {
     const indices = liquid.take_indices();
     const indexCount = indices.length;
     const liquidType = liquid.get_liquid_type();
-    // const liquidObjectId = liquid.get_liquid_object_id();
     const worldSpaceAABB = convertWowAABB(liquid.extents);
     return new LiquidInstance(vertices, indices, indexCount, liquidType, worldSpaceAABB);
   }
@@ -1452,7 +1427,7 @@ export class DoodadData {
 
   static fromAdtDoodad(doodad: WowDoodad): DoodadData {
     const doodadPos = doodad.position;
-    let position: vec3 = [doodadPos.x - MAP_SIZE, doodadPos.y, doodadPos.z - MAP_SIZE];
+    let position: vec3 = [doodadPos.x, doodadPos.y, doodadPos.z];
     doodadPos.free();
     const doodadRot = doodad.rotation;
     let rotation: vec3 = [doodadRot.x, doodadRot.y, doodadRot.z];

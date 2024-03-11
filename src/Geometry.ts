@@ -402,6 +402,13 @@ export class Frustum {
 
         return true;
     }
+
+    public transform(src: Frustum, m: ReadonlyMat4): void {
+        for (let i in this.planes) {
+            this.planes[i].copy(src.planes[i]);
+            this.planes[i].transform(m);
+        }
+    }
 }
 
 /**

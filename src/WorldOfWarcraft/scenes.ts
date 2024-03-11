@@ -35,12 +35,15 @@ import { Color, colorNewFromRGBA } from '../Color.js';
 const id = 'WorldOfWarcaft';
 const name = 'World of Warcraft';
 
+export const MAP_SIZE = 17066;
+
 export const noclipSpaceFromAdtSpace = mat4.fromValues(
   0, 0, -1, 0,
   -1, 0, 0, 0,
   0, 1, 0, 0,
-  0, 0, 0, 1,
+  MAP_SIZE, 0, MAP_SIZE, 1,
 );
+export const placementSpaceFromAdtSpace = noclipSpaceFromAdtSpace;
 
 export const noclipSpaceFromModelSpace = mat4.fromValues(
   0, 0, 1, 0,
@@ -66,7 +69,10 @@ export const placementSpaceFromModelSpace: mat4 = mat4.invert(mat4.create(), noc
 mat4.mul(placementSpaceFromModelSpace, placementSpaceFromModelSpace, noclipSpaceFromModelSpace);
 
 export const modelSpaceFromAdtSpace: mat4 = mat4.invert(mat4.create(), adtSpaceFromModelSpace);
+export const modelSpaceFromPlacementSpace: mat4 = mat4.invert(mat4.create(), placementSpaceFromModelSpace);
 
+
+const scratchVec3 = vec3.create();
 export class View {
     // aka viewMatrix
     public viewFromWorldMatrix = mat4.create();
@@ -85,8 +91,6 @@ export class View {
     public farPlane = 1000;
     public timeOffset = 1440;
     public secondsPerGameDay = 60;
-
-    private scratchVec3 = vec3.create();
 
     public finishSetup(): void {
       mat4.invert(this.worldFromViewMatrix, this.viewFromWorldMatrix);
@@ -114,8 +118,8 @@ export class View {
     }
 
     public cameraDistanceToWorldSpaceAABB(aabb: AABB): number {
-      aabb.centerPoint(this.scratchVec3);
-      return vec3.distance(this.cameraPos, this.scratchVec3);
+      aabb.centerPoint(scratchVec3);
+      return vec3.distance(this.cameraPos, scratchVec3);
     }
 
     public setupFromViewerInput(viewerInput: Viewer.ViewerRenderInput): void {
@@ -192,7 +196,7 @@ export class MapArray<K, V> {
 
 let drawPortalScratchVec3a = vec3.create();
 let drawPortalScratchVec3b = vec3.create();
-function debugDrawPortal(portal: PortalData, view: View, name: string, level: number) {
+function drawDebugPortal(portal: PortalData, view: View, name: string, level: number) {
   const colors = [
     colorNewFromRGBA(1, 0, 0),
     colorNewFromRGBA(0, 1, 0),
@@ -206,13 +210,12 @@ function debugDrawPortal(portal: PortalData, view: View, name: string, level: nu
     drawWorldSpacePoint(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, p, colors[level], 10);
     drawWorldSpaceText(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, p, `${i}`);
   }
-  vec3.lerp(drawPortalScratchVec3a, portal.points[0], portal.points[1], 0.5);
-  vec3.lerp(drawPortalScratchVec3b, portal.points[2], portal.points[3], 0.5);
-  vec3.lerp(drawPortalScratchVec3a, drawPortalScratchVec3a, drawPortalScratchVec3b, 0.5);
-  drawWorldSpaceText(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, drawPortalScratchVec3a, name);
+  // vec3.lerp(drawPortalScratchVec3a, portal.points[0], portal.points[1], 0.5);
+  // vec3.lerp(drawPortalScratchVec3b, portal.points[2], portal.points[3], 0.5);
+  // vec3.lerp(drawPortalScratchVec3a, drawPortalScratchVec3a, drawPortalScratchVec3b, 0.5);
+  // drawWorldSpaceText(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, drawPortalScratchVec3a, name);
   // drawWorldSpaceAABB(getDebugOverlayCanvas2D(), view.clipFromWorldMatrix, portal.aabb);
-
-  drawDebugPlane(portal.plane, view, colors[level]);
+  // drawDebugPlane(portal.plane, view, colors[level]);
 }
 
 function drawDebugPlane(plane: Plane, view: View, color: Color | undefined = undefined) {
@@ -224,7 +227,7 @@ function drawDebugPlane(plane: Plane, view: View, color: Color | undefined = und
 
 let drawFrustumScratchVec3a = vec3.create();
 let drawFrustumScratchVec3b = vec3.create();
-function debugDrawFrustum(cameraPos: vec3, f: Frustum, view: View, color: Color | undefined = undefined) {
+function drawDebugFrustum(f: Frustum, view: View, color: Color | undefined = undefined) {
   const near = f.planes[4];
   const far = f.planes[5];
   let planePairs = [
@@ -300,6 +303,8 @@ export class WdtScene implements Viewer.SceneGfx {
   public cameraState = CameraState.Running;
   public frozenCamera = vec3.create();
   public frozenFrustum = new Frustum();
+  private modelCamera = vec3.create();
+  private modelFrustum = new Frustum();
 
   constructor(private device: GfxDevice, public world: WorldData | LazyWorldData, public renderHelper: GfxRenderHelper, private db: Database) {
     console.time('WdtScene construction');
@@ -473,13 +478,12 @@ export class WdtScene implements Viewer.SceneGfx {
     if (visibleGroups.includes(currentGroupId)) return;
     visibleGroups.push(currentGroupId);
     const group = wmo.getGroup(currentGroupId)!;
-    const portalRefs = wmo.portalRefs.slice(group.portalStart, group.portalStart + group.portalCount);
-    for (let portalRef of portalRefs) {
-      const portal = def.worldSpacePortals[portalRef.portal_index];
+    for (let portalRef of group.portalRefs) {
+      const portal = wmo.portals[portalRef.portal_index];
       const otherGroup = wmo.groups[portalRef.group_index];
       const name = `${currentGroupId} -> ${otherGroup.fileId} (${level})`;
       if (this.debug) {
-        debugDrawPortal(portal, this.mainView, name, level);
+        drawDebugPortal(portal, this.mainView, name, level);
       }
       if (visibleGroups.includes(otherGroup.fileId)) {
         continue;
@@ -487,16 +491,13 @@ export class WdtScene implements Viewer.SceneGfx {
       if (!portal.inFrustum(frustum)) {
         continue;
       }
-      // check if we're facing the front of the portal
-      const dist = portal.plane.distanceVec3(cameraPos);
-      if (portalRef.side < 0 && dist > 0) {
-        continue;
-      } else if (portalRef.side > 0 && dist < 0) {
+      // check if the business end of the portal's facing us
+      if (!portal.isPortalFacingUs(cameraPos, portalRef.side)) {
         continue;
       }
       let portalFrustum = portal.clipFrustum(cameraPos, frustum, portalRef.side);
       if (this.debug) {
-        debugDrawFrustum(cameraPos, portalFrustum, this.mainView, colorNewFromRGBA(0, 1, 0));
+        drawDebugFrustum(portalFrustum, this.mainView, colorNewFromRGBA(1, 0, 0));
       }
       this.wmoPortalCull(
         wmo,
@@ -511,74 +512,96 @@ export class WdtScene implements Viewer.SceneGfx {
   }
 
   public cullWmoDef(def: WmoDefinition, wmo: WmoData) {
-    const [cameraPos, frustum] = this.getCameraAndFrustum();
+    const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
+    vec3.transformMat4(this.modelCamera, worldCamera, def.invPlacementMatrix);
+    this.modelFrustum.transform(worldFrustum, def.invPlacementMatrix);
+
+    // Start with everything invisible
     def.setVisible(false);
-    // drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, def.worldSpaceAABB);
-    def.visible = frustum.contains(def.worldSpaceAABB);
+
+    // Check if we're looking at this particular world-space WMO, then do the
+    // rest of culling in model space
+    def.visible = worldFrustum.contains(def.worldAABB);
     if (!def.visible) {
       return;
     }
 
-    // Get a list of the groups whose AABBs we're within
+    // Get a list of the interior groups we're within, and external groups we can see
     let rootGroups: number[] = [];
-    for (let [groupId, groupAABB] of def.groupDefWorldSpaceAABBs.entries()) {
-      if (groupAABB.containsPoint(cameraPos)) {
-        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, groupAABB);
+    for (let [groupId, groupAABB] of wmo.groupDefAABBs.entries()) {
+      const group = wmo.getGroup(groupId)!;
+      // TODO: if we use the BSP to detect if we're *actually* inside an
+      // interior group, we can cull even more groups since some AABBs are
+      // quite a bit larger than the actual group geometry
+      // TODO: detect when we're fully inside a WMO so we can cull all ADTs and
+      // non-visible exterior WMOs
+      if (groupAABB.containsPoint(this.modelCamera) || group.flags.exterior && this.modelFrustum.contains(groupAABB)) {
+        def.setGroupVisible(groupId, true);
         rootGroups.push(groupId);
       }
     }
-    if (this.debug) {
-      debugDrawFrustum(cameraPos, frustum, this.mainView);
+
+    // If we still don't have any groups, the user might be flying out of
+    // bounds, so just show the closest visible one
+    if (rootGroups.length === 0) {
+      let closestGroupId = undefined;
+      let closestDistance = Infinity;
+      for (let [groupId, groupAABB] of wmo.groupDefAABBs.entries()) {
+        if (this.modelFrustum.contains(groupAABB)) {
+          const dist = groupAABB.distanceVec3(this.modelCamera);
+          if (dist < closestDistance) {
+            closestDistance = dist;
+            closestGroupId = groupId;
+          }
+        }
+      }
+      if (closestGroupId !== undefined) {
+        def.setGroupVisible(closestGroupId, true);
+      }
     }
-
-    // If we're not inside any WMOs, check for exterior WMOs in sight
-    // if (rootGroups.length === 0) {
-    //   for (let [groupId, groupAABB] of def.groupDefAABBs.entries()) {
-    //     const group = wmo.getGroup(groupId)!;
-    //     if (group.flags.exterior && frustum.contains(groupAABB)) {
-    //       rootGroups.push(groupId);
-    //     }
-    //   }
-    // }
-
-    // // If we still don't have any groups, the user might be flying out of
-    // // bounds, so just choose the closest group to them
-    // if (rootGroups.length === 0) {
-    //   let closest: [number, number] = [Infinity, -1];
-    //   for (let [groupId, groupAABB] of def.groupDefAABBs.entries()) {
-    //     if (this.mainView.frustum.contains(groupAABB)) {
-    //       const dist = groupAABB.distanceVec3(cameraPos);
-    //       if (dist < closest[0]) {
-    //         closest = [dist, groupId];
-    //       }
-    //     }
-    //   }
-    //   if (closest[1] !== -1) {
-    //     rootGroups.push(closest[1]);
-    //   }
-    // }
 
     // do portal culling on the visible groups
     let visibleGroups: number[] = [];
     for (let groupId of rootGroups) {
-      this.wmoPortalCull(wmo, def, cameraPos, frustum, groupId, visibleGroups);
+      if (this.debug) {
+        const aabb = wmo.groupDefAABBs.get(groupId)!;
+        const center = vec3.create();
+        aabb.centerPoint(center);
+        drawWorldSpacePoint(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, this.modelCamera);
+        drawWorldSpaceLine(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, this.modelCamera, center);
+        drawDebugFrustum(this.modelFrustum, this.mainView);
+        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, aabb, null, colorNewFromRGBA(0, 1, 0));
+      }
+      this.wmoPortalCull(wmo, def, this.modelCamera, this.modelFrustum, groupId, visibleGroups);
     }
 
+    let exterior: boolean | undefined = undefined;
+    if (visibleGroups.length !== 0) {
+      exterior = false;
+    }
     for (let groupId of visibleGroups) {
+      if (wmo.getGroup(groupId)!.flags.exterior) {
+        exterior = true;
+      }
       def.setGroupVisible(groupId, true);
+    }
+    if (exterior !== undefined) {
+      console.log(exterior);
     }
   }
 
   public cullAdt(adt: AdtData) {
-    if (this.mainView.frustum.contains(adt.worldSpaceAABB)) {
+    const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
+    if (worldFrustum.contains(adt.worldSpaceAABB)) {
       adt.setVisible(true);
       for (let chunk of adt.chunkData) {
-        chunk.setVisible(this.mainView.frustum.contains(chunk.worldSpaceAABB));
+        chunk.setVisible(worldFrustum.contains(chunk.worldSpaceAABB));
       }
       for (let liquid of adt.liquids) {
-        liquid.setVisible(this.mainView.frustum.contains(liquid.worldSpaceAABB));
+        liquid.setVisible(worldFrustum.contains(liquid.worldSpaceAABB));
       }
-      const distance = this.mainView.cameraDistanceToWorldSpaceAABB(adt.worldSpaceAABB);
+      adt.worldSpaceAABB.centerPoint(scratchVec3);
+      const distance = vec3.distance(worldCamera, scratchVec3);
       adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
     } else {
       adt.setVisible(false);
