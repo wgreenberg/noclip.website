@@ -227,14 +227,14 @@ pub struct Mosi {
 pub struct WmoGroup {
     pub header: WmoGroupHeader,
     pub material_info: Vec<MaterialInfo>,
-    indices: Option<Vec<u8>>,
-    vertices: Option<Vec<u8>>,
+    indices: Option<Vec<u16>>,
+    vertices: Option<Vec<f32>>,
     normals: Option<Vec<u8>>,
     uvs: Option<Vec<u8>>,
     colors: Option<Vec<u8>>,
     doodad_refs: Option<Vec<u16>>,
-    bsp_nodes: Vec<BspNode>,
-    bsp_indices: Vec<u16>,
+    bsp_nodes: Option<Vec<BspNode>>,
+    bsp_indices: Option<Vec<u16>>,
     pub num_vertices: usize,
     pub num_uv_bufs: usize,
     pub num_color_bufs: usize,
@@ -253,8 +253,8 @@ impl WmoGroup {
         let (_, mhdr_data) = chunked_data.next().unwrap();
         let header: WmoGroupHeader = parse(mhdr_data)?;
         let mut mopy: Option<Vec<MaterialInfo>> = None;
-        let mut indices: Option<Vec<u8>> = None;
-        let mut vertices: Option<Vec<u8>> = None;
+        let mut indices: Option<Vec<u16>> = None;
+        let mut vertices: Option<Vec<f32>> = None;
         let mut normals: Option<Vec<u8>> = None;
         let mut uvs: Vec<u8> = Vec::new();
         let mut num_uv_bufs = 0;
@@ -272,14 +272,14 @@ impl WmoGroup {
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
                 b"YPOM" => mopy = Some(parse_array(chunk_data, 2)?),
-                b"IVOM" => indices = Some(chunk_data.to_vec()),
+                b"IVOM" => indices = Some(parse_array(chunk_data, 2)?),
                 b"LADM" => replacement_for_header_color = Some(parse(chunk_data)?),
                 b"QILM" => liquids.push(parse(chunk_data)?),
                 b"RBOM" => bsp_indices = parse_array(chunk_data, 2)?,
                 b"NBOM" => bsp_nodes = parse_array(chunk_data, 0x10)?,
                 b"TVOM" => {
                     num_vertices = chunk_data.len();
-                    vertices = Some(chunk_data.to_vec());
+                    vertices = Some(parse_array(chunk_data, 4)?);
                 },
                 b"RNOM" => normals = Some(chunk_data.to_vec()),
                 b"VTOM" => {
@@ -308,7 +308,7 @@ impl WmoGroup {
         Ok(WmoGroup {
             header,
             material_info: mopy.ok_or("WMO group didn't have MOPY chunk")?,
-            indices: Some(indices.ok_or("WMO group didn't have indices")?),
+            indices: indices,
             vertices: Some(vertices.ok_or("WMO group didn't have vertices")?),
             num_vertices,
             normals: Some(normals.ok_or("WMO group didn't have normals")?),
@@ -317,8 +317,8 @@ impl WmoGroup {
             first_color_buf_len,
             uvs: Some(uvs),
             num_uv_bufs,
-            bsp_indices,
-            bsp_nodes,
+            bsp_indices: Some(bsp_indices),
+            bsp_nodes: Some(bsp_nodes),
             colors: Some(colors),
             num_color_bufs,
             batches: batches.unwrap_or(vec![]),
@@ -326,7 +326,15 @@ impl WmoGroup {
         })
     }
 
-    pub fn take_vertices(&mut self) -> Vec<u8> {
+    pub fn take_bsp_nodes(&mut self) -> Vec<BspNode> {
+        self.bsp_nodes.take().expect("WmoGroup BSP nodes already taken")
+    }
+
+    pub fn take_bsp_indices(&mut self) -> Vec<u16> {
+        self.bsp_indices.take().expect("WmoGroup BSP indices already taken")
+    }
+
+    pub fn take_vertices(&mut self) -> Vec<f32> {
         self.vertices.take().expect("WmoGroup vertices already taken")
     }
 
@@ -342,7 +350,7 @@ impl WmoGroup {
         self.normals.take().expect("WmoGroup vertices already taken")
     }
 
-    pub fn take_indices(&mut self) -> Vec<u8> {
+    pub fn take_indices(&mut self) -> Vec<u16> {
         self.indices.take().expect("WmoGroup vertices already taken")
     }
 
@@ -489,14 +497,38 @@ pub struct DoodadSet {
     pub count: u32,
 }
 
+#[wasm_bindgen(js_name = "WowWmoBspNode")]
 #[derive(DekuRead, Debug, Clone)]
 pub struct BspNode {
     pub flags: u16,
     pub negative_child: i16,
     pub positive_child: i16,
-    pub n_faces: u16,
-    pub face_start: u32,
+    pub num_faces: u16,
+    pub faces_start: u32,
     pub plane_distance: f32,
+}
+
+#[wasm_bindgen(js_name = "WowWmoBspAxisType")]
+pub enum BspAxisType {
+    X,
+    Y,
+    Z,
+}
+
+#[wasm_bindgen(js_class = "WowWmoBspNode")]
+impl BspNode {
+    pub fn get_axis_type(&self) -> BspAxisType {
+        match self.flags & 0b111 {
+            0 => BspAxisType::X,
+            1 => BspAxisType::Y,
+            2 => BspAxisType::Z,
+            _ => panic!("invalid BSP node flags: {}", self.flags),
+        }
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        self.flags & 0x4 > 0
+    }
 }
 
 #[derive(DekuRead, Debug, Clone)]

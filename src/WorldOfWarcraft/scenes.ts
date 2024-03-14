@@ -268,6 +268,12 @@ function findIncidentPoint(dst: vec3, p1: Plane, p2: Plane, p3: Plane) {
   vec3.transformMat3(dst, incidentScratchVec3, incidentScratchMat);
 }
 
+enum CullWmoResult {
+  CameraInsideAndExteriorVisible,
+  CameraInside,
+  CameraOutside,
+}
+
 export class WdtScene implements Viewer.SceneGfx {
   private terrainRenderers: Map<number, TerrainRenderer> = new Map();
   private adtWaterRenderers: Map<number, WaterRenderer> = new Map();
@@ -481,8 +487,8 @@ export class WdtScene implements Viewer.SceneGfx {
     for (let portalRef of group.portalRefs) {
       const portal = wmo.portals[portalRef.portal_index];
       const otherGroup = wmo.groups[portalRef.group_index];
-      const name = `${currentGroupId} -> ${otherGroup.fileId} (${level})`;
       if (this.debug) {
+        const name = `${currentGroupId} -> ${otherGroup.fileId} (${level})`;
         drawDebugPortal(portal, this.mainView, name, level);
       }
       if (visibleGroups.includes(otherGroup.fileId)) {
@@ -511,7 +517,7 @@ export class WdtScene implements Viewer.SceneGfx {
     }
   }
 
-  public cullWmoDef(def: WmoDefinition, wmo: WmoData) {
+  public cullWmoDef(def: WmoDefinition, wmo: WmoData): CullWmoResult {
     const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
     vec3.transformMat4(this.modelCamera, worldCamera, def.invPlacementMatrix);
     this.modelFrustum.transform(worldFrustum, def.invPlacementMatrix);
@@ -523,21 +529,30 @@ export class WdtScene implements Viewer.SceneGfx {
     // rest of culling in model space
     def.visible = worldFrustum.contains(def.worldAABB);
     if (!def.visible) {
-      return;
+      return CullWmoResult.CameraOutside;
     }
 
-    // Get a list of the interior groups we're within, and external groups we can see
+    // Get a list of the interior groups we're within
+    let startingFromInteriorGroup = false;
     let rootGroups: number[] = [];
     for (let [groupId, groupAABB] of wmo.groupDefAABBs.entries()) {
       const group = wmo.getGroup(groupId)!;
-      // TODO: if we use the BSP to detect if we're *actually* inside an
-      // interior group, we can cull even more groups since some AABBs are
-      // quite a bit larger than the actual group geometry
-      // TODO: detect when we're fully inside a WMO so we can cull all ADTs and
-      // non-visible exterior WMOs
-      if (groupAABB.containsPoint(this.modelCamera) || group.flags.exterior && this.modelFrustum.contains(groupAABB)) {
-        def.setGroupVisible(groupId, true);
-        rootGroups.push(groupId);
+      // TODO: detect when we're fully inside a WMO so we can cull all ADTs
+      if (!group.flags.exterior && groupAABB.containsPoint(this.modelCamera)) {
+        if (group.bspContainsModelSpacePoint(this.modelCamera)) {
+          startingFromInteriorGroup = true;
+          rootGroups.push(groupId);
+        }
+      }
+    }
+
+    // If we're not inside a group, find any external groups we can see
+    if (rootGroups.length === 0) {
+      for (let [groupId, groupAABB] of wmo.groupDefAABBs.entries()) {
+        const group = wmo.getGroup(groupId)!;
+          if (group.flags.exterior && this.modelFrustum.contains(groupAABB)) {
+            rootGroups.push(groupId);
+          }
       }
     }
 
@@ -563,36 +578,35 @@ export class WdtScene implements Viewer.SceneGfx {
     // do portal culling on the visible groups
     let visibleGroups: number[] = [];
     for (let groupId of rootGroups) {
-      if (this.debug) {
-        const aabb = wmo.groupDefAABBs.get(groupId)!;
-        const center = vec3.create();
-        aabb.centerPoint(center);
-        drawWorldSpacePoint(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, this.modelCamera);
-        drawWorldSpaceLine(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, this.modelCamera, center);
-        drawDebugFrustum(this.modelFrustum, this.mainView);
-        drawWorldSpaceAABB(getDebugOverlayCanvas2D(), this.mainView.clipFromWorldMatrix, aabb, null, colorNewFromRGBA(0, 1, 0));
-      }
       this.wmoPortalCull(wmo, def, this.modelCamera, this.modelFrustum, groupId, visibleGroups);
     }
 
-    let exterior: boolean | undefined = undefined;
-    if (visibleGroups.length !== 0) {
-      exterior = false;
-    }
+    let hasExternalGroup = false;
     for (let groupId of visibleGroups) {
-      if (wmo.getGroup(groupId)!.flags.exterior) {
-        exterior = true;
+      const group = wmo.getGroup(groupId)!;
+      if (group.flags.exterior) {
+        hasExternalGroup = true;
       }
       def.setGroupVisible(groupId, true);
     }
-    if (exterior !== undefined) {
-      console.log(exterior);
+
+    if (startingFromInteriorGroup) {
+      if (hasExternalGroup) {
+        return CullWmoResult.CameraInsideAndExteriorVisible;
+      } else {
+        return CullWmoResult.CameraInside;
+      }
+    } else {
+      return CullWmoResult.CameraOutside;
     }
   }
 
   public cullAdt(adt: AdtData) {
     const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
     if (worldFrustum.contains(adt.worldSpaceAABB)) {
+      adt.worldSpaceAABB.centerPoint(scratchVec3);
+      const distance = vec3.distance(worldCamera, scratchVec3);
+      adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
       adt.setVisible(true);
       for (let chunk of adt.chunkData) {
         chunk.setVisible(worldFrustum.contains(chunk.worldSpaceAABB));
@@ -600,15 +614,13 @@ export class WdtScene implements Viewer.SceneGfx {
       for (let liquid of adt.liquids) {
         liquid.setVisible(worldFrustum.contains(liquid.worldSpaceAABB));
       }
-      adt.worldSpaceAABB.centerPoint(scratchVec3);
-      const distance = vec3.distance(worldCamera, scratchVec3);
-      adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
+
+      for (let def of adt.lodWmoDefs()) {
+        const wmo = adt.wmos.get(def.wmoId)!;
+        this.cullWmoDef(def, wmo);
+      }
     } else {
       adt.setVisible(false);
-    }
-    for (let def of adt.lodWmoDefs()) {
-      const wmo = adt.wmos.get(def.wmoId)!;
-      this.cullWmoDef(def, wmo);
     }
   }
 
@@ -804,7 +816,7 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
     const cache = new WowCache(dataFetcher, db);
     const renderHelper = new GfxRenderHelper(device);
     rust.init_panic_hook();
-    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 2, dataFetcher, cache);
+    const wdt = new LazyWorldData(this.fileId, [this.startX, this.startY], 0, dataFetcher, cache);
     console.time('loading wdt')
     await wdt.load();
     console.timeEnd('loading wdt')

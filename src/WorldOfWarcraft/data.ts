@@ -1,5 +1,5 @@
 import { vec3, mat4, vec4, quat, ReadonlyMat4 } from "gl-matrix";
-import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox, WowAdtLiquidLayer, WowLiquidResult, WowWmoLiquidResult, WowWmoHeaderFlags, WowWmoPortal, WowWmoPortalRef } from "../../rust/pkg";
+import { WowM2, WowSkin, WowBlp, WowSkinSubmesh, WowModelBatch, WowAdt, WowAdtChunkDescriptor, WowDoodad, WowWdt, WowWmo, WowWmoGroup, WowWmoMaterialInfo, WowWmoMaterialBatch, WowQuat, WowVec3, WowDoodadDef, WowWmoMaterial, WowAdtWmoDefinition, WowGlobalWmoDefinition, WowM2Material, WowM2MaterialFlags, WowM2BlendingMode, WowVec4, WowMapFileDataIDs, WowDatabase, WowWmoMaterialVertexShader, WowWmoMaterialPixelShader, WowWmoMaterialFlags, WowWmoGroupFlags, WowLightResult, WowWmoGroupInfo, WowAdtRenderResult, WowM2AnimationManager, WowArgb, WowM2BoneFlags, WowAABBox, WowAdtLiquidLayer, WowLiquidResult, WowWmoLiquidResult, WowWmoHeaderFlags, WowWmoPortal, WowWmoPortalRef, WowWmoBspNode, WowWmoBspAxisType } from "../../rust/pkg";
 import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
@@ -16,7 +16,8 @@ import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 import { assert } from "../util.js";
-import { drawWorldSpaceLine, drawWorldSpacePoint, getDebugOverlayCanvas2D } from "../DebugJunk.js";
+import { drawWorldSpaceAABB, drawWorldSpaceLine, drawWorldSpacePoint, getDebugOverlayCanvas2D } from "../DebugJunk.js";
+import { colorNewFromRGBA } from "../Color.js";
 
 export class Database {
   private inner: WowDatabase;
@@ -478,6 +479,35 @@ export class WmoBatchData {
   }
 }
 
+export class BspTree {
+  constructor(public nodes: WowWmoBspNode[]) {
+  }
+
+  public query(pos: vec3, nodes: WowWmoBspNode[], i = 0) {
+    if (i < 0) {
+      return undefined;
+    }
+    assert(i < this.nodes.length);
+    if (this.nodes[i].is_leaf()) {
+      nodes.push(this.nodes[i]);
+      return;
+    }
+    const nodeDistance = this.nodes[i].plane_distance;
+    const nodeType = this.nodes[i].get_axis_type();
+    if (nodeType === rust.WowWmoBspAxisType.Z) {
+      this.query(pos, nodes, this.nodes[i].negative_child);
+      this.query(pos, nodes, this.nodes[i].positive_child);
+    } else {
+      let posComponent = nodeType === rust.WowWmoBspAxisType.X ? pos[0] : pos[1];
+      if (posComponent - nodeDistance < 0) {
+        this.query(pos, nodes, this.nodes[i].negative_child);
+      } else {
+        this.query(pos, nodes, this.nodes[i].positive_child);
+      }
+    }
+  }
+}
+
 export class WmoGroupData {
   public innerBatches: WowWmoMaterialBatch[] = [];
   public flags: WowWmoGroupFlags;
@@ -498,12 +528,19 @@ export class WmoGroupData {
   public liquidMaterials: number[] | undefined;
   public numLiquids = 0;
   public liquidIndex = 0;
-  public vertices: Uint8Array;
+  public vertices: Float32Array;
   public normals: Uint8Array;
-  public indices: Uint8Array;
+  public indices: Uint16Array;
   public uvs: Uint8Array;
   public colors: Uint8Array;
   public portalRefs: WowWmoPortalRef[];
+  public bsp: BspTree;
+  public bspIndices: Uint16Array;
+
+  public scratchAABB = new AABB();
+  private scratchVec3a = vec3.create();
+  private scratchVec3b = vec3.create();
+  private scratchVec3c = vec3.create();
 
   constructor(public fileId: number) {
   }
@@ -602,6 +639,8 @@ export class WmoGroupData {
     this.portalStart = group.header.portal_start;
     this.portalCount = group.header.portal_count;
     this.uvs = group.take_uvs();
+    this.bsp = new BspTree(group.take_bsp_nodes())
+    this.bspIndices = group.take_bsp_indices();
     this.indices = group.take_indices();
     this.flags = rust.WowWmoGroupFlags.new(group.header.flags);
     if (this.flags.antiportal) {
@@ -620,6 +659,43 @@ export class WmoGroupData {
     }
     group.free();
   }
+
+  public bspContainsModelSpacePoint(pos: vec3): boolean {
+    let nodes: WowWmoBspNode[] = [];
+    this.bsp.query(pos, nodes);
+    if (nodes.length === 0) {
+      return false;
+    }
+    this.scratchAABB.reset();
+    for (let node of nodes) {
+      for (let i = node.faces_start; i < node.faces_start + node.num_faces; i++) {
+        const index0 = this.indices[3 * this.bspIndices[i] + 0];
+        const vertex0 = vec3.set(this.scratchVec3a,
+          this.vertices[3 * index0 + 0],
+          this.vertices[3 * index0 + 1],
+          this.vertices[3 * index0 + 2],
+        );
+        this.scratchAABB.unionPoint(vertex0);
+        const index1 = this.indices[3 * this.bspIndices[i] + 1];
+        const vertex1 = vec3.set(this.scratchVec3b,
+          this.vertices[3 * index1 + 0],
+          this.vertices[3 * index1 + 1],
+          this.vertices[3 * index1 + 2],
+        );
+        this.scratchAABB.unionPoint(vertex1);
+        const index2 = this.indices[3 * this.bspIndices[i] + 2];
+        const vertex2 = vec3.set(this.scratchVec3c,
+          this.vertices[3 * index2 + 0],
+          this.vertices[3 * index2 + 1],
+          this.vertices[3 * index2 + 2],
+        );
+        this.scratchAABB.unionPoint(vertex2);
+      }
+    }
+    this.scratchAABB.minZ = -Infinity;
+    this.scratchAABB.maxZ = Infinity;
+    return this.scratchAABB.containsPoint(pos);
+  }
 }
 
 export class WmoData {
@@ -633,6 +709,7 @@ export class WmoData {
   public portalRefs: WowWmoPortalRef[] = [];
   public portalVertices: Float32Array;
   public blps: Map<number, BlpData> = new Map();
+  public groupBsps: Map<number, BspTree> = new Map();
   public materials: WowWmoMaterial[] = [];
   public models: Map<number, ModelData> = new Map();
   public modelIds: Uint32Array;
@@ -691,6 +768,7 @@ export class WmoData {
       }
       group.name = this.wmo.get_group_text(group.nameIndex);
       group.description = this.wmo.get_group_text(group.descriptionIndex);
+      this.groupBsps.set(group.fileId, group.bsp);
       this.groupIdToIndex.set(group.fileId, this.groups.length);
       this.groups.push(group);
       const groupInfo = this.groupInfos[i];
