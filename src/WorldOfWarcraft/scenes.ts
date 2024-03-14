@@ -468,23 +468,33 @@ export class WdtScene implements Viewer.SceneGfx {
     } else {
       const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
       for (let adt of this.world.adts) {
-        if (worldFrustum.contains(adt.worldSpaceAABB)) {
-          adt.setVisible(true);
+        adt.worldSpaceAABB.centerPoint(scratchVec3);
+        const distance = vec3.distance(worldCamera, scratchVec3);
+        adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
+
+        let cullAdtDueToWmo = false;
+        for (let def of adt.lodWmoDefs()) {
+          const wmo = adt.wmos.get(def.wmoId)!;
+          const cullResult = this.cullWmoDef(def, wmo);
+          if (cullResult === CullWmoResult.CameraInside) {
+            cullAdtDueToWmo = true;
+            break;
+          }
+        }
+
+        if (!cullAdtDueToWmo && worldFrustum.contains(adt.worldSpaceAABB)) {
+          adt.visible = true;
           for (let chunk of adt.chunkData) {
             chunk.setVisible(worldFrustum.contains(chunk.worldSpaceAABB));
           }
           for (let liquid of adt.liquids) {
             liquid.setVisible(worldFrustum.contains(liquid.worldSpaceAABB));
           }
-          adt.worldSpaceAABB.centerPoint(scratchVec3);
-          const distance = vec3.distance(worldCamera, scratchVec3);
-          adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
+          for (let doodad of adt.lodDoodads()) {
+            doodad.setVisible(worldFrustum.contains(doodad.worldAABB));
+          }
         } else {
           adt.setVisible(false);
-        }
-        for (let def of adt.lodWmoDefs()) {
-          const wmo = adt.wmos.get(def.wmoId)!;
-          this.cullWmoDef(def, wmo);
         }
       }
     }

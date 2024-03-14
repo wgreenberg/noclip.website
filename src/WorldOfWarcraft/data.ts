@@ -1266,9 +1266,6 @@ export class AdtLodData {
   public doodads: DoodadData[] = [];
 
   public setVisible(visible: boolean) {
-    for (let wmoDef of this.wmoDefs) {
-      wmoDef.setVisible(visible);
-    }
     for (let doodad of this.doodads) {
       doodad.setVisible(visible);
     }
@@ -1329,7 +1326,7 @@ export class AdtData {
   public worldSpaceAABB: AABB = new AABB();
   public hasBigAlpha: boolean;
   public hasHeightTexturing: boolean;
-  public lodLevel = 0;
+  public lodLevel: number;
   public lodData: AdtLodData[] = [];
   public visible = true;
   public chunkData: ChunkData[] = [];
@@ -1343,25 +1340,25 @@ export class AdtData {
     this.inner = adt;
   }
 
-  public setVisible(visible: boolean, lodLevel?: number) {
+  public setVisible(visible: boolean) {
     this.visible = visible;
-    if (lodLevel === undefined) {
-      this.lodData[0].setVisible(visible);
-      this.lodData[1].setVisible(visible);
-    } else {
-      this.lodData[lodLevel].setVisible(visible);
+    this.lodData[this.lodLevel].setVisible(visible);
+    for (let chunk of this.chunkData) {
+      chunk.setVisible(visible);
+    }
+    for (let liquid of this.liquids) {
+      liquid.setVisible(visible);
     }
   }
 
   public setLodLevel(lodLevel: number) {
     assert(lodLevel === 0 || lodLevel === 1, "lodLevel must be 0 or 1");
+    if (this.lodLevel === lodLevel) return;
     this.lodLevel = lodLevel;
-    if (this.lodLevel === 0) {
-      this.lodData[0].setVisible(true);
-      this.lodData[1].setVisible(false);
-    } else {
-      this.lodData[0].setVisible(false);
-      this.lodData[1].setVisible(true);
+    const lodLevelToDisable = this.lodLevel === 0 ? 1 : 0;
+    this.lodData[lodLevelToDisable].setVisible(false);
+    for (let def of this.lodData[lodLevelToDisable].wmoDefs) {
+      def.setVisible(false);
     }
   }
   
@@ -1399,6 +1396,7 @@ export class AdtData {
 
       this.lodData.push(lodData);
     }
+    this.setLodLevel(0);
 
     const renderResult = this.inner!.get_render_result(this.hasBigAlpha, this.hasHeightTexturing);
     this.worldSpaceAABB.transform(convertWowAABB(renderResult.extents), noclipSpaceFromAdtSpace);
