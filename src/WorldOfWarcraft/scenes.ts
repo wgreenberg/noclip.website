@@ -466,8 +466,26 @@ export class WdtScene implements Viewer.SceneGfx {
     if (this.world.globalWmo) {
       this.cullWmoDef(this.world.globalWmoDef!, this.world.globalWmo);
     } else {
+      const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
       for (let adt of this.world.adts) {
-        this.cullAdt(adt);
+        if (worldFrustum.contains(adt.worldSpaceAABB)) {
+          adt.setVisible(true);
+          for (let chunk of adt.chunkData) {
+            chunk.setVisible(worldFrustum.contains(chunk.worldSpaceAABB));
+          }
+          for (let liquid of adt.liquids) {
+            liquid.setVisible(worldFrustum.contains(liquid.worldSpaceAABB));
+          }
+          adt.worldSpaceAABB.centerPoint(scratchVec3);
+          const distance = vec3.distance(worldCamera, scratchVec3);
+          adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
+        } else {
+          adt.setVisible(false);
+        }
+        for (let def of adt.lodWmoDefs()) {
+          const wmo = adt.wmos.get(def.wmoId)!;
+          this.cullWmoDef(def, wmo);
+        }
       }
     }
   }
@@ -602,26 +620,6 @@ export class WdtScene implements Viewer.SceneGfx {
   }
 
   public cullAdt(adt: AdtData) {
-    const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
-    if (worldFrustum.contains(adt.worldSpaceAABB)) {
-      adt.worldSpaceAABB.centerPoint(scratchVec3);
-      const distance = vec3.distance(worldCamera, scratchVec3);
-      adt.setLodLevel(distance < this.ADT_LOD0_DISTANCE ? 0 : 1);
-      adt.setVisible(true);
-      for (let chunk of adt.chunkData) {
-        chunk.setVisible(worldFrustum.contains(chunk.worldSpaceAABB));
-      }
-      for (let liquid of adt.liquids) {
-        liquid.setVisible(worldFrustum.contains(liquid.worldSpaceAABB));
-      }
-
-      for (let def of adt.lodWmoDefs()) {
-        const wmo = adt.wmos.get(def.wmoId)!;
-        this.cullWmoDef(def, wmo);
-      }
-    } else {
-      adt.setVisible(false);
-    }
   }
 
   private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
