@@ -660,6 +660,42 @@ export class WmoGroupData {
     group.free();
   }
 
+  public drawBspNodes(pos: vec3, m: ReadonlyMat4, clipFromWorldMatrix: ReadonlyMat4) {
+    let nodes: WowWmoBspNode[] = [];
+    this.bsp.query(pos, nodes);
+    if (nodes.length === 0) {
+      return;
+    }
+    for (let node of nodes) {
+      for (let i = node.faces_start; i < node.faces_start + node.num_faces; i++) {
+        const index0 = this.indices[3 * this.bspIndices[i] + 0];
+        const vertex0 = vec3.set(this.scratchVec3a,
+          this.vertices[3 * index0 + 0],
+          this.vertices[3 * index0 + 1],
+          this.vertices[3 * index0 + 2],
+        );
+        const index1 = this.indices[3 * this.bspIndices[i] + 1];
+        const vertex1 = vec3.set(this.scratchVec3b,
+          this.vertices[3 * index1 + 0],
+          this.vertices[3 * index1 + 1],
+          this.vertices[3 * index1 + 2],
+        );
+        const index2 = this.indices[3 * this.bspIndices[i] + 2];
+        const vertex2 = vec3.set(this.scratchVec3c,
+          this.vertices[3 * index2 + 0],
+          this.vertices[3 * index2 + 1],
+          this.vertices[3 * index2 + 2],
+        );
+        vec3.transformMat4(vertex0, vertex0, m);
+        vec3.transformMat4(vertex1, vertex1, m);
+        vec3.transformMat4(vertex2, vertex2, m);
+        drawWorldSpaceLine(getDebugOverlayCanvas2D(), clipFromWorldMatrix, vertex0, vertex1);
+        drawWorldSpaceLine(getDebugOverlayCanvas2D(), clipFromWorldMatrix, vertex1, vertex2);
+        drawWorldSpaceLine(getDebugOverlayCanvas2D(), clipFromWorldMatrix, vertex2, vertex0);
+      }
+    }
+  }
+
   public bspContainsModelSpacePoint(pos: vec3): boolean {
     let nodes: WowWmoBspNode[] = [];
     this.bsp.query(pos, nodes);
@@ -692,8 +728,10 @@ export class WmoGroupData {
         this.scratchAABB.unionPoint(vertex2);
       }
     }
-    this.scratchAABB.minZ = -Infinity;
-    this.scratchAABB.maxZ = Infinity;
+    // add a bit of headroom to flat AABBs (which are likely just floor)
+    if (this.scratchAABB.maxZ - this.scratchAABB.minZ < 10) {
+      this.scratchAABB.maxZ += 15;
+    }
     return this.scratchAABB.containsPoint(pos);
   }
 }
@@ -782,6 +820,37 @@ export class WmoData {
       return this.groups[index];
     }
     return undefined;
+  }
+
+  public cullGroups(worldCamera: vec3, worldFrustum: Frustum) {
+
+  }
+
+  public portalCull(modelCamera: vec3, modelFrustum: Frustum, currentGroupId: number, visibleGroups: number[]) {
+    if (visibleGroups.includes(currentGroupId)) return;
+    visibleGroups.push(currentGroupId);
+    const group = this.getGroup(currentGroupId)!;
+    for (let portalRef of group.portalRefs) {
+      const portal = this.portals[portalRef.portal_index];
+      const otherGroup = this.groups[portalRef.group_index];
+      if (visibleGroups.includes(otherGroup.fileId)) {
+        continue;
+      }
+      if (!portal.inFrustum(modelFrustum)) {
+        continue;
+      }
+      // check if the business end of the portal's facing us
+      if (!portal.isPortalFacingUs(modelCamera, portalRef.side)) {
+        continue;
+      }
+      let portalFrustum = portal.clipFrustum(modelCamera, modelFrustum, portalRef.side);
+      this.portalCull(
+        modelCamera,
+        portalFrustum,
+        otherGroup.fileId,
+        visibleGroups,
+      );
+    }
   }
 }
 
@@ -1142,9 +1211,6 @@ export class WmoDefinition {
 
   public setVisible(visible: boolean) {
     this.visible = visible;
-    for (let doodad of this.doodads) {
-      doodad.setVisible(visible);
-    }
     for (let groupId of this.groupIdToVisibility.keys()) {
       this.setGroupVisible(groupId, visible);
     }
@@ -1213,7 +1279,10 @@ export class WmoDefinition {
     const doodads = wmo.wmo.get_doodad_set(this.doodadSet);
     if (doodads) {
       for (let wmoDoodad of doodads) {
-        this.doodads.push(DoodadData.fromWmoDoodad(wmoDoodad, wmo.modelIds, this.modelMatrix));
+        const doodad = DoodadData.fromWmoDoodad(wmoDoodad, wmo.modelIds, this.modelMatrix);
+        const modelData = wmo.models.get(doodad.modelId)!;
+        doodad.setBoundingBoxFromModel(modelData);
+        this.doodads.push(doodad);
       }
     }
 
@@ -1332,6 +1401,8 @@ export class AdtData {
   public chunkData: ChunkData[] = [];
   public liquids: LiquidInstance[] = [];
   public liquidTypes: Map<number, LiquidType> = new Map();
+  public insideWmoCandidates: WmoDefinition[] = [];
+  public visibleWmoCandidates: WmoDefinition[] = [];
   private vertexBuffer: Float32Array;
   private indexBuffer: Uint16Array;
   private inner: WowAdt | null = null;
@@ -1376,6 +1447,8 @@ export class AdtData {
 
       for (let adtDoodad of this.inner!.get_doodads(lodLevel)) {
         const doodad = DoodadData.fromAdtDoodad(adtDoodad);
+        const modelData = await cache.loadModel(doodad.modelId);
+        doodad.setBoundingBoxFromModel(modelData);
         doodad.applyExteriorLighting = true;
         lodData.doodads.push(doodad);
       }
@@ -1460,6 +1533,20 @@ export class AdtData {
       byteOffset: 0,
     };
     return [vertexBuffer, indexBuffer];
+  }
+
+  public setupWmoCandidates(worldCamera: vec3, worldFrustum: Frustum) {
+    this.insideWmoCandidates = [];
+    this.visibleWmoCandidates = [];
+    for (let def of this.lodWmoDefs()) {
+      if (def.worldAABB.containsPoint(worldCamera)) {
+        this.insideWmoCandidates.push(def);
+      } else if (worldFrustum.contains(def.worldAABB)) {
+        this.visibleWmoCandidates.push(def);
+      } else {
+        def.setVisible(false);
+      }
+    }
   }
 }
 
