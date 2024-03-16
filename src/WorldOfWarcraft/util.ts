@@ -21,7 +21,9 @@ class FileList {
     }
 
     private normalizeFileName(fileName: string): string {
-      return fileName.replaceAll('\\', '/').toLowerCase();
+      return fileName.replaceAll('\\', '/')
+        .replaceAll(".mdx", ".m2")
+        .toLowerCase();
     }
 
     public getFilename(fileId: number): string {

@@ -192,7 +192,7 @@ impl Wdc4Db2File {
                 return Ok((input, string));
             }
             string.push(byte as char);
-            if string.len() > 50 {
+            if string.len() > 100 {
                 panic!("bad string data: {}", string);
             }
         }
@@ -454,7 +454,7 @@ struct LightDataRecord {
     pub fog_scaler: f32,
 }
 
-#[wasm_bindgen(js_name = "WowLightResult")]
+#[wasm_bindgen(js_name = "WowLightResult", getter_with_clone)]
 #[derive(Debug, Clone, Default)]
 pub struct LightResult {
     pub glow: f32,
@@ -483,6 +483,8 @@ pub struct LightResult {
     pub shadow_opacity: Vec3,
     pub fog_end: f32,
     pub fog_scaler: f32,
+    pub skybox_filename: Option<String>,
+    pub skybox_flags: Option<u16>,
 }
 
 #[derive(DekuRead, Debug, Clone)]
@@ -529,7 +531,7 @@ fn u32_to_color(color: u32) -> Vec3 {
 }
 
 impl LightResult {
-    fn new(data: &LightDataRecord, params: &LightParamsRecord) -> Self {
+    fn new(data: &LightDataRecord, params: &LightParamsRecord, maybe_skybox: Option<&LightSkyboxRecord>) -> Self {
         LightResult {
             glow: params.glow,
             water_shallow_alpha: params.water_shallow_alpha,
@@ -557,8 +559,11 @@ impl LightResult {
             shadow_opacity: u32_to_color(data.shadow_opacity),
             fog_end: data.fog_end,
             fog_scaler: data.fog_scaler,
+            skybox_filename: maybe_skybox.map(|skybox| skybox.name.clone()),
+            skybox_flags: maybe_skybox.map(|skybox| skybox.flags),
         }
     }
+
     fn add_scaled(&mut self, other: &LightResult, t: f32) {
         self.glow += other.glow * t;
         self.ambient_color += other.ambient_color * t;
@@ -614,6 +619,9 @@ impl Lerp for LightResult {
             shadow_opacity: self.shadow_opacity.lerp(other.shadow_opacity, t),
             fog_end: self.fog_end.lerp(other.fog_end, t),
             fog_scaler: self.fog_scaler.lerp(other.fog_scaler, t),
+
+            skybox_filename: self.skybox_filename,
+            skybox_flags: self.skybox_flags,
         }
     }
 }
@@ -676,6 +684,19 @@ pub struct LiquidType {
 }
 
 #[derive(DekuRead, Clone, Debug)]
+#[deku(ctx = "db2: Wdc4Db2File")]
+pub struct LightSkyboxRecord {
+    #[deku(reader = "db2.read_string(deku::input_bits, deku::bit_offset, 0)")]
+    pub name: String,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 1)")]
+    pub flags: u16,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 2)")]
+    pub skybox_file_data_id: u32,
+    #[deku(reader = "db2.read_field(deku::input_bits, deku::bit_offset, 3)", pad_bits_after = "26")]
+    pub celestial_skybox_file_data_id: u32,
+}
+
+#[derive(DekuRead, Clone, Debug)]
 #[deku(ctx = "_: Wdc4Db2File")]
 pub struct LiquidObject {
     pub flow_direction: f32,
@@ -709,6 +730,7 @@ pub struct Database {
     lights: DatabaseTable<LightRecord>,
     light_data: DatabaseTable<LightDataRecord>,
     light_params: DatabaseTable<LightParamsRecord>,
+    light_skyboxes: DatabaseTable<LightSkyboxRecord>,
     liquid_types: DatabaseTable<LiquidType>,
 }
 
@@ -719,16 +741,19 @@ impl Database {
         light_data_db: &[u8],
         light_params_db: &[u8],
         liquid_types_db: &[u8],
+        light_skybox_db: &[u8],
     ) -> Result<Database, String> {
         let lights = DatabaseTable::new(lights_db)?;
         let light_data = DatabaseTable::new(light_data_db)?;
         let light_params = DatabaseTable::new(light_params_db)?;
         let liquid_types = DatabaseTable::new(liquid_types_db)?;
+        let light_skyboxes = DatabaseTable::new(light_skybox_db)?;
         Ok(Self {
             lights,
             light_data,
             light_params,
             liquid_types,
+            light_skyboxes,
         })
     }
 
@@ -746,6 +771,7 @@ impl Database {
         assert!(id != 0);
 
         let light_param = self.light_params.get_record(id as u32)?;
+        let skybox = self.light_skyboxes.get_record(light_param.skybox_id);
 
         // based on the given time, find the current and next LightDataRecord
         let mut current_light_data: Option<&LightDataRecord> = None;
@@ -774,10 +800,10 @@ impl Database {
         }
 
         let current_light_data = current_light_data.unwrap();
-        let mut final_result = LightResult::new(current_light_data, light_param);
+        let mut final_result = LightResult::new(current_light_data, light_param, skybox);
         if current_light_data.time != std::u32::MAX {
             if let Some(next) = next_light_data {
-                let next_full = LightResult::new(next, light_param);
+                let next_full = LightResult::new(next, light_param, skybox);
                 let t = 1.0 - (next.time - time) as f32 / (next.time - current_light_data.time) as f32;
                 final_result = final_result.lerp(next_full.clone(), t);
             }
@@ -891,15 +917,10 @@ mod test {
         let d2 = std::fs::read("../data/wotlk/dbfilesclient/lightparams.db2").unwrap();
         let d3 = std::fs::read("../data/wotlk/dbfilesclient/lightdata.db2").unwrap();
         let d4 = std::fs::read("../data/wotlk/dbfilesclient/liquidtype.db2").unwrap();
-        let db = Database::new(&d1, &d3, &d2, &d4).unwrap();
+        let d5 = std::fs::read("../data/wotlk/dbfilesclient/lightskybox.db2").unwrap();
+        let db = Database::new(&d1, &d3, &d2, &d4, &d5).unwrap();
         let result = db.get_lighting_data(0, -7829.5380859375, -1157.3988037109375, 218.613525390625, 2000);
-        for color in [result.sky_top_color, result.sky_middle_color, result.sky_band1_color, result.sky_band2_color, result.sky_smog_color, result.sky_fog_color] {
-            let color = color * 255.0;
-            let r = color.x.floor() as u32;
-            let g = color.y.floor() as u32;
-            let b = color.z.floor() as u32;
-            println!("#{:0>6x}", (r << 16) + (g << 8) + b);
-        }
+        dbg!(result);
     }
 
     #[test]
@@ -910,5 +931,12 @@ mod test {
         dbg!(&db.get_record(21).unwrap().name);
         dbg!(&db.get_record(22));
         dbg!(&db.get_record(41).unwrap().name);
+    }
+
+    #[test]
+    fn test_lightbox() {
+        let d5 = std::fs::read("../data/wotlk/dbfilesclient/lightskybox.db2").unwrap();
+        let db: DatabaseTable<LightSkyboxRecord> = DatabaseTable::new(&d5).unwrap();
+        dbg!(&db.records[0..4]);
     }
 }

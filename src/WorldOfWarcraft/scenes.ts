@@ -375,6 +375,9 @@ export class WdtScene implements Viewer.SceneGfx {
         this.modelIdToDoodads.append(doodad.modelId, doodad);
       }
     }
+    if (adt.skyboxModel !== undefined) {
+      
+    }
   }
 
   public setupWmo(wmo: WmoData) {
@@ -404,14 +407,6 @@ export class WdtScene implements Viewer.SceneGfx {
     for (let model of wmo.models.values()) {
       this.createModelRenderer(model);
     }
-  }
-
-  // TODO
-  public teardownWmo(wmo: WmoData) {
-  }
-
-  // TODO
-  public teardownAdt(adt: AdtData) {
   }
 
   public createModelRenderer(model: ModelData) {

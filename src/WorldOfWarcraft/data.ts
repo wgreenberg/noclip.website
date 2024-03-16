@@ -30,11 +30,13 @@ export class Database {
     let lightDataDbData = await fetchDataByFileID(1375580, dataFetcher);
     let lightParamsDbData = await fetchDataByFileID(1334669, dataFetcher);
     let liquidTypes = await fetchDataByFileID(1371380, dataFetcher);
+    let lightSkyboxData = await fetchDataByFileID(1308501, dataFetcher);
     this.inner = rust.WowDatabase.new(
       lightDbData,
       lightDataDbData,
       lightParamsDbData,
-      liquidTypes
+      liquidTypes,
+      lightSkyboxData
     );
   }
 
@@ -1403,6 +1405,8 @@ export class AdtData {
   public liquidTypes: Map<number, LiquidType> = new Map();
   public insideWmoCandidates: WmoDefinition[] = [];
   public visibleWmoCandidates: WmoDefinition[] = [];
+  public skyboxModel: ModelData | undefined;
+  public skyboxFlags: number | undefined;
   private vertexBuffer: Float32Array;
   private indexBuffer: Uint16Array;
   private inner: WowAdt | null = null;
@@ -1511,6 +1515,19 @@ export class AdtData {
       i += 1;
     }
     renderResult.free();
+
+    let adtCenter = vec3.create();
+    this.worldSpaceAABB.centerPoint(adtCenter);
+    const lightingResult = cache.db.getGlobalLightingData(adtCenter, 0);
+    if (lightingResult.skybox_filename !== undefined) {
+      const modelFileId = getFileDataId(lightingResult.skybox_filename);
+      if (modelFileId === undefined) {
+        throw new Error(`couldn't find fileDataId for skybox "${lightingResult.skybox_filename}"`);
+      }
+      this.skyboxModel = await cache.loadModel(modelFileId);
+      this.skyboxFlags = lightingResult.skybox_flags;
+    }
+
     this.inner!.free();
     this.inner = null;
   }
