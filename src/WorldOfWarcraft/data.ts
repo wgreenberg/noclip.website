@@ -1405,7 +1405,7 @@ export class AdtData {
   public liquidTypes: Map<number, LiquidType> = new Map();
   public insideWmoCandidates: WmoDefinition[] = [];
   public visibleWmoCandidates: WmoDefinition[] = [];
-  public skyboxModel: ModelData | undefined;
+  public skyboxModelId: number | undefined;
   public skyboxFlags: number | undefined;
   private vertexBuffer: Float32Array;
   private indexBuffer: Uint16Array;
@@ -1524,7 +1524,8 @@ export class AdtData {
       if (modelFileId === undefined) {
         throw new Error(`couldn't find fileDataId for skybox "${lightingResult.skybox_filename}"`);
       }
-      this.skyboxModel = await cache.loadModel(modelFileId);
+      await cache.loadModel(modelFileId);
+      this.skyboxModelId = modelFileId;
       this.skyboxFlags = lightingResult.skybox_flags;
     }
 

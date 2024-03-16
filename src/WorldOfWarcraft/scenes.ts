@@ -281,6 +281,7 @@ export class WdtScene implements Viewer.SceneGfx {
   private modelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
   private debugWmoPortalRenderers: Map<number, DebugWmoPortalRenderer> = new Map();
+  private skyboxModelRenderers: Map<number, ModelRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
   private loadingAdtRenderer: LoadingAdtRenderer;
   private renderInstListMain = new GfxRenderInstList();
@@ -302,6 +303,7 @@ export class WdtScene implements Viewer.SceneGfx {
   private textureCache: TextureCache;
   public enableProgressiveLoading = false;
   public currentAdtCoords: [number, number] = [0, 0];
+  public activeSkyboxModelId: number | undefined;
   public loadingAdts: [number, number][] = [];
 
   public debug = false;
@@ -375,8 +377,16 @@ export class WdtScene implements Viewer.SceneGfx {
         this.modelIdToDoodads.append(doodad.modelId, doodad);
       }
     }
-    if (adt.skyboxModel !== undefined) {
-      
+    if (adt.skyboxModelId !== undefined) {
+      if (!this.skyboxModelRenderers.has(adt.skyboxModelId)) {
+        const model = this.world.cache.models.get(adt.skyboxModelId);
+        this.skyboxModelRenderers.set(adt.fileId, new ModelRenderer(
+          this.device,
+          model,
+          this.renderHelper,
+          this.textureCache
+        ));
+      }
     }
   }
 
@@ -461,6 +471,7 @@ export class WdtScene implements Viewer.SceneGfx {
     if (this.world.globalWmo) {
       this.cullWmoDef(this.world.globalWmoDef!, this.world.globalWmo);
     } else {
+      this.activeSkyboxModelId = undefined;
       const [worldCamera, worldFrustum] = this.getCameraAndFrustum();
       // Do a first pass and get candidate WMOs the camera's inside of,
       // disable WMOs not in the frustum, and determine if any ADTs are
@@ -486,6 +497,9 @@ export class WdtScene implements Viewer.SceneGfx {
       for (let adt of this.world.adts) {
         if (!cullAdtDueToWmo && worldFrustum.contains(adt.worldSpaceAABB)) {
           adt.visible = true;
+          if (adt.skyboxModelId !== undefined && adt.worldSpaceAABB.containsPoint(worldCamera)) {
+            this.activeSkyboxModelId = adt.skyboxModelId;
+          }
           for (let def of adt.visibleWmoCandidates) {
             const wmo = adt.wmos.get(def.wmoId)!;
             this.cullWmoDef(def, wmo);
@@ -625,6 +639,10 @@ export class WdtScene implements Viewer.SceneGfx {
     );
     this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
+    if (this.activeSkyboxModelId !== undefined) {
+      const renderer = this.skyboxModelRenderers.get(this.activeSkyboxModelId)!;
+      renderer.prepareToRenderSkybox(this.renderHelper.renderInstManager);
+    }
 
     template.setGfxProgram(this.loadingAdtProgram);
     template.setBindingLayouts(LoadingAdtProgram.bindingLayouts);

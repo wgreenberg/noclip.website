@@ -144,6 +144,10 @@ export class ModelRenderer {
       renderInstManager.popTemplateRenderInst();
     }
   }
+
+  public prepareToRenderSkybox(renderInstManager: GfxRenderInstManager) {
+
+  }
   
   public destroy(device: GfxDevice): void {
     device.destroyBuffer(this.vertexBuffer.buffer);
