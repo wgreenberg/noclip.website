@@ -279,9 +279,9 @@ export class WdtScene implements Viewer.SceneGfx {
   private adtWaterRenderers: Map<number, WaterRenderer> = new Map();
   private wmoWaterRenderers: Map<number, WaterRenderer> = new Map();
   private modelRenderers: Map<number, ModelRenderer> = new Map();
+  private skyboxModelRenderers: Map<number, ModelRenderer> = new Map();
   private wmoRenderers: Map<number, WmoRenderer> = new Map();
   private debugWmoPortalRenderers: Map<number, DebugWmoPortalRenderer> = new Map();
-  private skyboxModelRenderers: Map<number, ModelRenderer> = new Map();
   private skyboxRenderer: SkyboxRenderer;
   private loadingAdtRenderer: LoadingAdtRenderer;
   private renderInstListMain = new GfxRenderInstList();
@@ -379,13 +379,14 @@ export class WdtScene implements Viewer.SceneGfx {
     }
     if (adt.skyboxModelId !== undefined) {
       if (!this.skyboxModelRenderers.has(adt.skyboxModelId)) {
-        const model = this.world.cache.models.get(adt.skyboxModelId);
-        this.skyboxModelRenderers.set(adt.fileId, new ModelRenderer(
+        const model = this.world.cache.models.get(adt.skyboxModelId)!;
+        this.skyboxModelRenderers.set(model.fileId, new ModelRenderer(
           this.device,
           model,
           this.renderHelper,
           this.textureCache
         ));
+        this.modelIdToDoodads.append(model.fileId, DoodadData.skyboxDoodad());
       }
     }
   }
@@ -476,7 +477,7 @@ export class WdtScene implements Viewer.SceneGfx {
       // Do a first pass and get candidate WMOs the camera's inside of,
       // disable WMOs not in the frustum, and determine if any ADTs are
       // visible based on where the camera is
-      let cullAdtDueToWmo = false;
+      let exteriorVisible = true;
       for (let adt of this.world.adts) {
         adt.worldSpaceAABB.centerPoint(scratchVec3);
         const distance = vec3.distance(worldCamera, scratchVec3);
@@ -488,30 +489,42 @@ export class WdtScene implements Viewer.SceneGfx {
             const wmo = adt.wmos.get(def.wmoId)!;
             const cullResult = this.cullWmoDef(def, wmo);
             if (cullResult === CullWmoResult.CameraInside) {
-              cullAdtDueToWmo = true;
+              exteriorVisible = false;
             }
           }
         }
       }
 
       for (let adt of this.world.adts) {
-        if (!cullAdtDueToWmo && worldFrustum.contains(adt.worldSpaceAABB)) {
-          adt.visible = true;
-          if (adt.skyboxModelId !== undefined && adt.worldSpaceAABB.containsPoint(worldCamera)) {
-            this.activeSkyboxModelId = adt.skyboxModelId;
+        if (exteriorVisible) {
+          if (adt.skyboxModelId !== undefined) {
+            let originalMinZ = adt.worldSpaceAABB.minZ;
+            let originalMaxZ = adt.worldSpaceAABB.maxZ;
+            adt.worldSpaceAABB.minZ = -Infinity;
+            adt.worldSpaceAABB.maxZ = Infinity;
+            if (adt.worldSpaceAABB.containsPoint(worldCamera)) {
+              this.activeSkyboxModelId = adt.skyboxModelId;
+            }
+            adt.worldSpaceAABB.minZ = originalMinZ;
+            adt.worldSpaceAABB.maxZ = originalMaxZ;
+          }
+          if (worldFrustum.contains(adt.worldSpaceAABB)) {
+            adt.visible = true;
+            for (let chunk of adt.chunkData) {
+              chunk.setVisible(worldFrustum.contains(chunk.worldSpaceAABB));
+            }
+            for (let liquid of adt.liquids) {
+              liquid.setVisible(worldFrustum.contains(liquid.worldSpaceAABB));
+            }
+            for (let doodad of adt.lodDoodads()) {
+              doodad.setVisible(worldFrustum.contains(doodad.worldAABB));
+            }
+          } else {
+            adt.setVisible(false);
           }
           for (let def of adt.visibleWmoCandidates) {
             const wmo = adt.wmos.get(def.wmoId)!;
             this.cullWmoDef(def, wmo);
-          }
-          for (let chunk of adt.chunkData) {
-            chunk.setVisible(worldFrustum.contains(chunk.worldSpaceAABB));
-          }
-          for (let liquid of adt.liquids) {
-            liquid.setVisible(worldFrustum.contains(liquid.worldSpaceAABB));
-          }
-          for (let doodad of adt.lodDoodads()) {
-            doodad.setVisible(worldFrustum.contains(doodad.worldAABB));
           }
         } else {
           adt.setVisible(false);
@@ -639,10 +652,6 @@ export class WdtScene implements Viewer.SceneGfx {
     );
     this.renderHelper.renderInstManager.setCurrentRenderInstList(this.renderInstListMain);
     this.skyboxRenderer.prepareToRenderSkybox(this.renderHelper.renderInstManager)
-    if (this.activeSkyboxModelId !== undefined) {
-      const renderer = this.skyboxModelRenderers.get(this.activeSkyboxModelId)!;
-      renderer.prepareToRenderSkybox(this.renderHelper.renderInstManager);
-    }
 
     template.setGfxProgram(this.loadingAdtProgram);
     template.setBindingLayouts(LoadingAdtProgram.bindingLayouts);
@@ -683,6 +692,14 @@ export class WdtScene implements Viewer.SceneGfx {
 
     template.setBindingLayouts(ModelProgram.bindingLayouts);
     template.setGfxProgram(this.modelProgram);
+    if (this.activeSkyboxModelId !== undefined) {
+      const renderer = this.skyboxModelRenderers.get(this.activeSkyboxModelId)!;
+      renderer.update(this.mainView);
+      renderer.prepareToRenderModel(
+        this.renderHelper.renderInstManager,
+        this.modelIdToDoodads.get(this.activeSkyboxModelId)
+      );
+    }
     for (let [modelId, renderer] of this.modelRenderers.entries()) {
       const doodads = this.modelIdToDoodads.get(modelId)!;
       const visibleDoodads = doodads.filter(doodad => doodad.visible);
@@ -789,7 +806,7 @@ class WdtSceneDesc implements Viewer.SceneDesc {
     const cache = new WowCache(dataFetcher, db);
     const renderHelper = new GfxRenderHelper(device);
     rust.init_panic_hook();
-    const wdt = new WorldData(this.fileId);
+    const wdt = new WorldData(this.fileId, cache);
     console.time('loading wdt');
     await wdt.load(dataFetcher, cache);
     console.timeEnd('loading wdt');

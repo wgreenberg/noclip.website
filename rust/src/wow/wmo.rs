@@ -63,6 +63,7 @@ pub struct Wmo {
     pub doodad_file_ids: Vec<u32>,
     pub fogs: Vec<Fog>,
     pub skybox_file_id: Option<u32>,
+    pub skybox_name: Option<String>,
     group_text: Vec<String>,
     doodad_sets: Vec<DoodadSet>,
     global_ambient_volumes: Vec<AmbientVolume>,
@@ -93,6 +94,7 @@ impl Wmo {
         let mut portal_refs: Option<Vec<PortalRef>> = None;
         let mut group_text = Vec::new();
         let mut portal_vertices: Option<Vec<f32>> = None;
+        let mut skybox_name: Option<String> = None;
         let mut mods: Vec<DoodadSet> = Vec::new();
         let mut mosi: Option<Mosi> = None;
         for (chunk, chunk_data) in &mut chunked_data {
@@ -119,6 +121,11 @@ impl Wmo {
                 b"DVAM" => mavd = parse_array(chunk_data, 0x30)?,
                 b"GVAM" => mavg = parse_array(chunk_data, 0x30)?,
                 b"ISOM" => mosi = Some(parse(chunk_data)?),
+                b"BSOM" => {
+                    let chars = chunk_data.split(|n| *n == 0).next()
+                        .expect("skybox name had no data");
+                    skybox_name = Some(String::from_utf8_lossy(chars).to_string());
+                },
                 b"SDOM" => mods = parse_array(chunk_data, 0x20)?,
                 _ => println!("skipping {} chunk", chunk.magic_str()),
             }
@@ -132,6 +139,7 @@ impl Wmo {
             fogs: mfog.ok_or("WMO file didn't have MFOG chunk")?,
             group_file_ids: gfid.ok_or("WMO file didn't have group ids")?,
             skybox_file_id: mosi.map(|m| m.skybox_file_id),
+            skybox_name,
             doodad_sets: mods,
             portal_refs,
             portal_vertices,

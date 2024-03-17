@@ -766,7 +766,7 @@ void mainPS() {
 }
 
 export const MAX_DOODAD_INSTANCES = 32;
-export const MAX_BONE_TRANSFORMS = 256;
+export const MAX_BONE_TRANSFORMS = 300;
 
 export class ModelProgram extends BaseProgram {
   public static a_Position = 0;
@@ -813,7 +813,7 @@ struct DoodadInstance {
     Mat4x4 normalMat;
     vec4 interiorAmbientColor;
     vec4 interiorDirectColor;
-    vec4 lightingParams; // [applyInteriorLighting, applyExteriorLighting, interiorExteriorBlend, _]
+    vec4 lightingParams; // [applyInteriorLighting, applyExteriorLighting, interiorExteriorBlend, isSkybox]
 };
 
 struct BoneParams {
@@ -896,15 +896,17 @@ void CalcBillboardMat(inout mat4 m) {
 
 void mainVS() {
     DoodadInstance params = instances[gl_InstanceID];
+    bool isSkybox = params.lightingParams.w > 0.0;
+    float w = isSkybox ? 0.0 : 1.0;
     Mat4x4 boneTransform = getCombinedBoneMat();
-    v_Position = Mul(params.transform, Mul(boneTransform, vec4(a_Position, 1.0))).xyz;
+    v_Position = Mul(params.transform, Mul(boneTransform, vec4(a_Position, w))).xyz;
     bool isSphericalBone = bones[int(a_BoneIndices.x)].params.x > 0.0;
     if (isSphericalBone) {
       mat4 combinedModelMat = convertMat4x4(u_ModelView) * convertMat4x4(params.transform) * convertMat4x4(boneTransform);
       CalcBillboardMat(combinedModelMat);
-      gl_Position = convertMat4x4(u_Projection) * combinedModelMat * vec4(a_Position, 1.0);
+      gl_Position = convertMat4x4(u_Projection) * combinedModelMat * vec4(a_Position, w);
     } else {
-      gl_Position = Mul(u_Projection, Mul(u_ModelView, vec4(v_Position, 1.0)));
+      gl_Position = Mul(u_Projection, Mul(u_ModelView, Mul(params.transform, Mul(boneTransform, vec4(a_Position, w)))));
     }
 
     v_InstanceID = float(gl_InstanceID); // FIXME: hack until we get flat variables working
@@ -1137,6 +1139,12 @@ void mainPS() {
     bool applyInterior = params.lightingParams.x > 0.0;
     bool applyExterior = params.lightingParams.y > 0.0;
     float interiorExteriorBlend = params.lightingParams.z;
+    bool isSkybox = params.lightingParams.w > 0.0;
+
+    if (isSkybox) {
+      gl_FragColor = vec4(matDiffuse.rgb, finalOpacity);
+      return;
+    }
 
     finalColor = vec4(calcLight(
       matDiffuse.rgb,

@@ -11,7 +11,7 @@ import { AABB, Frustum, IntersectionState, Plane } from "../Geometry.js";
 import { GfxRenderInst, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager.js";
 import { BaseProgram, ModelProgram, WmoProgram } from "./program.js";
 import { fillMatrix4x4, fillVec4, fillVec4v } from "../gfx/helpers/UniformBufferHelpers.js";
-import { AttachmentStateSimple, setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
+import { AttachmentStateSimple, copyAttachmentState, defaultMegaState, setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers.js";
 import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers.js";
 import { computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
@@ -54,11 +54,11 @@ abstract class Loadable {
 }
 
 export class WowCache {
-  private models: Map<number, ModelData> = new Map();
-  private wmos: Map<number, WmoData> = new Map();
-  private wmoGroups: Map<number, WmoGroupData> = new Map();
-  private blps: Map<number, WowBlp> = new Map();
-  private liquidTypes: Map<number, LiquidType> = new Map();
+  public models: Map<number, ModelData> = new Map();
+  public wmos: Map<number, WmoData> = new Map();
+  public wmoGroups: Map<number, WmoGroupData> = new Map();
+  public blps: Map<number, WowBlp> = new Map();
+  public liquidTypes: Map<number, LiquidType> = new Map();
 
   constructor(public dataFetcher: DataFetcher, public db: Database) {
   }
@@ -250,6 +250,8 @@ export class ModelData {
   public boneTransforms: mat4[] = [];
   public bonePivots: mat4[] = [];
   public boneAntipivots: mat4[] = [];
+  public texturePivot = mat4.create();
+  public textureAntipivot = mat4.create();
   public boneParents: Int16Array;
   public boneFlags: WowM2BoneFlags[] = [];
   public materials: [WowM2BlendingMode, WowM2MaterialFlags][] = [];
@@ -261,10 +263,15 @@ export class ModelData {
   public modelAABB: AABB;
 
   constructor(public fileId: number) {
+    mat4.fromScaling(this.texturePivot, TEX_PIVOT);
+    mat4.fromScaling(this.textureAntipivot, TEX_ANTIPIVOT);
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     const m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
+    if (this.fileId === 190104) {
+      debugger;
+    }
     for (let txid of m2.texture_ids) {
       if (txid === 0) continue;
       try {
@@ -332,16 +339,11 @@ export class ModelData {
     );
 
     for (let i = 0; i < this.numTextureTransformations; i++) {
-      mat4.identity(this.textureTransforms[i]);
-      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], TEX_PIVOT);
-      const rotation: vec4 = this.textureRotations.slice(i * 4, (i + 1) * 4);
-      mat4.fromQuat(this.textureTransforms[i], rotation);
-      const scaling: vec3 = this.textureScalings.slice(i * 3, (i + 1) * 3);
-      mat4.scale(this.textureTransforms[i], this.textureTransforms[i], scaling);
-      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], TEX_ANTIPIVOT);
-
-      const translation: vec3 = this.textureTranslations.slice(i * 3, (i + 1) * 3);
-      mat4.translate(this.textureTransforms[i], this.textureTransforms[i], translation);
+      mat4.fromRotationTranslationScale(this.textureTransforms[i], 
+        this.textureRotations.slice(i * 4, (i + 1) * 4),
+        this.textureTranslations.slice(i * 3, (i + 1) * 3),
+        this.textureScalings.slice(i * 3, (i + 1) * 3),
+      );
     }
 
     for (let i = 0; i < this.numBones; i++) {
@@ -464,11 +466,10 @@ export class WmoBatchData {
         break;
       }
       case rust.WowM2BlendingMode.BlendAdd: {
-
         setAttachmentStateSimple(this.megaStateFlags, {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.One,
-          blendDstFactor: GfxBlendFactor.SrcAlpha,
+          blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
         });
         renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
         break;
@@ -912,6 +913,7 @@ export class ModelRenderPass {
   public blendMode: WowM2BlendingMode;
   public materialFlags: WowM2MaterialFlags;
   public submesh: WowSkinSubmesh;
+  public layer: number;
   public tex0: BlpData;
   public tex1: BlpData | null;
   public tex2: BlpData | null;
@@ -923,73 +925,121 @@ export class ModelRenderPass {
     this.vertexShaderId = batch.get_vertex_shader();
     this.submesh = skin.submeshes[batch.skin_submesh_index];
     [this.blendMode, this.materialFlags] = model.materials[this.batch.material_index];
+    this.layer = this.batch.material_layer;
     this.tex0 = this.getBlp(0)!;
     this.tex1 = this.getBlp(1);
     this.tex2 = this.getBlp(2);
     this.tex3 = this.getBlp(3);
   }
 
-  public setMegaStateFlags(renderInst: GfxRenderInst) {
-    let settings = {
+  public setMegaStateFlags(renderInst: GfxRenderInst, renderKey: number | undefined = undefined) {
+    const defaultBlendState = {
+        blendMode: GfxBlendMode.Add,
+        blendSrcFactor: GfxBlendFactor.One,
+        blendDstFactor: GfxBlendFactor.Zero,
+    };
+    let settings: Partial<GfxMegaStateDescriptor> = {
       cullMode: this.materialFlags.two_sided ? GfxCullMode.None : GfxCullMode.Back,
       depthWrite: this.materialFlags.depth_write,
       depthCompare: this.materialFlags.depth_tested ? reverseDepthForCompareMode(GfxCompareMode.LessEqual) : GfxCompareMode.Always,
+      attachmentsState: [{
+        channelWriteMask: GfxChannelWriteMask.RGB,
+        rgbBlendState: defaultBlendState,
+        alphaBlendState: defaultBlendState,
+      }],
     };
+
+    let sortKeyLayer = makeSortKey(GfxRendererLayer.TRANSLUCENT + this.layer);
+    // if (renderKey !== undefined) {
+    //   sortKeyLayer = makeSortKey(renderKey);
+    // }
+
     // TODO setSortKeyDepth based on distance to transparent object
     switch (this.blendMode) {
       case rust.WowM2BlendingMode.Alpha: {
-        setAttachmentStateSimple(settings, {
+        settings.attachmentsState![0].rgbBlendState = {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.SrcAlpha,
           blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
-        });
-        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        };
+        settings.attachmentsState![0].alphaBlendState = {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.One,
+          blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
+        };
+        settings.attachmentsState![0].channelWriteMask = GfxChannelWriteMask.AllChannels;
+        renderInst.sortKey = sortKeyLayer
         break;
       }
       case rust.WowM2BlendingMode.NoAlphaAdd: {
-        setAttachmentStateSimple(settings, {
+        settings.attachmentsState![0].rgbBlendState = {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.One,
           blendDstFactor: GfxBlendFactor.One,
-        });
-        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        };
+        settings.attachmentsState![0].alphaBlendState = {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.Zero,
+          blendDstFactor: GfxBlendFactor.One,
+        };
+        renderInst.sortKey = sortKeyLayer
         break;
       }
       case rust.WowM2BlendingMode.Add: {
-        setAttachmentStateSimple(settings, {
+        settings.attachmentsState![0].rgbBlendState = {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.SrcAlpha,
           blendDstFactor: GfxBlendFactor.One,
-        });
-        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        };
+        settings.attachmentsState![0].alphaBlendState = {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.Zero,
+          blendDstFactor: GfxBlendFactor.One,
+        };
+        settings.attachmentsState![0].channelWriteMask = GfxChannelWriteMask.AllChannels;
+        renderInst.sortKey = sortKeyLayer
         break;
       }
       case rust.WowM2BlendingMode.Mod: {
-        setAttachmentStateSimple(settings, {
+        settings.attachmentsState![0].rgbBlendState = {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.Dst,
           blendDstFactor: GfxBlendFactor.Zero,
-        });
-        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        };
+        settings.attachmentsState![0].alphaBlendState = {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.DstAlpha,
+          blendDstFactor: GfxBlendFactor.Zero,
+        };
+        renderInst.sortKey = sortKeyLayer
         break;
       }
       case rust.WowM2BlendingMode.Mod2x: {
-        setAttachmentStateSimple(settings, {
+        settings.attachmentsState![0].rgbBlendState = {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.Dst,
           blendDstFactor: GfxBlendFactor.Src,
-        });
-        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+        };
+        settings.attachmentsState![0].alphaBlendState = {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.DstAlpha,
+          blendDstFactor: GfxBlendFactor.SrcAlpha,
+        };
+        renderInst.sortKey = sortKeyLayer
         break;
       }
       case rust.WowM2BlendingMode.BlendAdd: {
-
-        setAttachmentStateSimple(settings, {
+        settings.attachmentsState![0].rgbBlendState = {
           blendMode: GfxBlendMode.Add,
           blendSrcFactor: GfxBlendFactor.One,
-          blendDstFactor: GfxBlendFactor.SrcAlpha,
-        });
-        renderInst.sortKey = makeSortKey(GfxRendererLayer.TRANSLUCENT)
+          blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
+        };
+        settings.attachmentsState![0].alphaBlendState = {
+          blendMode: GfxBlendMode.Add,
+          blendSrcFactor: GfxBlendFactor.One,
+          blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
+        };
+        renderInst.sortKey = sortKeyLayer
         break;
       }
       case rust.WowM2BlendingMode.Opaque:
@@ -1081,6 +1131,7 @@ export class ModelRenderPass {
 export class PortalData {
   public points: vec3[] = [];
   public plane = new Plane();
+  public aabbPoints: vec3[] = [vec3.create(), vec3.create(), vec3.create(), vec3.create()];
   public aabb = new AABB();
   public vertexCount = 0;
   public vertexStart = 0;
@@ -1088,14 +1139,14 @@ export class PortalData {
   private scratchVec3A = vec3.create();
   private scratchVec3B = vec3.create();
   private scratchVec3C = vec3.create();
+  private scratchMat4 = mat4.create();
 
   constructor() {
   }
 
   static fromWowPortal(wowPortal: WowWmoPortal, vertices: Float32Array): PortalData {
-    // stay vigilant!!
-    if (wowPortal.count !== 4) {
-      throw new Error(`found a portal w/ ${wowPortal.count} vertices, gotta fix PortalData`);
+    if (wowPortal.count < 3) {
+      throw new Error(`found a portal w/ ${wowPortal.count} vertices!`);
     }
     const result = new PortalData();
     result.vertexStart = wowPortal.start_vertex;
@@ -1103,23 +1154,61 @@ export class PortalData {
     const start = result.vertexStart * 3;
     const end = start + result.vertexCount * 3;
     const verts = vertices.slice(start, end);
-    result.points = [
-      [verts[0*3 + 0], verts[0*3 + 1], verts[0*3 + 2]],
-      [verts[1*3 + 0], verts[1*3 + 1], verts[1*3 + 2]],
-      [verts[2*3 + 0], verts[2*3 + 1], verts[2*3 + 2]],
-      [verts[3*3 + 0], verts[3*3 + 1], verts[3*3 + 2]],
-    ];
+    result.points = [];
+    for (let i=0; i < wowPortal.count; i++) {
+      result.points.push([
+        verts[i*3 + 0],
+        verts[i*3 + 1],
+        verts[i*3 + 2]
+      ]);
+    }
     result.aabb.setFromPoints(result.points);
     const wowPlane = wowPortal.plane;
     const wowPlaneNorm = wowPlane.normal;
     result.plane.n[0] = wowPlaneNorm.x;
     result.plane.n[1] = wowPlaneNorm.y;
     result.plane.n[2] = wowPlaneNorm.z;
+    vec3.normalize(result.plane.n, result.plane.n);
     result.plane.d = wowPlane.distance;
+    result.updateAABBPoints();
     wowPlaneNorm.free();
     wowPlane.free();
     wowPortal.free();
     return result;
+  }
+
+  // Assuming planar portal points, rotate them to XY plane, calculate the
+  // bounding box, then rotate the box back to the plane
+  private updateAABBPoints() {
+    if (this.points.length === 4) {
+      this.aabbPoints = this.points;
+      return;
+    }
+    const xyPlane = vec3.set(this.scratchVec3A, 0, 0, 1);
+    const theta = Math.acos(vec3.dot(xyPlane, this.plane.n));
+    let rotationMat: mat4;
+    if (theta === 0 || theta === 180) {
+      rotationMat = mat4.identity(this.scratchMat4);
+    } else {
+      const rotationAxis = vec3.cross(this.scratchVec3B, xyPlane, this.plane.n);
+      vec3.normalize(rotationAxis, rotationAxis);
+      rotationMat = mat4.fromRotation(this.scratchMat4, theta, rotationAxis);
+    }
+    let minX = 0;
+    let minY = 0;
+    let maxX = 0;
+    let maxY = 0;
+    for (let p of this.points) {
+      vec3.transformMat4(p, p, rotationMat);
+      minX = Math.min(minX, p[0]);
+      maxX = Math.max(maxX, p[0]);
+      minY = Math.min(minY, p[1]);
+      maxY = Math.max(maxY, p[1]);
+    }
+    mat4.invert(rotationMat, rotationMat);
+    for (let p of this.points) {
+      vec3.transformMat4(p, p, rotationMat);
+    }
   }
 
   public clone(): PortalData {
@@ -1143,7 +1232,6 @@ export class PortalData {
   }
 
   public inFrustum(frustum: Frustum): boolean {
-    // return this.points.reduce((result, point) => result || frustum.containsPoint(point), false);
     return frustum.contains(this.aabb);
   }
 
@@ -1301,6 +1389,7 @@ export class WmoDefinition {
       for (let index of this.groupIdToDoodadIndices.get(group.fileId)) {
         const doodad = this.doodads[index];
         doodad.ambientColor = this.groupAmbientColors.get(group.fileId)!;
+        // FIXME this is wrong
         doodad.applyInteriorLighting = group.flags.interior && !group.flags.exterior_lit;
         doodad.applyExteriorLighting = true;
       }
@@ -1594,12 +1683,20 @@ export class DoodadData {
   public applyInteriorLighting = false;
   public applyExteriorLighting = false;
   public interiorExteriorBlend = 0;
+  public isSkybox = false;
 
   constructor(public modelId: number, public modelMatrix: mat4, public color: number[] | null) {
     mat4.mul(this.normalMatrix, this.modelMatrix, placementSpaceFromModelSpace);
     mat4.mul(this.normalMatrix, adtSpaceFromPlacementSpace, this.modelMatrix);
     mat4.invert(this.normalMatrix, this.normalMatrix);
     mat4.transpose(this.normalMatrix, this.normalMatrix);
+  }
+
+  static skyboxDoodad(): DoodadData {
+    let modelMatrix = mat4.identity(mat4.create());
+    let doodad = new DoodadData(666, modelMatrix, null);
+    doodad.isSkybox = true;
+    return doodad;
   }
 
   public setVisible(visible: boolean) {
@@ -1791,9 +1888,8 @@ export class WorldData {
   public adts: AdtData[] = [];
   public globalWmo: WmoData | null = null;
   public globalWmoDef: WmoDefinition | null = null;
-  public cache: any;
 
-  constructor(public fileId: number) {
+  constructor(public fileId: number, public cache: WowCache) {
   }
 
   public async load(dataFetcher: DataFetcher, cache: WowCache) {
@@ -1829,3 +1925,4 @@ export class WorldData {
     wdt.free();
   }
 }
+

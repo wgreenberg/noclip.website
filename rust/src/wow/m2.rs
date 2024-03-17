@@ -211,7 +211,10 @@ impl M2 {
         let mut sfid: Option<Vec<u32>> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"TXID" => txid = Some(parse_array(&chunk_data, 4)?),
+                b"TXID" => {
+                    dbg!(&chunk_data);
+                    txid = Some(parse_array(&chunk_data, 4)?);
+                },
                 b"SFID" => sfid = Some(parse_array(&chunk_data, 4)?),
                 _ => {},
             }
@@ -385,9 +388,9 @@ mod tests {
     fn test() {
         //let data = std::fs::read("../data/wow/world/critter/birds/bird02.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/generic/nightelf/passive doodads/magicalimplements/nemagicimplement06.m2").unwrap();
-        let data = std::fs::read("../data/wotlk/world/generic/passivedoodads/ships/shipanimation/transportship_sails.m2").unwrap();
+        let data = std::fs::read("../data/wotlk/world/azeroth/redridge/passivedoodads/rowboat/rowboat01.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
         let mut m2 = M2::new(&data).unwrap();
-        dbg!(m2.header.particle_emitters);
+        dbg!(m2.texture_ids);
     }
 }

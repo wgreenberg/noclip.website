@@ -89,6 +89,7 @@ export class ModelRenderer {
     if (!this.isDrawable()) return;
 
     const visibleDoodads = doodads.filter(d => d.visible);
+    let isSkybox = false;
 
     for (let doodadChunk of chunk(visibleDoodads, MAX_DOODAD_INSTANCES)) {
       const template = renderInstManager.pushTemplateRenderInst();
@@ -101,6 +102,7 @@ export class ModelRenderer {
       let offs = baseOffs;
       const mapped = template.mapUniformBufferF32(ModelProgram.ub_DoodadParams);
       for (let doodad of doodadChunk) {
+        isSkybox = doodad.isSkybox;
         offs += fillMatrix4x4(mapped, offs, doodad.modelMatrix);
         offs += fillMatrix4x4(mapped, offs, doodad.normalMatrix);
         offs += fillVec4v(mapped, offs, doodad.ambientColor);
@@ -109,7 +111,7 @@ export class ModelRenderer {
           doodad.applyInteriorLighting ? 1.0 : 0.0,
           doodad.applyExteriorLighting ? 1.0 : 0.0,
           doodad.applyInteriorLighting ? 1.0 : 0.0,
-          0
+          doodad.isSkybox ? 1.0 : 0.0
         );
       }
       offs = baseOffs + instanceParamsSize * MAX_DOODAD_INSTANCES;
@@ -128,11 +130,15 @@ export class ModelRenderer {
       for (let i=0; i<this.skinData.length; i++) {
         const skinData = this.skinData[i];
         const indexBuffer = this.indexBuffers[i];
-        for (let j in skinData.renderPasses) {
+        for (let j=0; j < skinData.renderPasses.length; j++) {
           const renderPass = skinData.renderPasses[j];
           let renderInst = renderInstManager.newRenderInst();
           renderInst.setVertexInput(this.inputLayout, [this.vertexBuffer], indexBuffer);
-          renderPass.setMegaStateFlags(renderInst);
+          if (isSkybox) {
+            renderPass.setMegaStateFlags(renderInst, GfxRendererLayer.BACKGROUND - j);
+          } else {
+            renderPass.setMegaStateFlags(renderInst);
+          }
           renderInst.setDrawCount(renderPass.submesh.index_count, renderPass.submesh.index_start, doodadChunk.length);
           const mappings = this.skinPassTextures[i][j];
           renderInst.setAllowSkippingIfPipelineNotReady(false);
