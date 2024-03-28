@@ -54,12 +54,16 @@ export function getFilePath(fileId: number): string {
   return _fileList!.getFilename(fileId);
 }
 
-export function getFileDataId(fileName: string): number | undefined {
-  const result = _fileList!.getFileDataId(fileName);
-  if (result === undefined && fileName !== '') {
-    console.warn(`failed to find FileDataId for fileName ${fileName}`);
+export function getFileDataId(fileName: string): number {
+  if (fileName === '') {
+    throw new Error(`must provide valid filename`);
   }
-  return result;
+  const result = _fileList!.getFileDataId(fileName);
+  if (result === undefined) {
+    throw new Error(`failed to find FileDataId for fileName ${fileName}`);
+  } else {
+    return result;
+  }
 }
 
 export type Constructor<T> = (data: Uint8Array) => T;

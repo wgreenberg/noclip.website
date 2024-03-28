@@ -97,7 +97,8 @@ pub type WowCharArray = WowArray<u8>;
 
 impl WowArray<u8> {
     pub fn to_string(&self, data: &[u8]) -> Result<String, DekuError> {
-        let bytes = self.to_vec(data)?;
+        let mut bytes = self.to_vec(data)?;
+        bytes.pop(); // pop the null byte
         Ok(String::from_utf8(bytes).unwrap())
     }
 }
@@ -113,11 +114,11 @@ pub struct Quat {
 
 impl Quat {
     pub fn normalize(&mut self) {
-        let l = 1.0 / self.dot(&self).sqrt();
-        self.x *= l;
-        self.y *= l;
-        self.z *= l;
-        self.w *= l;
+        let inverse_mag = 1.0 / self.dot(&self).sqrt();
+        self.x *= inverse_mag;
+        self.y *= inverse_mag;
+        self.z *= inverse_mag;
+        self.w *= inverse_mag;
     }
 
     pub fn negate(&mut self) {

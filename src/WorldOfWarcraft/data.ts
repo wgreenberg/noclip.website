@@ -269,15 +269,27 @@ export class ModelData {
 
   public async load(dataFetcher: DataFetcher, cache: WowCache): Promise<undefined> {
     const m2 = await fetchFileByID(this.fileId, dataFetcher, rust.WowM2.new);
-    if (this.fileId === 190104) {
-      debugger;
-    }
     for (let txid of m2.texture_ids) {
       if (txid === 0) continue;
       try {
         this.blps.push(new BlpData(txid, await cache.loadBlp(txid)));
       } catch (e) {
         console.error(`failed to load BLP: ${e}`)
+      }
+    }
+    // check for legacy textures
+    if (this.blps.length === 0) {
+      const legacyTextures = m2.take_legacy_textures();
+      for (let tex of legacyTextures) {
+        const filename = tex.filename;
+        try {
+          const txid = getFileDataId(filename);
+          this.blps.push(new BlpData(txid, await cache.loadBlp(txid)));
+        } catch (e) {
+          console.error(`failed to load BLP: ${e}`)
+        }
+        // FIXME should store flags somewhere
+        tex.free();
       }
     }
     this.vertexBuffer = m2.take_vertex_data();

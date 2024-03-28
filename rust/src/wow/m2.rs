@@ -90,6 +90,11 @@ impl M2Header {
         Ok(result)
     }
 
+    fn get_textures(&self, m2_data: &[u8]) -> Result<Vec<M2Texture>, String> {
+        self.textures.to_vec(m2_data)
+            .map_err(|e| format!("{:?}", e))
+    }
+
     fn get_texture_transforms(&self, m2_data: &[u8]) -> Result<Vec<M2TextureTransform>, String> {
         let texture_transforms = self.texture_transforms.to_vec(m2_data)
             .map_err(|e| format!("{:?}", e))?;
@@ -189,6 +194,7 @@ pub struct M2 {
     pub skin_ids: Vec<u32>,
     pub name: String,
     pub materials: Vec<M2Material>,
+    legacy_textures: Option<Vec<LegacyTexture>>,
     vertex_data: Option<Vec<u8>>,
     texture_lookup_table: Option<Vec<u16>>,
     bone_lookup_table: Option<Vec<u16>>,
@@ -232,6 +238,16 @@ impl M2 {
             header.get_bones(m2_data)?
         ));
 
+        let mut legacy_textures = Vec::new();
+        for tex in header.get_textures(&m2_data)? {
+            let filename = tex.filename.to_string(&m2_data)
+                .map_err(|e| format!("{:?}", e))?;
+            legacy_textures.push(LegacyTexture {
+                filename,
+                flags: tex.flags,
+            });
+        }
+
         Ok(M2 {
             texture_ids: txid.unwrap_or(vec![]),
             skin_ids: sfid.ok_or("M2 didn't have SFID chunk!".to_string())?,
@@ -241,6 +257,7 @@ impl M2 {
             vertex_data: Some(header.get_vertex_data(m2_data)?),
             texture_lookup_table: Some(header.get_texture_lookup_table(m2_data)?),
             bone_lookup_table: Some(header.get_bone_lookup_table(m2_data)?),
+            legacy_textures: Some(legacy_textures),
             texture_transforms_lookup_table: Some(header.get_texture_transforms_lookup_table(m2_data)?),
             transparency_lookup_table: Some(header.get_transparency_lookup_table(m2_data)?),
             header,
@@ -253,6 +270,10 @@ impl M2 {
 
     pub fn get_bounding_box(&self) -> AABBox {
         self.header.bounding_box.clone()
+    }
+
+    pub fn take_legacy_textures(&mut self) -> Vec<LegacyTexture> {
+        self.legacy_textures.take().expect("M2 legacy textures already taken")
     }
 
     pub fn take_texture_lookup(&mut self) -> Vec<u16> {
@@ -373,6 +394,13 @@ pub struct M2Vertex {
     pub texture_coords: [Vec2; 2],
 }
 
+#[derive(Debug, Clone)]
+#[wasm_bindgen(js_name = "WowM2LegacyTexture", getter_with_clone)]
+pub struct LegacyTexture {
+    pub filename: String,
+    pub flags: u32,
+}
+
 #[derive(Debug, DekuRead, Clone)]
 pub struct M2Texture {
     pub type_: u32,
@@ -391,6 +419,5 @@ mod tests {
         let data = std::fs::read("../data/wotlk/world/azeroth/redridge/passivedoodads/rowboat/rowboat01.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
         let mut m2 = M2::new(&data).unwrap();
-        dbg!(m2.texture_ids);
     }
 }
