@@ -18,6 +18,12 @@ module.exports = merge(common, {
       publicPath: `/data/`,
       watch: false,
     },
+    proxy: {
+      '/data/wowFileID': {
+        target: 'http://localhost:8081',
+        pathRewrite: (path, req) => { return path.replace('/data/wowFileID', '') },
+      }
+    },
     compress: true,
   },
   module: {
