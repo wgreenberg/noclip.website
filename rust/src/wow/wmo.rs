@@ -732,7 +732,8 @@ pub struct Fog {
 #[wasm_bindgen(js_name = "WowDoodadDef")]
 #[derive(DekuRead, Debug, Clone)]
 pub struct DoodadDef {
-    pub name_index: u32,
+    pub name_index: i16,
+    pub flags: u16,
     pub position: Vec3,
     pub orientation: Quat,
     pub scale: f32,

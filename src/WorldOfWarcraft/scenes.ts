@@ -32,9 +32,6 @@ import { DebugWmoPortalRenderer, LoadingAdtRenderer, ModelRenderer, SkyboxRender
 import { Water } from '../Glover/parsers/GloverLevel.cjs';
 import { Color, colorNewFromRGBA } from '../Color.js';
 
-const id = 'WorldOfWarcaft';
-const name = 'World of Warcraft';
-
 export const MAP_SIZE = 17066;
 
 export const noclipSpaceFromAdtSpace = mat4.fromValues(
@@ -342,6 +339,7 @@ export class WdtScene implements Viewer.SceneGfx {
   public setupWmoDef(def: WmoDefinition) {
     this.wmoIdToDefs.append(def.wmoId, def);
     for (let doodad of def.doodads) {
+      if (doodad === undefined) continue;
       this.modelIdToDoodads.append(doodad.modelId, doodad);
     }
   }
@@ -586,21 +584,26 @@ export class WdtScene implements Viewer.SceneGfx {
     }
 
     // If we still don't have any groups, the user might be flying out of
-    // bounds, so just show the closest visible one
+    // bounds, so just show the closest visible one. Or if we're in a global WMO
+    // map, just render everything
     if (rootGroups.length === 0) {
-      let closestGroupId = undefined;
-      let closestDistance = Infinity;
-      for (let [groupId, groupAABB] of wmo.groupDefAABBs.entries()) {
-        if (this.modelFrustum.contains(groupAABB)) {
-          const dist = groupAABB.distanceVec3(this.modelCamera);
-          if (dist < closestDistance) {
-            closestDistance = dist;
-            closestGroupId = groupId;
+      if (this.world.globalWmo) {
+        def.setVisible(true);
+      } else {
+        let closestGroupId = undefined;
+        let closestDistance = Infinity;
+        for (let [groupId, groupAABB] of wmo.groupDefAABBs.entries()) {
+          if (this.modelFrustum.contains(groupAABB)) {
+            const dist = groupAABB.distanceVec3(this.modelCamera);
+            if (dist < closestDistance) {
+              closestDistance = dist;
+              closestGroupId = groupId;
+            }
           }
         }
-      }
-      if (closestGroupId !== undefined) {
-        def.setGroupVisible(closestGroupId, true);
+        if (closestGroupId !== undefined) {
+          def.setGroupVisible(closestGroupId, true);
+        }
       }
     }
 
@@ -837,13 +840,11 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
   }
 }
 
-const sceneDescs = [
-    "Classic Instances",
+const vanillaSceneDescs = [
+    "Instances",
     new WdtSceneDesc('Zul-Farak', 791169, 209),
     new WdtSceneDesc('Blackrock Depths', 780172, 230),
     new WdtSceneDesc('Scholomance', 790713, 289),
-    new WdtSceneDesc("Naxxramas", 827115, 533),
-    new WdtSceneDesc("Ruins of Ahn'qiraj", 775637, 509),
     new WdtSceneDesc("Deeprun Tram", 780788, 369),
     new WdtSceneDesc("Deadmines", 780605, 36),
     new WdtSceneDesc("Shadowfang Keep", 790796, 33),
@@ -861,47 +862,35 @@ const sceneDescs = [
     new WdtSceneDesc('Scarlet Monastery - Cathedral', 788662, 189),
     new WdtSceneDesc('Scarlet Monastery - Library', 788662, 189),
     new WdtSceneDesc('Scarlet Monastery - Armory', 788662, 189),
-    new WdtSceneDesc("Onyxia's Lair", 789922, 249),
-    new WdtSceneDesc("Zul'gurub", 791432, 309),
     new WdtSceneDesc("Ragefire Chasm", 789981, 389),
     new WdtSceneDesc("Dire Maul", 780814, 429),
+
+    "Raids",
+    new WdtSceneDesc("Onyxia's Lair", 789922, 249),
     new WdtSceneDesc("Molten Core", 788659, 409),
     new WdtSceneDesc("Blackwing Lair", 780178, 469),
+    new WdtSceneDesc("Zul'gurub", 791432, 309),
+    new WdtSceneDesc("Naxxramas", 827115, 533),
     new WdtSceneDesc("Ahn'Qiraj Temple", 775840, 531),
-
-    "Burning Crusade Instances",
-    new WdtSceneDesc("Hellfire Citadel: The Shattered Halls", 831277, 540),
-    new WdtSceneDesc("Hellfire Citadel: The Blood Furnace", 830642, 542),
-    new WdtSceneDesc("Hellfire Citadel: Ramparts", 832154, 543),
-    new WdtSceneDesc("Magtheridon's Lair", 833183, 544),
-    new WdtSceneDesc("Coilfang: The Steamvault", 828422, 545),
-    new WdtSceneDesc("Coilfang: The Underbog", 831262, 546),
-    new WdtSceneDesc("Coilfang: The Slave Pens", 830731, 547),
-    new WdtSceneDesc("Coilfang: Serpentshrine Cavern", 829900, 548),
-    new WdtSceneDesc("Karazahn", 834192, 532),
-    new WdtSceneDesc("Caverns of Time: Hyjal", 831824, 534),
-    new WdtSceneDesc("Caverns of Time: The Escape from Durnholde", 833998, 560),
-    new WdtSceneDesc("Tempest Keep (Raid)", 832484, 550),
-    new WdtSceneDesc("Tempest Keep: The Arcatraz", 832070, 552),
-    new WdtSceneDesc("Tempest Keep: The Botanica", 833950, 553),
-    new WdtSceneDesc("Tempest Keep: The Mechanar", 831974, 554),
-    new WdtSceneDesc("Auchindoun: Shadow Labyrinth", 828331, 555),
-    new WdtSceneDesc("Auchindoun: Sethekk Halls", 828811, 556),
-    new WdtSceneDesc("Auchindoun: Mana-Tombs", 830899, 557),
-    new WdtSceneDesc("Auchindoun: Auchenai Crypts", 830415, 558),
-    new WdtSceneDesc("Gruul's Lair", 833180, 565),
-    new WdtSceneDesc("Zul'Aman", 815727, 568),
-    new WdtSceneDesc("Black Temple", 829630, 565),
-    new WdtSceneDesc("The Sunwell: Magister's Terrace", 834223, 585),
-    new WdtSceneDesc("The Sunwell: Plateau", 832953, 580),
+    new WdtSceneDesc("Ruins of Ahn'qiraj", 775637, 509),
 
     "PvP",
     new WdtSceneDesc('Alterac Valley', 790112, 30), // AKA pvpzone01
     new WdtSceneDesc('Warsong Gulch', 790291, 489), // AKA pvpzone03
     new WdtSceneDesc('Arathi Basin', 790377, 529), // AKA pvpzone04
-    new WdtSceneDesc('Eye of the Storm', 788893, 566),
-    new WdtSceneDesc('Arena: Nagrand', 790469, 559),
-    new WdtSceneDesc("Arena: Blade's Edge", 780261, 562),
+
+    "Kalimdor",
+    new ContinentSceneDesc("??", 782779, 35, 23, 1),
+    new ContinentSceneDesc("GM Island", 782779, 1, 1, 1),
+    
+    "Eastern Kingdoms",
+    new ContinentSceneDesc("Undercity", 775971, 31, 28, 0),
+    new ContinentSceneDesc("Stormwind", 775971, 31, 48, 0),
+    new ContinentSceneDesc("Ironforge", 775971, 33, 40, 0),
+    new ContinentSceneDesc("Dun Morogh", 775971, 31, 43, 0),
+    new ContinentSceneDesc("Redridge", 775971, 35, 50, 0),
+    new ContinentSceneDesc("Blackrock Mountain", 775971, 34, 45, 0),
+    new ContinentSceneDesc("Booty Bay", 775971, 31, 58, 0),
 
     "Unreleased",
     new WdtSceneDesc('Emerald Dream (classic)', 780817, 0),
@@ -911,27 +900,103 @@ const sceneDescs = [
     new WdtSceneDesc('Collin Test', 863984, 0),
     new WdtSceneDesc('PvP Zone 02', 861092, 0),
     new WdtSceneDesc('Scarlet Monastery Prototype', 865519, 189),
+];
 
-    "Kalimdor",
-    new ContinentSceneDesc("??", 782779, 35, 23, 1),
-    new ContinentSceneDesc("GM Island", 782779, 1, 1, 1),
-    
-    "Eastern Kingdoms",
-    new ContinentSceneDesc("Undercity", 775971, 31, 28, 0),
-    new ContinentSceneDesc("Stormwind", 775971, 31, 48, 0),
-    new ContinentSceneDesc("Stormwind Harbor", 775971, 29, 47, 0),
-    new ContinentSceneDesc("Ironforge", 775971, 33, 40, 0),
-    new ContinentSceneDesc("Dun Morogh", 775971, 31, 43, 0),
-    new ContinentSceneDesc("Redridge", 775971, 35, 50, 0),
-    new ContinentSceneDesc("Blackrock Mountain", 775971, 34, 45, 0),
-    new ContinentSceneDesc("Booty Bay", 775971, 31, 58, 0),
+const bcSceneDescs = [
+    "Instances",
+    new WdtSceneDesc("Hellfire Citadel: The Shattered Halls", 831277, 540),
+    new WdtSceneDesc("Hellfire Citadel: The Blood Furnace", 830642, 542),
+    new WdtSceneDesc("Hellfire Citadel: Ramparts", 832154, 543),
+    new WdtSceneDesc("Coilfang: The Steamvault", 828422, 545),
+    new WdtSceneDesc("Coilfang: The Underbog", 831262, 546),
+    new WdtSceneDesc("Coilfang: The Slave Pens", 830731, 547),
+    new WdtSceneDesc("Caverns of Time: The Escape from Durnholde", 833998, 560),
+    new WdtSceneDesc("Tempest Keep: The Arcatraz", 832070, 552),
+    new WdtSceneDesc("Tempest Keep: The Botanica", 833950, 553),
+    new WdtSceneDesc("Tempest Keep: The Mechanar", 831974, 554),
+    new WdtSceneDesc("Auchindoun: Shadow Labyrinth", 828331, 555),
+    new WdtSceneDesc("Auchindoun: Sethekk Halls", 828811, 556),
+    new WdtSceneDesc("Auchindoun: Mana-Tombs", 830899, 557),
+    new WdtSceneDesc("Auchindoun: Auchenai Crypts", 830415, 558),
+    new WdtSceneDesc("The Sunwell: Magister's Terrace", 834223, 585),
+
+    "Raids",
+    new WdtSceneDesc("Tempest Keep", 832484, 550),
+    new WdtSceneDesc("Karazahn", 834192, 532),
+    new WdtSceneDesc("Caverns of Time: Hyjal", 831824, 534),
+    new WdtSceneDesc("Black Temple", 829630, 565),
+    new WdtSceneDesc("Gruul's Lair", 833180, 565),
+    new WdtSceneDesc("Zul'Aman", 815727, 568),
+    new WdtSceneDesc("The Sunwell: Plateau", 832953, 580),
+    new WdtSceneDesc("Magtheridon's Lair", 833183, 544),
+    new WdtSceneDesc("Coilfang: Serpentshrine Cavern", 829900, 548),
+
+    "PvP",
+    new WdtSceneDesc('Eye of the Storm', 788893, 566),
+    new WdtSceneDesc('Arena: Nagrand', 790469, 559),
+    new WdtSceneDesc("Arena: Blade's Edge", 780261, 562),
 
     "Outland",
     new ContinentSceneDesc("The Dark Portal", 828395, 29, 32, 530),
     new ContinentSceneDesc("Shattrath", 828395, 22, 35, 530),
+];
+
+const wotlkSceneDescs = [
+    "Instances",
+    new WdtSceneDesc("Ebon Hold", 818210, 609),
+    new WdtSceneDesc("Utgarde Keep", 825743, 574),
+    new WdtSceneDesc("Utgarde Pinnacle", 827661, 575),
+    new WdtSceneDesc("Drak'Theron Keep", 820968, 600),
+    new WdtSceneDesc("Violet Hold", 818205, 608),
+    new WdtSceneDesc("Gundrak", 818626, 604),
+    new WdtSceneDesc("Ahn'kahet: The Old Kingdom", 818056, 619),
+    new WdtSceneDesc("Azjol'Nerub", 818693, 601),
+    new WdtSceneDesc("Halls of Stone", 824642, 599),
+    new WdtSceneDesc("Halls of Lightning", 824768, 602),
+    new WdtSceneDesc("The Oculus", 819814, 578),
+    new WdtSceneDesc("The Nexus", 821331, 576),
+    new WdtSceneDesc("The Culling of Stratholme", 826005, 0), // map is actually 595
+    new WdtSceneDesc("Trial of the Champion", 817987, 650),
+    new WdtSceneDesc("The Forge of Souls", 818965, 632),
+    new WdtSceneDesc("Pit of Saron", 827056, 0), // map id is actually 658
+    new WdtSceneDesc("Halls of Reflection", 818690, 668),
+
+    "Raids",
+    new WdtSceneDesc("Icecrown Citadel", 820428, 0), // map id is actually 631
+    new WdtSceneDesc("Ulduar", 825015, 603),
+    new WdtSceneDesc("The Obsidian Sanctum", 820448, 615),
+    new WdtSceneDesc("The Ruby Sanctum", 821024, 724),
+    new WdtSceneDesc("Vault of Archavon", 826589, 624),
+    new WdtSceneDesc("Trial of the Crusader", 818173, 649),
+    new WdtSceneDesc("The Eye of Eternity", 822560, 616),
+
+    "PvP",
+    new WdtSceneDesc('Strand of the Ancients', 789579, 607),
+    new WdtSceneDesc('Isle of Conquest', 821811, 0), // map id is actually 628
+    new WdtSceneDesc("Arena: Dalaran Sewers", 780309, 617),
+    new WdtSceneDesc("Arena: The Ring of Valor", 789925, 618),
 
     "Northrend",
     new ContinentSceneDesc("???", 822688, 31, 28, 571),
 ];
 
-export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, hidden: false };
+export const vanillaSceneGroup: Viewer.SceneGroup = {
+  id: 'WorldOfWarcraft',
+  name: 'World of Warcraft',
+  sceneDescs: vanillaSceneDescs,
+  hidden: false,
+};
+
+export const bcSceneGroup: Viewer.SceneGroup = {
+  id: 'WorldOfWarcraftBC',
+  name: 'World of Warcraft: The Burning Crusade',
+  sceneDescs: bcSceneDescs,
+  hidden: true,
+};
+
+export const wotlkSceneGroup: Viewer.SceneGroup = {
+  id: 'WorldOfWarcraftWOTLK',
+  name: 'World of Warcraft: Wrath of the Lich King',
+  sceneDescs: wotlkSceneDescs,
+  hidden: true,
+};

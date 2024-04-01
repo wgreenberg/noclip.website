@@ -1303,7 +1303,7 @@ export class WmoDefinition {
   public worldAABB: AABB = new AABB();
 
   public visible = true;
-  public doodads: DoodadData[] = [];
+  public doodads: (DoodadData | undefined)[] = [];
   public groupIdToVisibility: Map<number, boolean> = new Map();
   public groupIdToDoodadIndices: MapArray<number, number> = new MapArray();
   public groupAmbientColors: Map<number, vec4> = new Map();
@@ -1381,6 +1381,11 @@ export class WmoDefinition {
     const doodads = wmo.wmo.get_doodad_set(this.doodadSet);
     if (doodads) {
       for (let wmoDoodad of doodads) {
+        if (wmoDoodad.name_index === -1) {
+          console.warn('skipping WMO doodad w/ name_index === -1');
+          this.doodads.push(undefined);
+          continue;
+        }
         const doodad = DoodadData.fromWmoDoodad(wmoDoodad, wmo.modelIds, this.modelMatrix);
         const modelData = wmo.models.get(doodad.modelId)!;
         doodad.setBoundingBoxFromModel(modelData);
@@ -1400,6 +1405,9 @@ export class WmoDefinition {
 
       for (let index of this.groupIdToDoodadIndices.get(group.fileId)) {
         const doodad = this.doodads[index];
+        if (doodad === undefined) {
+          continue;
+        }
         doodad.ambientColor = this.groupAmbientColors.get(group.fileId)!;
         // FIXME this is wrong
         doodad.applyInteriorLighting = group.flags.interior && !group.flags.exterior_lit;
@@ -1421,7 +1429,9 @@ export class WmoDefinition {
     this.groupIdToVisibility.set(groupId, visible);
     if (this.groupIdToDoodadIndices.has(groupId)) {
       for (let index of this.groupIdToDoodadIndices.get(groupId)) {
-        this.doodads[index].setVisible(visible);
+        const doodad = this.doodads[index];
+        if (doodad !== undefined)
+          doodad.setVisible(visible);
       }
     }
     if (this.groupIdToLiquidIndices.has(groupId)) {
@@ -1747,7 +1757,10 @@ export class DoodadData {
     const doodadColor = doodad.color;
     let color = [doodadColor.g, doodadColor.b, doodadColor.r, doodadColor.a]; // BRGA
     doodadColor.free();
-    const modelId = modelIds[doodad.name_index];
+    let modelId = modelIds[doodad.name_index];
+    if (modelId === undefined) {
+      throw new Error(`WMO doodad with invalid name_index ${doodad.name_index} (only ${modelIds.length} models)`);
+    }
     let doodadMat = mat4.create();
     setMatrixTranslation(doodadMat, position);
     const rotMat = mat4.fromQuat(mat4.create(), rotation as quat);
@@ -1916,7 +1929,8 @@ export class WorldData {
       const adtFileIDs = wdt.get_loaded_map_data();
       for (let fileIDs of adtFileIDs) {
         if (fileIDs.root_adt === 0) {
-          throw new Error(`null ADTs in a non-global-WMO WDT`);
+          // throw new Error(`null ADTs in a non-global-WMO WDT`);
+          continue;
         }
         const wowAdt = rust.WowAdt.new(await fetchDataByFileID(fileIDs.root_adt, dataFetcher));
         wowAdt.append_obj_adt(await fetchDataByFileID(fileIDs.obj0_adt, dataFetcher));
