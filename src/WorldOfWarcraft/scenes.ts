@@ -85,7 +85,8 @@ export class View {
     public frustum: Frustum = new Frustum();
     public time: number;
     public deltaTime: number;
-    public farPlane = 1000;
+    // public farPlane = 1000;
+    public farPlane = Infinity;
     public timeOffset = 1440;
     public secondsPerGameDay = 60;
 

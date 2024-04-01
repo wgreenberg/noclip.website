@@ -75,9 +75,9 @@ export async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher,
 }
 
 export async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
-  const filePath = getFilePath(fileId);
   // WOTLK extraction is from build 3.4.3.52237
   // Vanilla extraction is from build 1.5.1.53495
-  const buf = await dataFetcher.fetchData(`/wotlk/${filePath}`);
+  // const filePath = getFilePath(fileId);
+  const buf = await dataFetcher.fetchURL(`data/wowFileID/${fileId}`);
   return buf.createTypedArray(Uint8Array);
 }
