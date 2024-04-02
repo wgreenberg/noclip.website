@@ -568,7 +568,6 @@ impl LightResult {
         self.glow += other.glow * t;
         self.ambient_color += other.ambient_color * t;
         self.direct_color += other.direct_color * t;
-        self.ambient_color += other.ambient_color * t;
         self.sky_top_color += other.sky_top_color * t;
         self.sky_middle_color += other.sky_middle_color * t;
         self.sky_band1_color += other.sky_band1_color * t;

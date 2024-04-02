@@ -1736,9 +1736,9 @@ export class DoodadData {
     const doodadMat = mat4.create();
     setMatrixTranslation(doodadMat, position);
     mat4.scale(doodadMat, doodadMat, [scale, scale, scale]);
-    mat4.rotateZ(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[2]);
     mat4.rotateY(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[1]);
     mat4.rotateX(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[0]);
+    mat4.rotateZ(doodadMat, doodadMat, MathConstants.DEG_TO_RAD * rotation[2]);
     mat4.mul(doodadMat, doodadMat, placementSpaceFromModelSpace);
     mat4.mul(doodadMat, adtSpaceFromPlacementSpace, doodadMat);
     const fileId = doodad.name_id;
