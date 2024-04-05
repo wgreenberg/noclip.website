@@ -43,6 +43,10 @@ class Sheepfile {
     }
 
     public getFileDataId(fileName: string): number | undefined {
+      // FIXME: not sure why this doesn't hash correctly, hardcode it for now
+      if (fileName === 'WORLD\\AZEROTH\\REDRIDGE\\PASSIVEDOODADS\\DOCKPIECES\\REDRIDGEDOCKPLANK02.BLP') {
+        return 190086;
+      }
       const entry = this.sheepfile.get_file_name(fileName);
       if (entry === undefined) {
         return undefined;
