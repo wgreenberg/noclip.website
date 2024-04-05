@@ -32,7 +32,7 @@ impl Adt {
         let mut liquid_data: Option<(LiquidHeader, &[u8])> = None;
         for (chunk, chunk_data) in &mut chunked_data {
             match &chunk.magic {
-                b"KNCM" => map_chunks.push(MapChunk::new(chunk, &chunk_data)?),
+                b"KNCM" => map_chunks.push(MapChunk::new(chunk, chunk_data)?),
                 b"O2HM" => {
                     assert!(liquid_data.is_none());
                     let header: LiquidHeader = parse(chunk_data)?;
@@ -48,8 +48,8 @@ impl Adt {
             for (i, instance_header) in liquid_header.chunks.iter().enumerate() {
                 let x_chunk = (i / 16) as f32;
                 let y_chunk = (i % 16) as f32;
-                let x_coord = adt_base_pos.x - x_chunk as f32 * CHUNK_SIZE; 
-                let y_coord = adt_base_pos.y - y_chunk as f32 * CHUNK_SIZE;
+                let x_coord = adt_base_pos.x - x_chunk * CHUNK_SIZE; 
+                let y_coord = adt_base_pos.y - y_chunk * CHUNK_SIZE;
                 let liquid = LiquidData::parse(instance_header, x_coord, y_coord, data)?;
                 liquids.push(liquid);
             }
@@ -80,8 +80,8 @@ impl Adt {
 
     pub fn get_texture_file_ids(&self) -> Vec<u32> {
         let mut ids = Vec::new();
-        self.height_tex_ids.as_ref().map(|tex| ids.extend(&tex.file_data_ids));
-        self.diffuse_tex_ids.as_ref().map(|tex| ids.extend(&tex.file_data_ids));
+        if let Some(tex) = self.height_tex_ids.as_ref() { ids.extend(&tex.file_data_ids) }
+        if let Some(tex) = self.diffuse_tex_ids.as_ref() { ids.extend(&tex.file_data_ids) }
         ids.retain(|&id| id != 0);
         ids
     }
@@ -90,16 +90,14 @@ impl Adt {
         assert!(lod_level <= 1);
         if lod_level == 0 {
             self.doodads.iter().map(|doodad| doodad.name_id).collect()
+        } else if let Some(lod_levels) = &self.lod_levels {
+            let offset = lod_levels.m2_lod_offset[2] as usize;
+            let length = lod_levels.m2_lod_length[2] as usize;
+            self.lod_doodads[offset..offset+length].iter()
+                .map(|doodad| doodad.name_id)
+                .collect()
         } else {
-            if let Some(lod_levels) = &self.lod_levels {
-                let offset = lod_levels.m2_lod_offset[2] as usize;
-                let length = lod_levels.m2_lod_length[2] as usize;
-                self.lod_doodads[offset..offset+length].iter()
-                    .map(|doodad| doodad.name_id)
-                    .collect()
-            } else {
-                vec![]
-            }
+            vec![]
         }
     }
 
@@ -107,14 +105,12 @@ impl Adt {
         assert!(lod_level <= 1);
         if lod_level == 0 {
             self.doodads.clone()
+        } else if let Some(lod_levels) = &self.lod_levels {
+            let offset = lod_levels.m2_lod_offset[2] as usize;
+            let length = lod_levels.m2_lod_length[2] as usize;
+            self.lod_doodads[offset..offset+length].to_vec()
         } else {
-            if let Some(lod_levels) = &self.lod_levels {
-                let offset = lod_levels.m2_lod_offset[2] as usize;
-                let length = lod_levels.m2_lod_length[2] as usize;
-                self.lod_doodads[offset..offset+length].to_vec()
-            } else {
-                vec![]
-            }
+            vec![]
         }
     }
 
@@ -122,14 +118,12 @@ impl Adt {
         assert!(lod_level <= 1);
         if lod_level == 0 {
             self.map_object_defs.clone()
+        } else if let Some(lod_levels) = &self.lod_levels {
+            let offset = lod_levels.wmo_lod_offset[2] as usize;
+            let length = lod_levels.wmo_lod_length[2] as usize;
+            self.lod_map_object_defs[offset..offset+length].to_vec()
         } else {
-            if let Some(lod_levels) = &self.lod_levels {
-                let offset = lod_levels.wmo_lod_offset[2] as usize;
-                let length = lod_levels.wmo_lod_length[2] as usize;
-                self.lod_map_object_defs[offset..offset+length].to_vec()
-            } else {
-                vec![]
-            }
+            vec![]
         }
     }
 
@@ -362,7 +356,7 @@ static SQUARE_INDICES_TRIANGLE: &[u16] = &[
 
 pub static ADT_VBO_INFO: AdtVBOInfo = AdtVBOInfo {
     stride:          (1 + 3 + 3 + 4 + 4) * 4,
-    vertex_offset:   (1) * 4,
+    vertex_offset:   4,
     normal_offset:   (1 + 3) * 4,
     color_offset:    (1 + 3 + 3) * 4,
     lighting_offset: (1 + 3 + 3 + 4) * 4,
@@ -450,7 +444,7 @@ pub struct MapChunk {
 }
 
 impl MapChunk {
-    pub fn new(chunk: Chunk, chunk_data: &[u8]) -> Result<Self, String> {
+    pub fn new(_chunk: Chunk, chunk_data: &[u8]) -> Result<Self, String> {
         let header = parse(chunk_data)?;
 
         let mut mcvt: Option<HeightmapChunk> = None;
@@ -484,7 +478,7 @@ impl MapChunk {
     // These two flags come from the WDT definition block flags
     pub fn build_alpha_texture(&self, adt_has_big_alpha: bool, adt_has_height_texturing: bool) -> Option<Vec<u8>> {
         let alpha_map = &self.alpha_map.as_ref()?.data;
-        assert!(self.texture_layers.len() > 0);
+        assert!(!self.texture_layers.is_empty());
         let mut result = vec![0; (64 * 4) * 64];
         for layer_idx in 0..self.texture_layers.len() {
             let layer = &self.texture_layers[layer_idx];
@@ -518,31 +512,29 @@ impl MapChunk {
                         alpha_offset += 1;
                     }
                 }
+            } else if adt_has_big_alpha || adt_has_height_texturing {
+                // uncompressed (4096)
+                for _ in 0..4096 {
+                    result[off_o] = alpha_map[alpha_offset];
+                    off_o += 4;
+                    alpha_offset += 1;
+                }
             } else {
-                if adt_has_big_alpha || adt_has_height_texturing {
-                    // uncompressed (4096)
-                    for _ in 0..4096 {
-                        result[off_o] = alpha_map[alpha_offset];
-                        off_o += 4;
-                        alpha_offset += 1;
-                    }
-                } else {
-                    // uncompressed (2048)
-                    for _ in 0..2048 {
-                        result[off_o] = (alpha_map[alpha_offset] & 0x0f) * 17;
-                        off_o += 4;
-                        result[off_o] = ((alpha_map[alpha_offset] & 0xf0) >> 4) * 17;
-                        off_o += 4;
-                        alpha_offset += 1;
-                    }
+                // uncompressed (2048)
+                for _ in 0..2048 {
+                    result[off_o] = (alpha_map[alpha_offset] & 0x0f) * 17;
+                    off_o += 4;
+                    result[off_o] = ((alpha_map[alpha_offset] & 0xf0) >> 4) * 17;
+                    off_o += 4;
+                    alpha_offset += 1;
                 }
             }
         }
         Some(result)
     }
 
-    fn append_obj_chunk(&mut self, chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
-        let mut chunked_data = ChunkedData::new(&chunk_data);
+    fn append_obj_chunk(&mut self, _chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
+        let mut chunked_data = ChunkedData::new(chunk_data);
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
                 b"VCCM" => self.vertex_colors = Some(parse(subchunk_data)?),
@@ -553,8 +545,8 @@ impl MapChunk {
         Ok(())
     }
 
-    fn append_tex_chunk(&mut self, chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
-        let mut chunked_data = ChunkedData::new(&chunk_data);
+    fn append_tex_chunk(&mut self, _chunk: Chunk, chunk_data: &[u8]) -> Result<(), String> {
+        let mut chunked_data = ChunkedData::new(chunk_data);
         for (subchunk, subchunk_data) in &mut chunked_data {
             match &subchunk.magic {
                 b"YLCM" => self.texture_layers = parse_array(subchunk_data, 16)?,
@@ -873,7 +865,7 @@ mod tests {
     #[test]
     fn test() {
         let data = std::fs::read("../data/wow/world/maps/tanarisinstance/tanarisinstance_29_27.adt").unwrap();
-        let mut adt = Adt::new(&data).unwrap();
+        let adt = Adt::new(&data).unwrap();
         // adt.append_lod_obj_adt(&std::fs::read("../data/wow/world/maps/azeroth/azeroth_34_46_obj1.adt").unwrap()).unwrap();
         dbg!(&adt.liquids[0].as_ref().unwrap().layers[0]);
     }

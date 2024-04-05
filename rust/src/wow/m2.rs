@@ -1,7 +1,7 @@
-use byteorder::ReadBytesExt;
+
 use deku::prelude::*;
 use deku::ctx::ByteSize;
-use js_sys::{Array, Float32Array, Uint8Array};
+
 use wasm_bindgen::prelude::*;
 use crate::wow::animation::*;
 
@@ -11,7 +11,6 @@ use super::common::{
     WowArray,
     WowCharArray,
     AABBox,
-    Vec4,
     Vec3,
     Vec2,
     Quat,
@@ -133,7 +132,7 @@ impl M2Header {
             };
             result.push(M2CompBone {
                 translation: bone.translation.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
-                rotation: rotation,
+                rotation,
                 scaling: bone.scaling.to_allocated(m2_data).map_err(|e| format!("{:?}", e))?,
                 key_bone_id: bone.key_bone_id,
                 flags: bone.flags,
@@ -219,9 +218,9 @@ impl M2 {
             match &chunk.magic {
                 b"TXID" => {
                     dbg!(&chunk_data);
-                    txid = Some(parse_array(&chunk_data, 4)?);
+                    txid = Some(parse_array(chunk_data, 4)?);
                 },
-                b"SFID" => sfid = Some(parse_array(&chunk_data, 4)?),
+                b"SFID" => sfid = Some(parse_array(chunk_data, 4)?),
                 _ => {},
             }
         }
@@ -239,8 +238,8 @@ impl M2 {
         ));
 
         let mut legacy_textures = Vec::new();
-        for tex in header.get_textures(&m2_data)? {
-            let filename = tex.filename.to_string(&m2_data)
+        for tex in header.get_textures(m2_data)? {
+            let filename = tex.filename.to_string(m2_data)
                 .map_err(|e| format!("{:?}", e))?;
             legacy_textures.push(LegacyTexture {
                 filename,
@@ -249,7 +248,7 @@ impl M2 {
         }
 
         Ok(M2 {
-            texture_ids: txid.unwrap_or(vec![]),
+            texture_ids: txid.unwrap_or_default(),
             skin_ids: sfid.ok_or("M2 didn't have SFID chunk!".to_string())?,
             animation_manager,
             name: header.get_name(m2_data)?,
@@ -269,7 +268,7 @@ impl M2 {
     }
 
     pub fn get_bounding_box(&self) -> AABBox {
-        self.header.bounding_box.clone()
+        self.header.bounding_box
     }
 
     pub fn take_legacy_textures(&mut self) -> Vec<LegacyTexture> {
@@ -418,6 +417,6 @@ mod tests {
         //let data = std::fs::read("../data/wow/world/generic/nightelf/passive doodads/magicalimplements/nemagicimplement06.m2").unwrap();
         let data = std::fs::read("../data/wotlk/world/azeroth/redridge/passivedoodads/rowboat/rowboat01.m2").unwrap();
         //let data = std::fs::read("../data/wow/world/kalimdor/kalidar/passivedoodads/kalidartrees/kalidartree01.m2").unwrap();
-        let mut m2 = M2::new(&data).unwrap();
+        let _m2 = M2::new(&data).unwrap();
     }
 }

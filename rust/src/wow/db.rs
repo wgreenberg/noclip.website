@@ -1,8 +1,8 @@
-use std::{io::Read, ptr::null};
+use std::{io::Read};
 
 use deku::prelude::*;
 use super::common::*;
-use deku::bitvec::{BitVec, BitSlice, Msb0, Lsb0, bitvec, bits};
+use deku::bitvec::{BitVec, BitSlice, Msb0};
 use wasm_bindgen::prelude::*;
 
 #[derive(DekuRead, Debug, Clone)]
@@ -134,7 +134,7 @@ fn bitslice_to_u32(bits: &BitSlice<u8, Msb0>, bit_offset: usize, num_bits: usize
         let byte_index = bit_num >> 3;
         let bit_index = 7 - (bit_num % 8);
         if bits[byte_index * 8 + bit_index] {
-            result |= 1 << bit_num - bit_offset;
+            result |= 1 << (bit_num - bit_offset);
         }
     }
     result
@@ -160,15 +160,15 @@ impl Wdc4Db2File {
         }
     }
 
-    pub fn read_vec<'a, T>(&self, input: &'a BitSlice<u8, Msb0>, bit_offset: usize, field_number: usize) -> Result<(&'a BitSlice<u8, Msb0>, Vec<T>), DekuError>
+    pub fn read_vec<'a, T>(&self, input: &'a BitSlice<u8, Msb0>, _bit_offset: usize, field_number: usize) -> Result<(&'a BitSlice<u8, Msb0>, Vec<T>), DekuError>
         where for<'b> T: DekuRead<'b, ()>
     {
         let field_offset = self.field_storage_info[field_number].field_offset_bits as usize;
         let field_size = self.field_storage_info[field_number].field_size_bits as usize;
-        let field_bits = &input[field_offset..field_offset + field_size];
+        let _field_bits = &input[field_offset..field_offset + field_size];
         let result = match &self.field_storage_info[field_number].storage_type {
-            StorageType::BitpackedIndexedArray { offset_bits, size_bits, array_count } => {
-                let index = bitslice_to_u32(&input, field_offset, field_size);
+            StorageType::BitpackedIndexedArray { offset_bits: _, size_bits: _, array_count } => {
+                let index = bitslice_to_u32(input, field_offset, field_size);
                 let mut result: Vec<T> = Vec::with_capacity(*array_count as usize);
                 for _ in 0..*array_count as usize {
                     let palette_element = self.get_palette_data(field_number, index as usize);
@@ -186,7 +186,7 @@ impl Wdc4Db2File {
         let mut string = String::new();
         let mut rest = string_data;
         loop {
-            let (new_rest, byte) = u8::read(&rest, ())?;
+            let (new_rest, byte) = u8::read(rest, ())?;
             rest = new_rest;
             if byte == 0 {
                 return Ok((input, string));
@@ -212,7 +212,7 @@ impl Wdc4Db2File {
         self.read_string_helper(field_rest, string_rest)
     }
 
-    pub fn read_field<'a, T>(&self, input: &'a BitSlice<u8, Msb0>, bit_offset: usize, field_number: usize) -> Result<(&'a BitSlice<u8, Msb0>, T), DekuError>
+    pub fn read_field<'a, T>(&self, input: &'a BitSlice<u8, Msb0>, _bit_offset: usize, field_number: usize) -> Result<(&'a BitSlice<u8, Msb0>, T), DekuError>
         where for<'b> T: DekuRead<'b, ()>
     {
         let field_offset = self.field_storage_info[field_number].field_offset_bits as usize;
@@ -223,27 +223,27 @@ impl Wdc4Db2File {
                 let (_, result) = T::read(field_bits, ())?;
                 result
             },
-            StorageType::Bitpacked { offset_bits, size_bits, flags } => {
+            StorageType::Bitpacked { offset_bits: _, size_bits, flags: _ } => {
                 let size_bits = *size_bits as usize;
-                from_u32(bitslice_to_u32(&input, field_offset, size_bits))?
+                from_u32(bitslice_to_u32(input, field_offset, size_bits))?
             },
             StorageType::CommonData { default_value, .. } => {
                 let default = from_u32(*default_value)?;
-                let index = bitslice_to_u32(&input, field_offset, field_size);
+                let index = bitslice_to_u32(input, field_offset, field_size);
                 let common_element = self.get_common_data(field_number, index).unwrap_or(default);
                 from_u32(common_element)?
             },
-            StorageType::BitpackedIndexed { offset_bits, size_bits, .. } => {
-                let index = bitslice_to_u32(&input, field_offset, field_size);
+            StorageType::BitpackedIndexed {   .. } => {
+                let index = bitslice_to_u32(input, field_offset, field_size);
                 let palette_element = self.get_palette_data(field_number, index as usize);
                 from_u32(palette_element)?
             },
-            StorageType::BitpackedIndexedArray { offset_bits, size_bits, array_count } => {
+            StorageType::BitpackedIndexedArray { offset_bits: _, size_bits: _, array_count: _ } => {
                 panic!("read_value() called on field {}, which is a BitpackedIndexedArray type. use read_vec() instead", field_number)
             },
-            StorageType::BitpackedSigned { offset_bits, size_bits, flags } => {
+            StorageType::BitpackedSigned { offset_bits: _, size_bits, flags: _ } => {
                 let size_bits = *size_bits as usize;
-                from_u32(bitslice_to_u32(&input, field_offset, size_bits))?
+                from_u32(bitslice_to_u32(input, field_offset, size_bits))?
             },
         };
         Ok((&input[field_offset + field_size..], result))
@@ -262,7 +262,7 @@ impl Wdc4Db2File {
         for item_idx in 0..self.field_storage_info[field_number].additional_data_size as usize / 8 {
             let item_offset = offset + item_idx * 8;
             let haystack = u32::from_le_bytes([
-                self.common_data[item_offset + 0],
+                self.common_data[item_offset],
                 self.common_data[item_offset + 1],
                 self.common_data[item_offset + 2],
                 self.common_data[item_offset + 3],
@@ -291,7 +291,7 @@ impl Wdc4Db2File {
         }
         let start_index = offset + palette_index * 4;
         u32::from_le_bytes([
-            self.palette_data[start_index + 0],
+            self.palette_data[start_index],
             self.palette_data[start_index + 1],
             self.palette_data[start_index + 2],
             self.palette_data[start_index + 3],
@@ -359,7 +359,7 @@ impl<T> DatabaseTable<T> {
             let mut bitslice = BitSlice::from_slice(&data[id_list_start..]);
             assert_eq!(id_list_size, records.len() * 4);
             for i in 0..records.len() {
-                (rest, id) = u32::read(&mut bitslice, ())
+                (rest, id) = u32::read(bitslice, ())
                     .map_err(|e| format!("{:?}", e))?;
                 bitslice = rest;
                 ids[i] = id;
@@ -524,7 +524,7 @@ impl LightRecord {
 
 fn u32_to_color(color: u32) -> Vec3 {
     Vec3 {
-        z: ((color >> 0) & 0xff) as f32 / 255.0,
+        z: (color & 0xff) as f32 / 255.0,
         y: ((color >> 8) & 0xff) as f32 / 255.0,
         x: ((color >> 16) & 0xff) as f32 / 255.0,
     }
@@ -787,14 +787,12 @@ impl Database {
                 } else {
                     current_light_data = Some(light_data);
                 }
-            } else {
-                if let Some(next) = next_light_data {
-                    if light_data.time < next.time {
-                        next_light_data = Some(light_data);
-                    }
-                } else {
+            } else if let Some(next) = next_light_data {
+                if light_data.time < next.time {
                     next_light_data = Some(light_data);
                 }
+            } else {
+                next_light_data = Some(light_data);
             }
         }
 
@@ -845,7 +843,7 @@ impl Database {
             }
         }
 
-        if outer_lights.len() == 0 {
+        if outer_lights.is_empty() {
             return default_light;
         }
 
@@ -886,28 +884,28 @@ mod test {
             0, 0, 0, 0,
             0x01, 0x18, 0x00, 0x00,
         ]);
-        assert_eq!(bitslice_to_u32(&slice, 96, 10), 1);
-        assert_eq!(bitslice_to_u32(&slice, 106, 1), 0);
-        assert_eq!(bitslice_to_u32(&slice, 107, 2), 3);
-        assert_eq!(bitslice_to_u32(&slice, 109, 4), 0);
-        assert_eq!(bitslice_to_u32(&slice, 113, 3), 0);
-        assert_eq!(bitslice_to_u32(&slice, 116, 2), 0);
-        assert_eq!(bitslice_to_u32(&slice, 118, 3), 0);
-        assert_eq!(bitslice_to_u32(&slice, 121, 2), 0);
+        assert_eq!(bitslice_to_u32(slice, 96, 10), 1);
+        assert_eq!(bitslice_to_u32(slice, 106, 1), 0);
+        assert_eq!(bitslice_to_u32(slice, 107, 2), 3);
+        assert_eq!(bitslice_to_u32(slice, 109, 4), 0);
+        assert_eq!(bitslice_to_u32(slice, 113, 3), 0);
+        assert_eq!(bitslice_to_u32(slice, 116, 2), 0);
+        assert_eq!(bitslice_to_u32(slice, 118, 3), 0);
+        assert_eq!(bitslice_to_u32(slice, 121, 2), 0);
         let slice = BitSlice::from_slice(&[
             0, 0, 0, 0,
             0, 0, 0, 0,
             0, 0, 0, 0,
             0x02, 0x38, 0x0, 0x0,
         ]);
-        assert_eq!(bitslice_to_u32(&slice, 96, 10), 2);
-        assert_eq!(bitslice_to_u32(&slice, 106, 1), 0);
-        assert_eq!(bitslice_to_u32(&slice, 107, 2), 3);
-        assert_eq!(bitslice_to_u32(&slice, 109, 4), 1);
-        assert_eq!(bitslice_to_u32(&slice, 113, 3), 0);
-        assert_eq!(bitslice_to_u32(&slice, 116, 2), 0);
-        assert_eq!(bitslice_to_u32(&slice, 118, 3), 0);
-        assert_eq!(bitslice_to_u32(&slice, 121, 2), 0);
+        assert_eq!(bitslice_to_u32(slice, 96, 10), 2);
+        assert_eq!(bitslice_to_u32(slice, 106, 1), 0);
+        assert_eq!(bitslice_to_u32(slice, 107, 2), 3);
+        assert_eq!(bitslice_to_u32(slice, 109, 4), 1);
+        assert_eq!(bitslice_to_u32(slice, 113, 3), 0);
+        assert_eq!(bitslice_to_u32(slice, 116, 2), 0);
+        assert_eq!(bitslice_to_u32(slice, 118, 3), 0);
+        assert_eq!(bitslice_to_u32(slice, 121, 2), 0);
     }
 
     #[test]
@@ -918,7 +916,7 @@ mod test {
         let d4 = std::fs::read("../data/wotlk/dbfilesclient/liquidtype.db2").unwrap();
         let d5 = std::fs::read("../data/wotlk/dbfilesclient/lightskybox.db2").unwrap();
         let db = Database::new(&d1, &d3, &d2, &d4, &d5).unwrap();
-        let result = db.get_lighting_data(0, -7829.5380859375, -1157.3988037109375, 218.613525390625, 2000);
+        let result = db.get_lighting_data(0, -7_829.538, -1_157.398_8, 218.613_53, 2000);
         dbg!(result);
     }
 

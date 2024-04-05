@@ -1,4 +1,4 @@
-use deku::{prelude::*, ctx::ByteSize};
+use deku::{prelude::*};
 use wasm_bindgen::prelude::*;
 
 use super::common::{ChunkedData, AABBox, Vec3, parse};
@@ -33,8 +33,8 @@ impl Wdt {
                         map_filedata_ids.push(parse(&chunk_data[i*size..(i+1)*size])?)
                     }
                 },
-                b"DHPM" => header = Some(parse(&chunk_data)?),
-                b"FDOM" => global_wmo = Some(parse(&chunk_data)?),
+                b"DHPM" => header = Some(parse(chunk_data)?),
+                b"FDOM" => global_wmo = Some(parse(chunk_data)?),
                 _ => println!("skipping {}", chunk.magic_str()),
             }
         }

@@ -2,10 +2,7 @@ use deku::prelude::*;
 use wasm_bindgen::prelude::*;
 use super::common::{
     WowArray,
-    WowCharArray,
-    AABBox,
     Vec3,
-    Vec2,
 };
 
 #[wasm_bindgen(js_name = "WowSkinSubmesh")]
@@ -60,9 +57,9 @@ impl Skin {
     pub fn new(data: &[u8]) -> Result<Skin, String> {
         let (_, profile) = SkinProfile::from_bytes((data, 0))
             .map_err(|e| format!("{:?}", e))?;
-        let batches = profile.batches.to_vec(&data)
+        let batches = profile.batches.to_vec(data)
             .map_err(|e| format!("{:?}", e))?;
-        let submeshes = profile.submeshes.to_vec(&data)
+        let submeshes = profile.submeshes.to_vec(data)
             .map_err(|e| format!("{:?}", e))?;
 
         let global_vertex_indices = profile.vertices.to_vec(data)
@@ -217,33 +214,31 @@ impl ModelBatch {
         if self.shader_id & 0x8000 > 0 {
             let shader_idx = self.shader_id as usize & 0x7fff;
             STATIC_SHADERS[shader_idx].0
+        } else if self.texture_count == 1 {
+            if self.shader_id & 0x70 > 0 {
+                PixelShader::CombinersMod
+            } else {
+                PixelShader::CombinersOpaque
+            }
         } else {
-            if self.texture_count == 1 {
-                if self.shader_id & 0x70 > 0 {
-                    PixelShader::CombinersMod
-                } else {
-                    PixelShader::CombinersOpaque
+            let lower = self.shader_id & 7;
+            if self.shader_id & 0x70 > 0 {
+                match lower {
+                    0 => PixelShader::CombinersModOpaque,
+                    3 => PixelShader::CombinersModAdd,
+                    4 => PixelShader::CombinersModMod2x,
+                    6 => PixelShader::CombinersModMod2xNA,
+                    7 => PixelShader::CombinersModAddNA,
+                    _ => PixelShader::CombinersModMod,
                 }
             } else {
-                let lower = self.shader_id & 7;
-                if self.shader_id & 0x70 > 0 {
-                    match lower {
-                        0 => PixelShader::CombinersModOpaque,
-                        3 => PixelShader::CombinersModAdd,
-                        4 => PixelShader::CombinersModMod2x,
-                        6 => PixelShader::CombinersModMod2xNA,
-                        7 => PixelShader::CombinersModAddNA,
-                        _ => PixelShader::CombinersModMod,
-                    }
-                } else {
-                    match lower {
-                        0 => PixelShader::CombinersOpaqueOpaque,
-                        3 => PixelShader::CombinersOpaqueAddAlpha,
-                        4 => PixelShader::CombinersOpaqueMod2x,
-                        6 => PixelShader::CombinersOpaqueMod2xNA,
-                        7 => PixelShader::CombinersOpaqueAddAlpha,
-                        _ => PixelShader::CombinersOpaqueMod,
-                    }
+                match lower {
+                    0 => PixelShader::CombinersOpaqueOpaque,
+                    3 => PixelShader::CombinersOpaqueAddAlpha,
+                    4 => PixelShader::CombinersOpaqueMod2x,
+                    6 => PixelShader::CombinersOpaqueMod2xNA,
+                    7 => PixelShader::CombinersOpaqueAddAlpha,
+                    _ => PixelShader::CombinersOpaqueMod,
                 }
             }
         }
@@ -253,32 +248,26 @@ impl ModelBatch {
         if self.shader_id & 0x8000 > 0 {
             let shader_idx = self.shader_id as usize & 0x7fff;
             STATIC_SHADERS[shader_idx].1
-        } else {
-            if self.texture_count == 1 {
-                if self.shader_id & 0x80 > 0 {
-                    VertexShader::DiffuseEnv
-                } else if self.shader_id & 0x4000 > 0 {
-                    VertexShader::DiffuseT2
-                } else {
-                    VertexShader::DiffuseT1
-                }
+        } else if self.texture_count == 1 {
+            if self.shader_id & 0x80 > 0 {
+                VertexShader::DiffuseEnv
+            } else if self.shader_id & 0x4000 > 0 {
+                VertexShader::DiffuseT2
             } else {
-                if self.shader_id & 0x80 > 0 {
-                    if self.shader_id & 0x8 > 0 {
-                        VertexShader::DiffuseEnvEnv
-                    } else {
-                        VertexShader::DiffuseEnvT1
-                    }
-                } else {
-                    if self.shader_id & 0x8 > 0 {
-                        VertexShader::DiffuseT1Env
-                    } else if self.shader_id & 0x4000 > 0 {
-                        VertexShader::DiffuseT1T2
-                    } else {
-                        VertexShader::DiffuseT1T1
-                    }
-                }
+                VertexShader::DiffuseT1
             }
+        } else if self.shader_id & 0x80 > 0 {
+            if self.shader_id & 0x8 > 0 {
+                VertexShader::DiffuseEnvEnv
+            } else {
+                VertexShader::DiffuseEnvT1
+            }
+        } else if self.shader_id & 0x8 > 0 {
+            VertexShader::DiffuseT1Env
+        } else if self.shader_id & 0x4000 > 0 {
+            VertexShader::DiffuseT1T2
+        } else {
+            VertexShader::DiffuseT1T1
         }
     }
 }

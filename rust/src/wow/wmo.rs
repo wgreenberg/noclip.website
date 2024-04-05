@@ -1,7 +1,7 @@
 use deku::{prelude::*, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
 
-use crate::{unity::mesh::AABB, wow::{adt::LiquidData, common::{parse, parse_array, ChunkedData}}};
+use crate::{wow::{common::{parse, parse_array, ChunkedData}}};
 
 use super::{adt::UNIT_SIZE, common::{AABBox, Argb, Plane, Quat, Vec3}};
 
@@ -135,7 +135,7 @@ impl Wmo {
             textures: momt.ok_or("WMO file didn't have MOMT chunk")?,
             group_infos: mogi.ok_or("WMO file didn't have MOGI chunk")?,
             doodad_defs: modd.ok_or("WMO file didn't have MODD chunk")?,
-            doodad_file_ids: modi.unwrap_or(vec![]),
+            doodad_file_ids: modi.unwrap_or_default(),
             fogs: mfog.ok_or("WMO file didn't have MFOG chunk")?,
             group_file_ids: gfid.ok_or("WMO file didn't have group ids")?,
             skybox_file_id: mosi.map(|m| m.skybox_file_id),
@@ -175,7 +175,7 @@ impl Wmo {
 
     pub fn get_doodad_set_refs(&self, mut doodad_set_id: usize) -> Vec<u32> {
         let default_set = &self.doodad_sets[0];
-        if doodad_set_id as usize >= self.doodad_sets.len() {
+        if doodad_set_id >= self.doodad_sets.len() {
             doodad_set_id = 0;
         }
         let mut refs: Vec<u32> = (default_set.start_index..default_set.start_index + default_set.count).collect();
@@ -309,14 +309,14 @@ impl WmoGroup {
 
         assert!(num_uv_bufs > 0);
         let mut maybe_liquids: Option<Vec<WmoLiquid>> = None;
-        if liquids.len() > 0 {
+        if !liquids.is_empty() {
             maybe_liquids = Some(liquids);
         }
 
         Ok(WmoGroup {
             header,
             material_info: mopy.ok_or("WMO group didn't have MOPY chunk")?,
-            indices: indices,
+            indices,
             vertices: Some(vertices.ok_or("WMO group didn't have vertices")?),
             num_vertices,
             normals: Some(normals.ok_or("WMO group didn't have normals")?),
@@ -329,8 +329,8 @@ impl WmoGroup {
             bsp_nodes: Some(bsp_nodes),
             colors: Some(colors),
             num_color_bufs,
-            batches: batches.unwrap_or(vec![]),
-            doodad_refs: Some(doodad_refs.unwrap_or(vec![])),
+            batches: batches.unwrap_or_default(),
+            doodad_refs: Some(doodad_refs.unwrap_or_default()),
         })
     }
 
@@ -432,7 +432,7 @@ pub struct WmoLiquid {
 }
 
 impl WmoLiquid {
-    pub fn get_render_result(&self, header: &WmoGroupHeader) -> LiquidResult {
+    pub fn get_render_result(&self, _header: &WmoGroupHeader) -> LiquidResult {
         let width = self.tile_width as usize;
         let height = self.tile_height as usize;
         let mut vertex_prototypes = Vec::new();
@@ -469,18 +469,16 @@ impl WmoLiquid {
                         vertices.push(value);
                     }
                 }
-                indices.push(index + 0);
+                indices.push(index);
                 indices.push(index + 1);
                 indices.push(index + 2);
 
                 indices.push(index + 2);
                 indices.push(index + 3);
-                indices.push(index + 0);
+                indices.push(index);
                 index += 4;
 
-                if tile.is_lava() {
-                } else {
-                }
+                tile.is_lava(); 
                 if let Some(v) = last_tile_liquid {
                     assert!(v == tile.data & 0x0F);
                 }
@@ -803,18 +801,5 @@ impl WmoMaterial {
 
     pub fn get_pixel_shader(&self) -> PixelShader {
         STATIC_SHADERS[self.shader_index as usize].1
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test() {
-        let wmoData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03.wmo").unwrap();
-        let groupData = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/world/wmo/dungeon/md_mountaincave/md_mushroomcave03_000.wmo").unwrap();
-        let wmo = Wmo::new(&wmoData).unwrap();
-        let mut group = WmoGroup::new(&groupData).unwrap();
     }
 }

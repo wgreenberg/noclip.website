@@ -127,18 +127,6 @@ impl Blp {
                 return i;
             }
         }
-        return 16;
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test() {
-        let data = std::fs::read("C:/Users/ifnsp/dev/noclip.website/data/wow/tileset/plaguelandswest/westplaguedmudgrass_s.blp").unwrap();
-        let blp = Blp::new(&data).unwrap();
-        dbg!(blp.header);
+        16
     }
 }

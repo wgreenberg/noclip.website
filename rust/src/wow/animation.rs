@@ -220,50 +220,50 @@ impl AnimationManager {
         for i in 0..self.texture_transforms.len() {
             let translation_index = i as u32 * 3;
             let translation = &self.calculated_texture_translations[i];
-            texture_translations.set_index(translation_index + 0, translation.x);
+            texture_translations.set_index(translation_index, translation.x);
             texture_translations.set_index(translation_index + 1, translation.y);
             texture_translations.set_index(translation_index + 2, translation.z);
 
             let rotation_index = i as u32 * 4;
             let rotation = &self.calculated_texture_rotations[i];
-            texture_rotations.set_index(rotation_index + 0, rotation.x);
+            texture_rotations.set_index(rotation_index, rotation.x);
             texture_rotations.set_index(rotation_index + 1, rotation.y);
             texture_rotations.set_index(rotation_index + 2, rotation.z);
             texture_rotations.set_index(rotation_index + 3, rotation.w);
 
             let scaling_index = i as u32 * 3;
             let scaling = &self.calculated_texture_scalings[i];
-            texture_scalings.set_index(scaling_index + 0, scaling.x);
+            texture_scalings.set_index(scaling_index, scaling.x);
             texture_scalings.set_index(scaling_index + 1, scaling.y);
             texture_scalings.set_index(scaling_index + 2, scaling.z);
         }
         for i in 0..self.bones.len() {
             let translation_index = i as u32 * 3;
             let translation = &self.calculated_bone_translations[i];
-            bone_translations.set_index(translation_index + 0, translation.x);
+            bone_translations.set_index(translation_index, translation.x);
             bone_translations.set_index(translation_index + 1, translation.y);
             bone_translations.set_index(translation_index + 2, translation.z);
 
             let rotation_index = i as u32 * 4;
             let rotation = &self.calculated_bone_rotations[i];
-            bone_rotations.set_index(rotation_index + 0, rotation.x);
+            bone_rotations.set_index(rotation_index, rotation.x);
             bone_rotations.set_index(rotation_index + 1, rotation.y);
             bone_rotations.set_index(rotation_index + 2, rotation.z);
             bone_rotations.set_index(rotation_index + 3, rotation.w);
 
             let scaling_index = i as u32 * 3;
             let scaling = &self.calculated_bone_scalings[i];
-            bone_scalings.set_index(scaling_index + 0, scaling.x);
+            bone_scalings.set_index(scaling_index, scaling.x);
             bone_scalings.set_index(scaling_index + 1, scaling.y);
             bone_scalings.set_index(scaling_index + 2, scaling.z);
         }
         for i in 0..self.colors.len() {
             let color_index = i as u32 * 4;
             let color = &self.calculated_colors[i];
-            colors.set_index(color_index as u32 + 0, color.x);
-            colors.set_index(color_index as u32 + 1, color.y);
-            colors.set_index(color_index as u32 + 2, color.z);
-            colors.set_index(color_index as u32 + 3, color.w);
+            colors.set_index(color_index, color.x);
+            colors.set_index(color_index + 1, color.y);
+            colors.set_index(color_index + 2, color.z);
+            colors.set_index(color_index + 3, color.w);
         }
     }
 
@@ -276,7 +276,7 @@ impl AnimationManager {
     }
 
     pub fn get_bone_pivots(&self) -> Vec<Vec3> {
-        self.bones.iter().map(|bone| bone.pivot.clone()).collect()
+        self.bones.iter().map(|bone| bone.pivot).collect()
     }
 
     pub fn get_bone_parents(&self) -> Vec<i16> {
@@ -359,11 +359,11 @@ impl AnimationManager {
             animation_index = 0;
         }
 
-        if animation.timestamps.len() == 0 {
+        if animation.timestamps.is_empty() {
             return default;
         }
 
-        if animation_index <= animation.timestamps.len() && animation.timestamps[animation_index].len() == 0 {
+        if animation_index <= animation.timestamps.len() && animation.timestamps[animation_index].is_empty() {
             return default;
         }
 
@@ -397,7 +397,7 @@ impl AnimationManager {
         }
 
         if time_index as usize == times.len() - 1 {
-            return values[time_index as usize].clone();
+            values[time_index as usize].clone()
         } else if time_index >= 0 {
             let value1 = &values[time_index as usize];
             let value2 = &values[time_index as usize + 1];

@@ -31,7 +31,7 @@ pub fn parse_array<T>(data: &[u8], size_per_data: usize) -> Result<Vec<T>, Strin
         ));
     }
     let num_elements = data.len() / size_per_data;
-    let bitvec = BitVec::from_slice(&data[..]);
+    let bitvec = BitVec::from_slice(data);
     let mut result = Vec::with_capacity(num_elements);
     let mut rest = bitvec.as_bitslice();
     for _ in 0..num_elements {
@@ -46,7 +46,7 @@ pub fn parse_array<T>(data: &[u8], size_per_data: usize) -> Result<Vec<T>, Strin
 fn parse_inner<T, V>(data: &[u8], ctx: V) -> Result<T, String>
     where for<'a> T: DekuRead<'a, V>
 {
-    let bitvec = BitVec::from_slice(&data[..]);
+    let bitvec = BitVec::from_slice(data);
     let (_, element) = T::read(bitvec.as_bitslice(), ctx)
         .map_err(|e| format!("{:?}", e))?;
     Ok(element)
@@ -114,7 +114,7 @@ pub struct Quat {
 
 impl Quat {
     pub fn normalize(&mut self) {
-        let inverse_mag = 1.0 / self.dot(&self).sqrt();
+        let inverse_mag = 1.0 / self.dot(self).sqrt();
         self.x *= inverse_mag;
         self.y *= inverse_mag;
         self.z *= inverse_mag;
