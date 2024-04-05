@@ -1,5 +1,3 @@
-use std::{io::Read};
-
 use deku::prelude::*;
 use super::common::*;
 use deku::bitvec::{BitVec, BitSlice, Msb0};
@@ -301,10 +299,8 @@ impl Wdc4Db2File {
 
 #[derive(Debug)]
 pub struct DatabaseTable<T> {
-    db2: Wdc4Db2File,
     records: Vec<T>,
     ids: Vec<u32>,
-    strings: Vec<(usize, String)>,
 }
 
 impl<T> DatabaseTable<T> {
@@ -329,29 +325,8 @@ impl<T> DatabaseTable<T> {
             assert_eq!(db2.header.record_size as usize * 8, bits_read);
             rest = new_rest;
         }
-        let mut strings = Vec::new();
         let strings_start = records_start + (db2.header.record_count * db2.header.record_size) as usize;
-        if strings_start < data.len() {
-            let strings_end = strings_start + db2.header.string_table_size as usize;
-            let mut current_string = String::new();
-            let mut string_offset = strings_start - records_start;
-            for &byte in &data[strings_start..strings_end] {
-                if byte == 0 {
-                    if current_string.is_empty() {
-                        continue;
-                    }
-                    // Correlate the offset values that records use to identify
-                    // strings w/ the string itself
-                    let offset = string_offset - current_string.len();
-                    println!("offset {} string {}", offset, &current_string);
-                    strings.push((offset, current_string.clone()));
-                    current_string.clear();
-                } else {
-                    current_string.push(byte as char);
-                }
-                string_offset += 1;
-            }
-        }
+
         // if a list of IDs is provided, correct our auto-generated IDs
         let id_list_start = strings_start + db2.header.string_table_size as usize;
         let id_list_size = db2.section_headers[0].id_list_size as usize;
@@ -366,9 +341,7 @@ impl<T> DatabaseTable<T> {
             }
         }
         Ok(DatabaseTable {
-            db2,
             records,
-            strings,
             ids,
         })
     }

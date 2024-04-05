@@ -37,7 +37,7 @@ impl SkinSubmesh {
 pub struct SkinProfile {
     vertices: WowArray<u16>,
     indices: WowArray<u16>,
-    bones: WowArray<[u8; 4]>,
+    _bones: WowArray<[u8; 4]>,
     submeshes: WowArray<SkinSubmesh>,
     batches: WowArray<ModelBatch>,
     pub bone_count_max: u32,
@@ -49,7 +49,7 @@ pub struct Skin {
     pub submeshes: Vec<SkinSubmesh>,
     pub batches: Vec<ModelBatch>,
     indices: Option<Vec<u16>>,
-    profile: SkinProfile,
+    _profile: SkinProfile,
 }
 
 #[wasm_bindgen(js_class = "WowSkin")]
@@ -75,7 +75,7 @@ impl Skin {
         Ok(Skin {
             batches,
             submeshes,
-            profile,
+            _profile: profile,
             indices: Some(indices),
         })
     }

@@ -56,10 +56,6 @@ impl Chunk {
     pub fn magic_str(&self) -> &str {
         std::str::from_utf8(&self.magic).unwrap()
     }
-
-    pub fn slice<'a>(&self, data: &'a [u8]) -> &'a [u8] {
-        &data[..self.size as usize]
-    }
 }
 
 pub struct ChunkedData<'a> {
@@ -241,12 +237,6 @@ impl<T> WowArray<T> where for<'a> T: DekuRead<'a> {
         }
         Ok(result)
     }
-}
-
-#[derive(Debug, DekuRead)]
-struct Mver {
-    ver1: u32,
-    ver2: u32,
 }
 
 pub trait Lerp {

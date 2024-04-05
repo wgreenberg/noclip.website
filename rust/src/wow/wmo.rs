@@ -1,7 +1,7 @@
 use deku::{prelude::*, ctx::ByteSize};
 use wasm_bindgen::prelude::*;
 
-use crate::{wow::{common::{parse, parse_array, ChunkedData}}};
+use crate::wow::common::{parse, parse_array, ChunkedData};
 
 use super::{adt::UNIT_SIZE, common::{AABBox, Argb, Plane, Quat, Vec3}};
 
@@ -70,7 +70,7 @@ pub struct Wmo {
     portals: Option<Vec<Portal>>,
     portal_refs: Option<Vec<PortalRef>>,
     portal_vertices: Option<Vec<f32>>,
-    ambient_volumes: Vec<AmbientVolume>,
+    _ambient_volumes: Vec<AmbientVolume>,
 }
 
 #[wasm_bindgen(js_class = "WowWmo")]
@@ -146,7 +146,7 @@ impl Wmo {
             portals,
             group_text,
             global_ambient_volumes: mavg,
-            ambient_volumes: mavd,
+            _ambient_volumes: mavd,
         })
     }
 
@@ -632,7 +632,7 @@ static STATIC_SHADERS: [(VertexShader, PixelShader); 24] = [
 #[wasm_bindgen(js_name = "WowWmoMaterialBatch")]
 #[derive(DekuRead, Debug, Clone)]
 pub struct MaterialBatch {
-    unknown: [u8; 0xA],
+    _unknown: [u8; 0xA],
     pub material_id_large: u16,
     pub start_index: u32,
     pub index_count: u16,
@@ -662,7 +662,7 @@ pub struct WmoGroupHeader {
     pub int_batch_count: u16,
     pub ext_batch_count: u16,
     pub padding_or_batch_type_d: u16,
-    fog_ids: [u8; 4],
+    _fog_ids: [u8; 4],
     pub group_liquid: u32,
     pub group_flags2: u32,
     pub parent_or_first_child_split_group_index: u16,
@@ -790,7 +790,7 @@ pub struct WmoMaterial {
     pub texture_3: u32,
     pub color_2: Argb,
     pub flags_2: u32,
-    runtime_data: [u32; 4],
+    _runtime_data: [u32; 4],
 }
 
 #[wasm_bindgen(js_class = "WowWmoMaterial")]

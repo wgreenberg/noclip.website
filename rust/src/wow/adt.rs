@@ -364,7 +364,7 @@ pub static ADT_VBO_INFO: AdtVBOInfo = AdtVBOInfo {
 
 #[wasm_bindgen(js_name = "WowAdtVBOInfo")]
 #[derive(Clone)]
-struct AdtVBOInfo {
+pub struct AdtVBOInfo {
     pub stride: usize,
     pub vertex_offset: usize,
     pub normal_offset: usize,

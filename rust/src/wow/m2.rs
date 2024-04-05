@@ -30,38 +30,38 @@ pub struct M2Header {
     pub flags: u32,
     global_sequence_durations: WowArray<u32>,
     sequences: WowArray<M2Sequence>,
-    sequence_lookups: WowArray<u16>,
+    _sequence_lookups: WowArray<u16>,
     bones: WowArray<M2CompBoneUnallocated>,
-    key_bone_lookup: WowArray<u16>,
+    _key_bone_lookup: WowArray<u16>,
     vertices: WowArray<()>,
     pub num_skin_profiles: u32,
     colors: WowArray<M2ColorUnallocated>,
     textures: WowArray<M2Texture>,
     texture_weights: WowArray<M2TrackUnallocated<u16>>,
     texture_transforms: WowArray<M2TextureTransformUnallocated>,
-    replacable_texture_lookup: WowArray<u8>,
+    _replacable_texture_lookup: WowArray<u8>,
     materials: WowArray<M2Material>,
     bone_lookup_table: WowArray<u16>,
     texture_lookup_table: WowArray<u16>,
-    texture_unit_lookup_table: WowArray<u16>,
+    _texture_unit_lookup_table: WowArray<u16>,
     transparency_lookup_table: WowArray<u16>,
     texture_transforms_lookup_table: WowArray<u16>,
     pub bounding_box: AABBox,
     pub bounding_sphere_radius: f32,
     pub collision_box: AABBox,
     pub collision_sphere_radius: f32,
-    collision_triangles: WowArray<u16>,
-    collision_vertices: WowArray<Vec3>,
-    collision_normals: WowArray<Vec3>,
-    attachments: WowArray<()>,
-    attachment_lookup_table: WowArray<u16>,
-    events: WowArray<()>,
-    lights: WowArray<()>,
-    cameras: WowArray<()>,
-    camera_lookup_table: WowArray<u16>,
-    ribbon_emitters: WowArray<()>,
-    particle_emitters: WowArray<()>,
-    blend_map_overrides: WowArray<u16>,
+    _collision_triangles: WowArray<u16>,
+    _collision_vertices: WowArray<Vec3>,
+    _collision_normals: WowArray<Vec3>,
+    _attachments: WowArray<()>,
+    _attachment_lookup_table: WowArray<u16>,
+    _events: WowArray<()>,
+    _lights: WowArray<()>,
+    _cameras: WowArray<()>,
+    _camera_lookup_table: WowArray<u16>,
+    _ribbon_emitters: WowArray<()>,
+    _particle_emitters: WowArray<()>,
+    _blend_map_overrides: WowArray<u16>,
 }
 
 impl M2Header {
@@ -375,13 +375,6 @@ impl M2MaterialFlags {
 pub struct Txid {
     #[deku(count = "size / 4")]
     pub file_data_ids: Vec<u32>,
-}
-
-#[derive(Debug, DekuRead, Clone)]
-#[deku(ctx = "ByteSize(size): ByteSize")]
-pub struct Sfid {
-    #[deku(count = "size / 4")]
-    skin_file_ids: Vec<u32>,
 }
 
 #[derive(Debug, DekuRead)]
