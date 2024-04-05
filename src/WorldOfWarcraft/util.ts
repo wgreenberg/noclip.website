@@ -1,64 +1,69 @@
-import { DataFetcher } from "../DataFetcher.js";
+import { DataFetcher, NamedArrayBufferSlice } from "../DataFetcher.js";
+import { rust } from '../rustlib.js';
+import { WowSheepfileEntry, WowSheepfileManager } from "../../rust/pkg";
+import { MapArray } from "./scenes.js";
 
-class FileList {
-    public files: string[] = [];
-    public fileIds: Map<string, number> = new Map();
+const SHEEP_PATH = `WorldOfWarcraft/sheep0`;
 
-    constructor() {
-    }
+class Sheepfile {
+    private sheepfile: WowSheepfileManager;
 
     public async load(dataFetcher: DataFetcher) {
-      const decoder = new TextDecoder();
-      const fileListData = await dataFetcher.fetchData(`wow/listfile.csv`);
-      decoder.decode(fileListData.createTypedArray(Uint8Array)).split('\r\n').forEach(line => {
-        const [idxStr, fileName] = line.split(';');
-        if (idxStr === undefined || fileName === undefined) return;
-        const idx = parseInt(idxStr);
-        const normalizedFileName = this.normalizeFileName(fileName);
-        this.files[idx] = normalizedFileName;
-        this.fileIds.set(normalizedFileName, idx);
-      })
+      const sheepfileData = await dataFetcher.fetchData(`${SHEEP_PATH}/index.shp`);
+      this.sheepfile = rust.WowSheepfileManager.new(sheepfileData.createTypedArray(Uint8Array));
     }
 
-    private normalizeFileName(fileName: string): string {
-      return fileName.replaceAll('\\', '/')
-        .replaceAll(".mdx", ".m2")
-        .toLowerCase();
+    async fetchDataRange(dataFetcher: DataFetcher, datafileName: string, start: number, size: number): Promise<NamedArrayBufferSlice> {
+      return await dataFetcher.fetchData(`${SHEEP_PATH}/${datafileName}`, {
+        rangeStart: start,
+        rangeSize: size,
+      });
     }
 
-    public getFilename(fileId: number): string {
-      if (!this.files) {
-        throw new Error(`must load FileList first`);
+    async loadEntry(dataFetcher: DataFetcher, entry: WowSheepfileEntry): Promise<Uint8Array> {
+      let data = await this.fetchDataRange(dataFetcher, entry.datafile_name, entry.start_bytes, entry.size_bytes);
+      entry.free();
+      return data.createTypedArray(Uint8Array);
+    }
+
+    public async loadFileId(dataFetcher: DataFetcher, fileId: number): Promise<Uint8Array | undefined> {
+      const entry = this.sheepfile.get_file_id(fileId);
+      if (entry === undefined) {
+        return undefined;
       }
-      const filePath = this.files[fileId];
-      if (!filePath) {
-        throw new Error(`couldn't find path for fileId ${fileId}`);
+      return this.loadEntry(dataFetcher, entry);
+    }
+
+    public async loadFileName(dataFetcher: DataFetcher, fileName: string): Promise<Uint8Array | undefined> {
+      const entry = this.sheepfile.get_file_name(fileName);
+      if (entry === undefined) {
+        return undefined;
       }
-      return filePath;
+      return this.loadEntry(dataFetcher, entry);
     }
 
     public getFileDataId(fileName: string): number | undefined {
-      return this.fileIds.get(this.normalizeFileName(fileName));
+      const entry = this.sheepfile.get_file_name(fileName);
+      if (entry === undefined) {
+        return undefined;
+      }
+      return entry.file_id;
     }
 }
 
-let _fileList: FileList | undefined = undefined;
-export async function initFileList(dataFetcher: DataFetcher): Promise<undefined> {
-  if (!_fileList) {
-    _fileList = new FileList();
-    await _fileList.load(dataFetcher);
+let _sheepfile: Sheepfile | undefined = undefined;
+export async function initSheepfile(dataFetcher: DataFetcher): Promise<undefined> {
+  if (!_sheepfile) {
+    _sheepfile = new Sheepfile();
+    await _sheepfile.load(dataFetcher);
   }
-}
-
-export function getFilePath(fileId: number): string {
-  return _fileList!.getFilename(fileId);
 }
 
 export function getFileDataId(fileName: string): number {
   if (fileName === '') {
     throw new Error(`must provide valid filename`);
   }
-  const result = _fileList!.getFileDataId(fileName);
+  const result = _sheepfile!.getFileDataId(fileName);
   if (result === undefined) {
     throw new Error(`failed to find FileDataId for fileName ${fileName}`);
   } else {
@@ -77,7 +82,9 @@ export async function fetchFileByID<T>(fileId: number, dataFetcher: DataFetcher,
 export async function fetchDataByFileID(fileId: number, dataFetcher: DataFetcher): Promise<Uint8Array> {
   // WOTLK extraction is from build 3.4.3.52237
   // Vanilla extraction is from build 1.5.1.53495
-  // const filePath = getFilePath(fileId);
-  const buf = await dataFetcher.fetchURL(`data/wowFileID/${fileId}`);
-  return buf.createTypedArray(Uint8Array);
+  const data = await _sheepfile?.loadFileId(dataFetcher, fileId);
+  if (!data) {
+    throw new Error(`no data for fileId ${fileId}`)
+  }
+  return data;
 }

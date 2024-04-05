@@ -4,7 +4,7 @@ import { DataFetcher } from "../DataFetcher.js";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers.js";
 import { GfxDevice, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxBufferUsage, GfxBlendMode, GfxCullMode, GfxBlendFactor, GfxChannelWriteMask, GfxCompareMode, GfxFormat, GfxVertexBufferFrequency, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxVertexAttributeDescriptor, GfxMegaStateDescriptor } from "../gfx/platform/GfxPlatform.js";
 import { rust } from "../rustlib.js";
-import { fetchFileByID, fetchDataByFileID, getFilePath, getFileDataId } from "./util.js";
+import { fetchFileByID, fetchDataByFileID, getFileDataId } from "./util.js";
 import { MathConstants, setMatrixTranslation } from "../MathHelpers.js";
 import { adtSpaceFromModelSpace, adtSpaceFromPlacementSpace, placementSpaceFromModelSpace, noclipSpaceFromPlacementSpace, noclipSpaceFromModelSpace, noclipSpaceFromAdtSpace, modelSpaceFromAdtSpace, MapArray, WdtScene, View, placementSpaceFromAdtSpace, MAP_SIZE, modelSpaceFromPlacementSpace } from "./scenes.js";
 import { AABB, Frustum, IntersectionState, Plane } from "../Geometry.js";

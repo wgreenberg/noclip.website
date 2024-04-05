@@ -337,7 +337,7 @@ impl<T> DatabaseTable<T> {
             let mut string_offset = strings_start - records_start;
             for &byte in &data[strings_start..strings_end] {
                 if byte == 0 {
-                    if current_string.len() == 0 {
+                    if current_string.is_empty() {
                         continue;
                     }
                     // Correlate the offset values that records use to identify

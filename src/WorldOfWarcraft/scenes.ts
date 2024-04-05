@@ -19,7 +19,7 @@ import { TextureMapping } from '../TextureHolder.js';
 import { mat3, mat4, vec3, vec4 } from 'gl-matrix';
 import { ModelData, SkinData, AdtData, WorldData, DoodadData, WmoData, WmoBatchData, WmoDefinition, LazyWorldData, WowCache, Database, WmoGroupData, LiquidType, AdtCoord, PortalData } from './data.js';
 import { getMatrixTranslation, lerp, projectionMatrixForFrustum } from "../MathHelpers.js";
-import { fetchFileByID, fetchDataByFileID, initFileList, getFilePath } from "./util.js";
+import { fetchFileByID, fetchDataByFileID, initSheepfile } from "./util.js";
 import { CameraController, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera.js';
 import { TextureListHolder, Panel } from '../ui.js';
 import { GfxTopology, convertToTriangleIndexBuffer } from '../gfx/helpers/TopologyHelpers.js';
@@ -85,10 +85,9 @@ export class View {
     public frustum: Frustum = new Frustum();
     public time: number;
     public deltaTime: number;
-    // public farPlane = 1000;
-    public farPlane = Infinity;
+    public farPlane = 1000;
     public timeOffset = 1440;
-    public secondsPerGameDay = 60;
+    public secondsPerGameDay = 90;
 
     public finishSetup(): void {
       mat4.invert(this.worldFromViewMatrix, this.viewFromWorldMatrix);
@@ -804,7 +803,7 @@ class WdtSceneDesc implements Viewer.SceneDesc {
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
-    await initFileList(dataFetcher);
+    await initSheepfile(dataFetcher);
     const db = new Database(this.lightdbMapId);
     await db.load(dataFetcher);
     const cache = new WowCache(dataFetcher, db);
@@ -827,7 +826,7 @@ class ContinentSceneDesc implements Viewer.SceneDesc {
 
   public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
     const dataFetcher = context.dataFetcher;
-    await initFileList(dataFetcher);
+    await initSheepfile(dataFetcher);
     const db = new Database(this.lightdbMapId);
     await db.load(dataFetcher);
     const cache = new WowCache(dataFetcher, db);
