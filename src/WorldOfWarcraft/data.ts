@@ -154,9 +154,17 @@ export class LiquidType {
       const positionals = [];
       for (let i=1; i<31; i++) {
         const fileName = positionalTemplate.replace("%d", i.toString());
-        const fileDataId = getFileDataId(fileName); 
-        assert(fileDataId !== undefined, "couldn't find positional texture");
-        positionals.push(fileDataId);
+        try {
+          const fileDataId = getFileDataId(fileName);
+          assert(fileDataId !== undefined, "couldn't find positional texture");
+          positionals.push(fileDataId);
+        } catch (e) {
+          if (i !== 1) {
+            break;
+          } else {
+            throw e;
+          }
+        }
       }
       this.animatedTextureIds = positionals;
     }
@@ -351,7 +359,7 @@ export class ModelData {
     );
 
     for (let i = 0; i < this.numTextureTransformations; i++) {
-      mat4.fromRotationTranslationScale(this.textureTransforms[i], 
+      mat4.fromRotationTranslationScale(this.textureTransforms[i],
         this.textureRotations.slice(i * 4, (i + 1) * 4),
         this.textureTranslations.slice(i * 3, (i + 1) * 3),
         this.textureScalings.slice(i * 3, (i + 1) * 3),
@@ -1487,7 +1495,7 @@ export class LiquidInstance {
       buffer: makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.vertices!.buffer),
       byteOffset: 0,
     };
-  } 
+  }
 
   public setVisible(visible: boolean) {
     this.visible = visible;
@@ -1547,7 +1555,7 @@ export class AdtData {
       def.setVisible(false);
     }
   }
-  
+
   public async load(cache: WowCache) {
     for (let blpId of this.inner!.get_texture_file_ids()) {
       try {

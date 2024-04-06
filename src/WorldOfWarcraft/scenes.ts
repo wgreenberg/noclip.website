@@ -898,7 +898,7 @@ const vanillaSceneDescs = [
     new WdtSceneDesc('Test 01', 2323096, 0),
     new WdtSceneDesc('Scott Test', 863335, 0),
     new WdtSceneDesc('Collin Test', 863984, 0),
-    new WdtSceneDesc('PvP Zone 02', 861092, 0),
+    new WdtSceneDesc('PvP Zone 02 ("Azshara Crater")', 861092, 0),
     new WdtSceneDesc('Scarlet Monastery Prototype', 865519, 189),
 ];
 

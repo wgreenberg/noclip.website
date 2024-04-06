@@ -36,7 +36,7 @@ class CDNHost {
 }
 
 class CDNCache {
-    public fetchMode: 'full-archives' | 'partial-files' = 'full-archives';
+    public fetchMode: 'full-archives' | 'partial-files' = 'partial-files';
     public directory = `/data`;
 
     constructor(public dataFetcher: DataFetcher, public cachePath: string) {}
@@ -68,7 +68,7 @@ class CDNCache {
         await fs.writeFile(archiveFilePath, buffer.createTypedArray(Uint8Array));
     }
 
-    public async fetchArchivePartial(host: CDNHost, archive: TASCArchiveIndex, file: TASCArchiveFileEntry) {
+    public async fetchArchivePartial(host: CDNHost, archive: TASCArchiveIndex, file: TASCArchiveFileEntry): Promise<ArrayBufferSlice> {
         const archiveFilename = archive.key;
         const archiveFilePath = path.join(this.cachePath, this.directory, archiveFilename);
         if (existsSync(archiveFilePath))
@@ -78,7 +78,7 @@ class CDNCache {
         const partialFilename = `${file.dataOffset}`;
         const partialFilePath = path.join(this.cachePath, this.directory, archiveDirectory, partialFilename);
         if (existsSync(partialFilePath))
-            return fs.readFile(partialFilePath);
+            return new ArrayBufferSlice((await fs.readFile(partialFilePath)).buffer);
 
         const url = host.makeURL(archive.key, '/data');
         if (this.fetchMode === 'full-archives') {
@@ -89,6 +89,8 @@ class CDNCache {
             await fs.mkdir(path.join(this.cachePath, this.directory, archiveDirectory), { recursive: true });
             await fs.writeFile(partialFilePath, buffer.createTypedArray(Uint8Array));
             return buffer;
+        } else {
+            throw 'whoops'
         }
     }
 }
@@ -470,7 +472,7 @@ async function main() {
         }
 
         try {
-            const compressed = new ArrayBufferSlice(await fetcher.fetchFileID(fileId));
+            const compressed = await fetcher.fetchFileID(fileId);
             const uncompressed = decodeBLTE(compressed)!.createTypedArray(Uint8Array);
             res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
             res.end(uncompressed);
